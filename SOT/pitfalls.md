@@ -22,5 +22,6 @@
 - **Relayer pays gas:** protect our relayer endpoint from request floods (infrastructure protection, not a user limit: anyone can submit `execute_intents` directly). Use a function-call access key restricted to specific methods.
 - **The signed JSON must be byte-identical** between frontend and backend. Copy shared types, don't retype them. See [repo-structure.md](repo-structure.md).
 - **Matcher and relayer hosting** must stay up until 2026-11-25.
+- **Market-maker base rate manipulation (D35):** the agent's base follows fill rates, and EVM accounts are free, so an attacker can fill a dust order between two of their own accounts at an extreme rate to drag the base, then trade against the agent. The contract only blocks same-owner fills. Inside the agent, weight each base move by fill size and bound the move per fill. These are agent settings, not user limits (D24).
 - **`lightweight-charts` attribution:** its Apache-2.0 NOTICE requires a link to tradingview.com on the page. Keep the `attributionLogo` chart option on (the default).
 - **No secrets in git history.** The repo is public from the first commit. Secrets go in `.env` (gitignored) or the hosting dashboard.
