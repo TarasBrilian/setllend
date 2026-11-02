@@ -18,6 +18,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: contracts
+      # The sandbox tests build the wasm through the `cargo near` CLI.
+      - run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-installer.sh | sh
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # Unit tests, then the near-workspaces sandbox tests.
