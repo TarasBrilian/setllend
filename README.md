@@ -53,7 +53,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 | Primitive | Used for |
 |---|---|
 | `transfer` + `msg` | Deposit and place an order in one signed intent |
-| `auth_call` | Cancel, withdraw, redeem |
+| `auth_call` | Cancel, sell notes, withdraw, redeem |
 | Contract balance on the `intents.near` ledger | Order escrow and payouts |
 | 1Click | Cross-chain deposits and payouts (Base, Arbitrum) |
 
@@ -62,7 +62,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 - **No custody by the operator.** Every fund movement comes from a user-signed intent verified by `intents.near`.
 - **Permissionless matching.** Orders are escrowed on-chain, so anyone can rebuild the book and run a matcher.
 - **Exit without the operator.** Cancel and withdraw work through `auth_call` from any relayer, and ETH collateral returns to its origin chain through the bridge directly.
-- **No admin pause.** If the oracle is stale, new loans and liquidations stop, while repay, cancel, and withdraw keep working.
+- **No admin pause.** If the oracle is stale, new loans and liquidations stop, while repay, cancel, redeem, and withdrawals keep working.
 
 ### Dependencies and risks
 

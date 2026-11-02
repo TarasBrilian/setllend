@@ -13,7 +13,7 @@
  │ order escrow per maturity · positions/notes · health factor · settlement · │◄── aggregate-oracle.near
  │ liquidation                                                                 │
  └──────────────────────────────▲──────────────────────────────────────────────┘
-                                │ match_orders(lend_id, borrow_id, qty, rate)  (permissionless)
+                                │ match_orders(fills)  (permissionless)
                      ┌──────────┴───────────┐
                      │ Off-chain matcher    │ ← reads contract events/state
                      │ CLOB price-time + WS │ ← market-maker agent
@@ -44,6 +44,6 @@
 1. **The operator cannot steal funds.** Every fund movement comes from an intent signed by the user and verified by `intents.near`. The matcher can only propose order pairs that are valid under contract rules.
 2. **Orders are readable on-chain.** Orders sit in contract escrow, so anyone can rebuild the book and run a matcher. `match_orders` is permissionless.
 3. **Users can always exit without the operator.** Cancel and withdraw via `auth_call` can be submitted by any relayer, or directly by a user with a NEAR account. ETH collateral returns to Base/Arbitrum via `processWithdrawal`, which does not depend on 1Click. Native NEAR USDC can always be withdrawn to a NEAR account. Moving USDC back to Base/Arbitrum needs a swap, normally 1Click (D10).
-4. **No admin pause.** If the oracle is stale, risky actions stop on their own. Exit actions keep working.
+4. **No admin pause.** If the oracle is stale, risky actions stop on their own. Exit actions keep working. Exact list: [oracle.md](oracle.md#integration-pattern-in-the-contract).
 5. **Matcher front-running.** MVP: continuous CLOB with a single public matcher (D9). Mitigations deferred: (a) batch auction every N seconds with one clearing rate per maturity (Term Finance model), (b) matcher inside a TEE (NEAR AI Cloud) with attestation.
 6. **Disclose honestly in the submission README:** bridges (Omni / PoA) for Base and Arbitrum assets, dependency on Rhea's `aggregate-oracle.near`, dependency on 1Click for swaps, and matcher/relayer liveness.

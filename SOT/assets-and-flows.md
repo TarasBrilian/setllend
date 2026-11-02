@@ -10,7 +10,7 @@
 | ETH | Arbitrum | 18 | `nep141:arb.omft.near` | Collateral |
 | ETH | Base | 18 | `nep141:base.omft.near` | Collateral |
 
-Inside the contract, tokens received via `mt_on_transfer` are recorded as `nep245:intents.near:<asset_id>`. Fetch the latest IDs from `/v0/tokens` before deploying. Don't hardcode from memory.
+`mt_on_transfer` receives these IDs as-is in `token_ids` (e.g. `nep141:arb.omft.near`) 📄. Seen from outside Intents, the same balance is the NEP-245 token `<asset_id>` on `intents.near` (sometimes written `nep245:intents.near:<asset_id>`), but our contract only deals with the bare asset ID. Fetch the latest IDs from `/v0/tokens` before deploying. Don't hardcode from memory.
 
 ## Demo money paths (dry quotes, $20, no API key, 2026-11-01) ✅
 

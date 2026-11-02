@@ -7,7 +7,7 @@ Tested 2026-11-01 with `simulate_intents` on mainnet `intents.near` using a thro
 | `transfer` + `msg` (`NotifyOnTransfer`) | ✅ accepted | Triggers `mt_on_transfer(sender_id, previous_owner_ids, token_ids, amounts, msg)` on our contract. **Deposit and place an order atomically.** If the contract returns a refund amount, funds go back to the user's Intents balance (`nep245/resolver.rs`) |
 | `auth_call` | ✅ live | `intents.near` calls `on_auth(signer_id, msg)` on our contract. Used for cancel, withdraw, and actions without token movement |
 | `set_auth_by_predecessor_id` | ✅ live | Enabled by default for new accounts: our contract can call `mt_transfer` / `ft_withdraw` on `intents.near` for its own balance |
-| `token_diff` | 📄 docs + source | Atomic multi-party swap. Option for secondary-market settlement |
+| `token_diff` | 📄 docs + source | Atomic multi-party swap. Not needed in the MVP: notes are internal positions, so note sales settle inside our contract. Relevant only for a Solver Relay fallback (D10) |
 | `imt_mint` / `imt_burn` | ❌ **not deployed** (`unknown variant`) | Not used |
 | `ft_withdraw` + `msg` to a contract | ⚠️ **do not use** | Docs: if it fails, funds are **not refunded** |
 

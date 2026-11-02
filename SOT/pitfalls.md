@@ -4,9 +4,11 @@
 
 - **Always check `env::predecessor_account_id() == "intents.near"`** in `mt_on_transfer` and `on_auth`, and whitelist accepted `token_ids`. Never trust a token or sender without checking. Fake-collateral attacks are a known lending exploit class.
 - **In `mt_on_transfer`, the fund owner is `sender_id`** (the user who signed the `transfer`), not `intents.near`.
-- **If an order is invalid, return the refund amount** from `mt_on_transfer`. Don't panic after mutating state.
+- **Invalid input in `mt_on_transfer`:** panic or return the refund amount. A panic reverts our state and `intents.near` refunds the full amount 📄. Never return a "no refund" value after partially failing.
+- **`auth_call` is detached:** the user's intent batch succeeds even if `on_auth` fails. The relayer must read the `on_auth` receipt outcome before telling the user it worked.
 - **Never accept deposits via `ft_withdraw` + `msg`:** no refund on failure.
-- **`mt_transfer` payouts to `intents.near` are async.** Use a callback and re-credit the internal balance on failure.
+- **`mt_transfer` payouts to `intents.near` are async** and need exactly 1 yoctoNEAR attached 📄. Use a callback and re-credit the internal balance on failure.
+- **A `transfer` intent can carry several tokens.** Reject `mt_on_transfer` calls with more than one token.
 - **300 Tgas limit** per transaction: cap fills per `match_orders`.
 - **Storage staking:** every stored order locks NEAR. Cap orders per user, charge a small fee, or release storage when an order closes. The contract needs NEAR capital for storage.
 - **Simple liquidation:** the liquidator pays the debt in USDC and receives collateral plus a bonus. No DEX swap inside the contract.

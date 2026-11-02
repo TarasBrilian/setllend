@@ -42,4 +42,4 @@ Reading another contract on NEAR is async. Follow Rhea's pattern: action → pro
 
 - Actions that need a price: `match_orders`, `liquidate`, withdrawing collateral while a loan is open.
 - **The callback must re-validate state**, because an order can be cancelled between the oracle call and the callback. Alternatively, lock the order with a `pending` status while the promise is in flight.
-- If the oracle returns `null`: new loans and liquidations stop on their own. Repay, cancel, and free-balance withdrawals keep working. No admin pause.
+- If the oracle returns `null`: new loans, liquidations (including post-maturity settlement), and collateral withdrawals with open debt stop on their own. Repay, cancel, redeem, note sales, collateral withdrawal without debt, and free-balance withdrawals keep working. No admin pause.
