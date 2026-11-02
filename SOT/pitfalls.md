@@ -20,6 +20,7 @@
 ## Off-chain
 
 - **Versioned nonce**, salt fetched from `current_salt`. Salt can rotate.
+- **A `sell_note` order can be impossible to fill exactly.** A fill turns the bid's principal into note value at the fill rate (rounded down), then into shares (rounded down), so some share counts are reached by no principal. Example at 8% APR with 21 days left and `V / S = 1`: principal 217 buys 217 shares and 218 buys 219, so 218 is never hit. A fill above the ask's remaining shares is skipped (`ask_oversize`). The matcher sizes each `sell_note` fill as the largest principal whose shares stay within `remaining`, and stops matching an order once no principal fits. The leftover (about 1 unit) stays locked in the order until the owner cancels it, which unlocks and nets it as usual.
 - **Normalize `v`** of EVM wallet signatures to {0, 1}. Wallets differ (27/28 vs 0/1), so test with at least MetaMask and Rabby.
 - **Relayer pays gas:** protect our relayer endpoint from request floods (infrastructure protection, not a user limit: anyone can submit `execute_intents` directly). Use a function-call access key restricted to specific methods.
 - **The signed JSON must be byte-identical** between frontend and backend. Copy shared types, don't retype them. See [repo-structure.md](repo-structure.md).

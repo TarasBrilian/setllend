@@ -1,5 +1,6 @@
 //! `msg` payloads, tagged like the official `escrow-swap` contract:
-//! `{"action": "<snake_case>", "data": {…}}`. `backend/src/shared/` mirrors these exactly.
+//! `{"action": "<snake_case>", "data": {…}}`. The TypeScript types in `backend/src/shared/` must
+//! mirror these exactly.
 
 use near_sdk::json_types::{U64, U128};
 use near_sdk::{AccountId, near};
