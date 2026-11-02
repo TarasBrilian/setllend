@@ -250,7 +250,35 @@ pub fn add_maturity(&mut self, maturity: U64)        // owner only, must be in t
 
 Maturities are never removed. A maturity accepts new orders and fills until it passes, then only `repay`, `liquidate`, `redeem`, `cancel`, and withdrawals.
 
-`Config` (fixed after init, D22): `owner_id`, `intents_contract` (`intents.near`), `oracle_contract` (`aggregate-oracle.near`), `debt_token` + USDC feed ID, `collateral_tokens` (token ID, decimals, feed ID), and every value in [risk-params.md](risk-params.md).
+`Config` (fixed after init, D22). Values in [risk-params.md](risk-params.md), feed IDs in [oracle.md](oracle.md#aggregate-oraclenear):
+
+```rust
+pub struct Config {
+    pub owner_id: AccountId,
+    pub intents_contract: AccountId,          // intents.near
+    pub oracle_contract: AccountId,           // aggregate-oracle.near
+    pub debt_token: String,                   // native NEAR USDC asset ID (D3)
+    pub debt_feed_id: String,                 // USDC/USD
+    pub collateral_tokens: Vec<CollateralToken>,
+    pub max_ltv: u32,                         // bps
+    pub liq_threshold: u32,                   // bps
+    pub liq_bonus: u32,                       // bps
+    pub grace: U64,                           // nanoseconds after maturity
+    pub oracle_max_age: u32,                  // seconds
+    pub oracle_max_conf: u32,                 // max conf / price, bps
+}
+pub struct CollateralToken { pub token_id: String, pub decimals: u8, pub feed_id: String }
+```
+
+Close factor (100%) is fixed in code. Max fills per `match_orders` and `min_gas` for `liquidate` are off-chain settings, not part of `Config`.
+
+`new` rejects a config unless:
+
+- `0 < max_ltv < liq_threshold`
+- `liq_threshold × (1 + liq_bonus) < 100%`, so a liquidation at the threshold can still pay the bonus. This is a strict form of Aave v3's check (`configureReserveAsCollateral` allows equality, and `ltv <= liquidationThreshold`)
+- `collateral_tokens` is not empty, has no duplicate `token_id`, and does not contain `debt_token`. Config is fixed forever (D22) and later lookups go by `token_id`, so a typo would otherwise need a redeploy
+
+These check the owner's parameters at init only. They are not user-facing limits (D24).
 
 ### Views
 

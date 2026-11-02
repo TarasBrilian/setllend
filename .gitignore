@@ -7,3 +7,8 @@ target/
 
 # Private strategy notes, never committed
 SOT/private/
+
+# Backend SQLite mirror (rebuildable from the contract)
+*.db
+*.db-shm
+*.db-wal

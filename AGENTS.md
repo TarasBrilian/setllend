@@ -26,4 +26,4 @@ Instructions for AI coding agents working in this repo.
 | `backend/` | TypeScript, Node, one process | Matcher, relayer, keeper, market-maker agent, 1Click wrapper |
 | `frontend/` | Next.js, `wagmi`, `viem` | UI with EVM wallet login (any EOA wallet) |
 
-Each folder is self-contained (own `Cargo.toml` / `package.json`, no workspaces).
+Each folder is self-contained (own `Cargo.toml` / `package.json`, no workspace spanning folders). `contracts/` is one Cargo workspace (D36).

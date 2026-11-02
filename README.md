@@ -83,7 +83,20 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 
 ## Run locally
 
-*TODO*
+Requirements: [rustup](https://rustup.rs) (it installs the Rust version pinned in `contracts/rust-toolchain.toml`), [`cargo-near`](https://github.com/near/cargo-near) 0.22, and Node 24.
+
+```bash
+cp .env.example .env              # fill in values as needed, all are optional for local runs
+
+# Contract: unit tests, then a deploy and init test in a local NEAR sandbox
+(cd contracts && cargo test)
+
+# Backend: API on http://localhost:8080 (GET /health returns {"ok":true})
+(cd backend && npm install && npm run dev)
+
+# Frontend: http://localhost:3000, connect any injected EVM wallet
+(cd frontend && npm install && npm run dev)
+```
 
 ## License
 

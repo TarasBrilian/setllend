@@ -1,0 +1,28 @@
+[package]
+name = "setllend"
+version = "0.1.0"
+description = "Fixed-rate lending on NEAR Intents: order escrow, notes, matching, liquidation, maturity"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Reproducible build (NEP-330) for the mainnet deploy: `cargo near build reproducible-wasm`.
+# The image matches the toolchain in rust-toolchain.toml. The tag is descriptive, the digest identifies the image.
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.22.0-rust-1.99.1"
+image_digest = "sha256:c9655eaf7436b90c87ea8b25739f91063032c5c30ba24cfeafe72c142943b5bb"
+passed_env = []
+container_build_command = ["cargo", "near", "build", "non-reproducible-wasm", "--locked"]
+
+[lints]
+workspace = true
+
+[dependencies]
+near-sdk = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }

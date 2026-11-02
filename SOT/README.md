@@ -7,7 +7,7 @@ This folder is the single source of truth for building Setllend. The root `READM
 1. **Spec-first.** Change the SOT before changing code. If code and SOT disagree, the SOT is correct and the code is a bug, unless the SOT is updated in the same commit.
 2. **One topic per file.** Update the file that owns the topic. Don't copy facts between files. Link instead.
 3. **Mark how a claim is known.**
-   - ✅ verified on NEAR mainnet (view call, `simulate_intents`, or dry quote), with the date
+   - ✅ verified by us, with the date: on NEAR mainnet (view call, `simulate_intents`, or dry quote) or by running it (a local build, test, or tool check)
    - 📄 taken from official docs or source code, not tested by us
    - ⚠️ unverified or conflicting, check before relying on it
 4. **Dates are absolute** (e.g. 2026-11-02), never "yesterday" or "last week".
