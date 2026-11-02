@@ -1,0 +1,463 @@
+//! `match_orders` and the `lend` × `borrow` fill with injected prices.
+
+use near_sdk::test_utils::get_created_receipts;
+
+use super::*;
+use crate::math::{self, Rounding};
+
+/// Alice holds notes from lending to Bob, and offers some for sale. Returns (shares, ask).
+fn note_seller(c: &mut Setllend, value: u128, rate: u32) -> (u128, u64) {
+    let shares = open_loan(c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    let ask = sell_note(c, "alice.near", value, rate);
+    (shares, ask)
+}
+
+#[test]
+fn sell_note_fill_moves_shares_and_pays_the_seller() {
+    let mut c = setup();
+    let (shares, ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    set_time(NOW + 10 * DAY);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    let pool_before = c.pool(MATURITY).clone();
+
+    match_orders(&mut c, vec![fill(bid, ask, 200 * ONE_USDC)]);
+
+    // The ask is older, so its 9% is the fill rate (D17).
+    let dt = MATURITY - (NOW + 10 * DAY);
+    let face = math::face(200 * ONE_USDC, 900, dt, Rounding::Down);
+    let moved = pool_before.shares_for(face, Rounding::Down);
+    assert_eq!(
+        events("order_filled"),
+        vec![json!({
+            "bid": bid.to_string(), "ask": ask.to_string(), "ask_kind": "sell_note",
+            "maturity": MATURITY.to_string(), "rate_bps": 900,
+            "principal": (200 * ONE_USDC).to_string(), "face": face.to_string(),
+            "bid_remaining": (100 * ONE_USDC).to_string(),
+            "ask_remaining": (500 * ONE_USDC - moved).to_string(),
+        })]
+    );
+    assert!(skipped_reasons().is_empty());
+    let alice = c.note(&account("alice.near"), MATURITY);
+    assert_eq!(alice.locked_shares, 500 * ONE_USDC - moved);
+    assert_eq!(alice.free_shares, shares - 500 * ONE_USDC);
+    assert_eq!(c.note(&account("carol.near"), MATURITY).free_shares, moved);
+    // A note sale moves shares only.
+    assert_eq!(c.pool(MATURITY), &pool_before);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn fully_filled_orders_are_deleted() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    // The older bid sets a 0% rate and V = S: 1 USDC buys 1 share, an exact fill.
+    let bid = lend(&mut c, "carol.near", 500 * ONE_USDC, 0);
+    let ask = sell_note(&mut c, "alice.near", 500 * ONE_USDC, 900);
+    match_orders(&mut c, vec![fill(bid, ask, 500 * ONE_USDC)]);
+    assert_eq!(events("order_filled")[0]["rate_bps"], 0);
+    assert!(c.get_order(U64(bid)).is_none());
+    assert!(c.get_order(U64(ask)).is_none());
+    assert!(c.get_orders_by_account(account("carol.near")).is_empty());
+    assert_eq!(c.note(&account("alice.near"), MATURITY).locked_shares, 0);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn fill_rate_is_the_older_orders_rate() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    // The bid is older this time: its 8% is the fill rate.
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    let ask = sell_note(&mut c, "alice.near", 500 * ONE_USDC, 900);
+    match_orders(&mut c, vec![fill(bid, ask, 100 * ONE_USDC)]);
+    assert_eq!(events("order_filled")[0]["rate_bps"], 800);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+/// Every skip reason, each in its own batch so the state is otherwise valid.
+#[test]
+fn invalid_fills_are_skipped_without_state_change() {
+    let mut c = setup();
+    let (_, ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    let own_bid = lend(&mut c, "alice.near", 300 * ONE_USDC, 800);
+    let high_bid = lend(&mut c, "dave.near", 300 * ONE_USDC, 1_000);
+    let expiring = json!({"action": "lend", "data": {
+        "maturity": MATURITY.to_string(), "min_rate_bps": 800,
+        "expires_at": (NOW + DAY).to_string()
+    }});
+    transfer(&mut c, "dave.near", USDC, ONE_USDC, expiring);
+    let expiring_bid = last_order_id(&c);
+    let later = MATURITY + 7 * DAY;
+    context(OWNER);
+    c.add_maturity(U64(later));
+    let other_maturity = json!({"action": "lend", "data": {
+        "maturity": later.to_string(), "min_rate_bps": 800, "expires_at": null
+    }});
+    transfer(&mut c, "dave.near", USDC, ONE_USDC, other_maturity);
+    let other_bid = last_order_id(&c);
+
+    // 600 USDC at the ask's 9% buys more shares than the 500 for sale.
+    let big_bid = lend(&mut c, "carol.near", 600 * ONE_USDC, 800);
+    let cases = [
+        (fill(99, ask, ONE_USDC), "bid_not_found"),
+        (fill(bid, 99, ONE_USDC), "ask_not_found"),
+        (fill(ask, ask, ONE_USDC), "bid_not_lend"),
+        (fill(bid, own_bid, ONE_USDC), "ask_is_lend"),
+        (fill(other_bid, ask, ONE_USDC), "maturity_mismatch"),
+        (fill(own_bid, ask, ONE_USDC), "self_trade"),
+        (fill(high_bid, ask, ONE_USDC), "not_crossed"),
+        (fill(bid, ask, 0), "zero_principal"),
+        (fill(bid, ask, 300 * ONE_USDC + 1), "bid_oversize"),
+        (fill(big_bid, ask, 600 * ONE_USDC), "ask_oversize"),
+    ];
+
+    let pool_before = c.pool(MATURITY).clone();
+    let snapshot = |c: &Setllend| {
+        ACCOUNTS
+            .iter()
+            .map(|a| {
+                (
+                    c.note(&account(a), MATURITY),
+                    c.get_positions_by_account(account(a)),
+                    c.get_free_balances(account(a)),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&c);
+    for (fill, reason) in cases {
+        let order_before = (c.get_order(fill.bid), c.get_order(fill.ask));
+        match_orders(&mut c, vec![fill.clone()]);
+        assert_eq!(skipped_reasons(), vec![reason], "fill {fill:?}");
+        assert_eq!(
+            events("fill_skipped")[0],
+            json!({"bid": fill.bid.0.to_string(), "ask": fill.ask.0.to_string(), "reason": reason})
+        );
+        assert!(events("order_filled").is_empty());
+        // No payout either.
+        assert!(get_created_receipts().is_empty());
+        assert_eq!((c.get_order(fill.bid), c.get_order(fill.ask)), order_before);
+    }
+
+    set_time(NOW + DAY);
+    match_orders(&mut c, vec![fill(expiring_bid, ask, ONE_USDC)]);
+    assert_eq!(skipped_reasons(), vec!["bid_expired"]);
+
+    set_time(MATURITY);
+    match_orders(&mut c, vec![fill(bid, ask, ONE_USDC)]);
+    assert_eq!(skipped_reasons(), vec!["matured"]);
+
+    assert_eq!(c.pool(MATURITY), &pool_before);
+    assert_eq!(snapshot(&c), before);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn expired_ask_is_skipped() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    auth(
+        &mut c,
+        "alice.near",
+        json!({"action": "sell_note", "data": {
+            "maturity": MATURITY.to_string(), "value": ONE_USDC.to_string(),
+            "max_rate_bps": 900, "expires_at": (NOW + DAY).to_string()
+        }}),
+    );
+    let ask = last_order_id(&c);
+    let bid = lend(&mut c, "carol.near", ONE_USDC, 800);
+    set_time(NOW + DAY);
+    match_orders(&mut c, vec![fill(bid, ask, ONE_USDC)]);
+    assert_eq!(skipped_reasons(), vec!["ask_expired"]);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn skipped_fill_does_not_stop_the_batch() {
+    let mut c = setup();
+    let (_, ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    match_orders(
+        &mut c,
+        vec![
+            fill(bid, ask, 100 * ONE_USDC),
+            fill(bid, 99, ONE_USDC),
+            fill(bid, ask, 100 * ONE_USDC),
+        ],
+    );
+    assert_eq!(skipped_reasons(), vec!["ask_not_found"]);
+    assert_eq!(events("order_filled").len(), 2);
+    assert_eq!(
+        c.get_order(U64(bid)).unwrap().remaining,
+        U128(100 * ONE_USDC)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn wiped_out_maturity_rejects_fills() {
+    let mut c = setup();
+    let (_, ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    c.pool_mut(MATURITY).total_value = 0;
+    match_orders(&mut c, vec![fill(bid, ask, ONE_USDC)]);
+    assert_eq!(skipped_reasons(), vec!["notes_wiped_out"]);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn fill_moving_zero_shares_is_skipped() {
+    let mut c = setup();
+    let (_, ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 0);
+    // V / S above 1 (e.g. after rounding surplus): 1 unit of value buys less than a share.
+    let pool = c.pool_mut(MATURITY);
+    pool.total_value = pool.total_shares * 2;
+    match_orders(&mut c, vec![fill(bid, ask, 1)]);
+    assert_eq!(skipped_reasons(), vec!["zero_shares"]);
+    // No invariant check: the V set above is not backed by debt.
+}
+
+#[test]
+#[should_panic(expected = "Not implemented: borrow fills need the oracle")]
+fn batch_with_a_borrow_ask_is_not_implemented_yet() {
+    let mut c = setup();
+    let (_, sell_ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
+    let borrow_ask = borrow(&mut c, "dave.near", ONE_ETH, 100 * ONE_USDC, 900);
+    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
+    match_orders(
+        &mut c,
+        vec![
+            fill(bid, sell_ask, ONE_USDC),
+            fill(bid, borrow_ask, ONE_USDC),
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "No fills")]
+fn empty_batch_panics() {
+    let mut c = setup();
+    match_orders(&mut c, vec![]);
+}
+
+#[test]
+fn borrow_fill_mints_notes_and_debt() {
+    let mut c = setup();
+    let ask = borrow(&mut c, "bob.near", ONE_ETH, 1_000 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "alice.near", 1_000 * ONE_USDC, 700);
+    borrow_fill(&mut c, bid, ask, 1_000 * ONE_USDC).unwrap();
+
+    // The ask is older: 10%.
+    let note_face = math::face(1_000 * ONE_USDC, 1_000, MATURITY - NOW, Rounding::Down);
+    let debt_face = math::face(1_000 * ONE_USDC, 1_000, MATURITY - NOW, Rounding::Up);
+    assert_eq!(debt_face, note_face + 1);
+    let filled = &events("order_filled")[0];
+    assert_eq!(filled["ask_kind"], "borrow");
+    assert_eq!(filled["face"], note_face.to_string());
+    assert_eq!(filled["ask_remaining"], "0");
+    let pool = c.pool(MATURITY);
+    assert_eq!(
+        (pool.total_value, pool.total_shares),
+        (note_face, note_face)
+    );
+    assert_eq!(
+        c.note(&account("alice.near"), MATURITY).free_shares,
+        note_face
+    );
+    assert_eq!(
+        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into()),
+        Some(crate::PositionView {
+            collateral: U128(ONE_ETH),
+            debt_face: U128(debt_face)
+        })
+    );
+    assert!(c.get_order(U64(ask)).is_none());
+    assert!(c.get_order(U64(bid)).is_none());
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn partial_borrow_fills_move_collateral_pro_rata_without_dust() {
+    let mut c = setup();
+    // 1 ETH + 1 wei for 3 USDC so the pro-rata shares don't divide evenly.
+    let collateral = ONE_ETH + 1;
+    let ask = borrow(&mut c, "bob.near", collateral, 3 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "alice.near", 3 * ONE_USDC, 700);
+    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+
+    borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
+    let first = collateral / 3;
+    assert_eq!(c.positions[&key].collateral, first);
+    let order = c.get_order(U64(ask)).unwrap();
+    assert_eq!(order.collateral_remaining, Some(U128(collateral - first)));
+    assert_eq!(order.remaining, U128(2 * ONE_USDC));
+
+    borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
+    let second = (collateral - first) / 2;
+    assert_eq!(c.positions[&key].collateral, first + second);
+
+    // The final fill moves everything left.
+    borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
+    assert_eq!(c.positions[&key].collateral, collateral);
+    assert!(c.get_order(U64(ask)).is_none());
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn borrow_fill_rejects_undercollateralized_position() {
+    let mut c = setup();
+    // 1 ETH at $2,000 and 70% LTV carries at most $1,400 of debt face.
+    let ask = borrow(&mut c, "bob.near", ONE_ETH, 1_400 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "alice.near", 1_400 * ONE_USDC, 700);
+    let pool_before = c.pool(MATURITY).clone();
+    assert_eq!(
+        borrow_fill(&mut c, bid, ask, 1_400 * ONE_USDC),
+        Err("cannot_open")
+    );
+    assert_eq!(c.pool(MATURITY), &pool_before);
+    assert!(
+        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
+            .is_none()
+    );
+    assert_eq!(
+        c.get_order(U64(ask)).unwrap().remaining,
+        U128(1_400 * ONE_USDC)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn borrow_fill_checks_the_whole_position() {
+    let mut c = setup();
+    // 0.1 ETH ($200) can't carry 1,000 USDC on its own (max $140 at 70% LTV)...
+    let ask = borrow(&mut c, "bob.near", ONE_ETH / 10, 1_000 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "alice.near", 1_100 * ONE_USDC, 700);
+    assert_eq!(
+        borrow_fill(&mut c, bid, ask, 1_000 * ONE_USDC),
+        Err("cannot_open")
+    );
+    // ...but it can once the same position already holds 1 ETH with 100 USDC of debt:
+    // 1.1 ETH × $2,000 × 70% = $1,540 against about $1,109 of face.
+    let first = borrow(&mut c, "bob.near", ONE_ETH, 100 * ONE_USDC, 1_000);
+    borrow_fill(&mut c, bid, first, 100 * ONE_USDC).unwrap();
+    assert_eq!(borrow_fill(&mut c, bid, ask, 1_000 * ONE_USDC), Ok(()));
+    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+    assert_eq!(c.positions[&key].collateral, ONE_ETH + ONE_ETH / 10);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn borrow_fill_rejects_oversize_ask() {
+    let mut c = setup();
+    let ask = borrow(&mut c, "bob.near", ONE_ETH, 100 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "alice.near", 200 * ONE_USDC, 700);
+    assert_eq!(
+        borrow_fill(&mut c, bid, ask, 100 * ONE_USDC + 1),
+        Err("ask_oversize")
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn netting_reduces_debt_and_value_together() {
+    let mut c = setup();
+    // Bob borrows from Alice, then buys notes back in the same maturity (early exit, D20).
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+    let debt_before = c.positions[&key].debt_face;
+    let ask = sell_note(&mut c, "alice.near", 400 * ONE_USDC, 900);
+    let bid = lend(&mut c, "bob.near", 300 * ONE_USDC, 800);
+    let pool_before = c.pool(MATURITY).clone();
+
+    match_orders(&mut c, vec![fill(bid, ask, 300 * ONE_USDC)]);
+
+    let bought = events("order_filled")[0]["face"]
+        .as_str()
+        .unwrap()
+        .parse::<u128>()
+        .unwrap();
+    let netted = &events("netted")[0];
+    assert_eq!(netted["account"], "bob.near");
+    let value: u128 = netted["value"].as_str().unwrap().parse().unwrap();
+    // V = S, so the value of the shares bought is their face.
+    assert_eq!(value, bought);
+    let pool = c.pool(MATURITY);
+    assert_eq!(pool.total_value, pool_before.total_value - value);
+    assert_eq!(pool.redemption_pool, pool_before.redemption_pool);
+    assert_eq!(c.positions[&key].debt_face, debt_before - value);
+    assert!(c.get_notes(account("bob.near")).is_empty());
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn netting_stops_at_the_debt_and_goes_in_token_id_order() {
+    let mut c = setup();
+    // Bob has two small positions: base (listed first in config) and arb (lower token ID).
+    let base_ask = borrow_with(&mut c, "bob.near", ETH_BASE, ONE_ETH, 10 * ONE_USDC, 1_000);
+    let base_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
+    borrow_fill(&mut c, base_bid, base_ask, 10 * ONE_USDC).unwrap();
+    let arb_ask = borrow(&mut c, "bob.near", ONE_ETH, 10 * ONE_USDC, 1_000);
+    let arb_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
+    borrow_fill(&mut c, arb_bid, arb_ask, 10 * ONE_USDC).unwrap();
+    let arb = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+    let base = (account("bob.near"), MATURITY, ETH_BASE.to_string());
+    let arb_debt = c.positions[&arb].debt_face;
+    let base_debt = c.positions[&base].debt_face;
+
+    // Alice lends to Carol, then sells Bob more notes than his total debt.
+    open_loan(&mut c, "alice.near", "carol.near", 1_000 * ONE_USDC);
+    let ask = sell_note(&mut c, "alice.near", 100 * ONE_USDC, 0);
+    let bid = lend(&mut c, "bob.near", 100 * ONE_USDC, 0);
+    match_orders(&mut c, vec![fill(bid, ask, 15 * ONE_USDC)]);
+
+    let netted = &events("netted")[0];
+    let value: u128 = netted["value"].as_str().unwrap().parse().unwrap();
+    assert_eq!(value, 15 * ONE_USDC);
+    // The arb position goes first and is cleared; base takes the rest.
+    assert_eq!(c.positions[&arb].debt_face, 0);
+    assert_eq!(c.positions[&base].debt_face, base_debt - (value - arb_debt));
+    // Collateral stays, so the cleared position is kept.
+    assert_eq!(c.positions[&arb].collateral, ONE_ETH);
+
+    // Buying more than the debt leaves the rest as free notes.
+    match_orders(&mut c, vec![fill(bid, ask, 20 * ONE_USDC)]);
+    let value: u128 = events("netted")[0]["value"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(value, arb_debt + base_debt - 15 * ONE_USDC);
+    assert_eq!(c.positions[&base].debt_face, 0);
+    assert_eq!(
+        c.note(&account("bob.near"), MATURITY).free_shares,
+        35 * ONE_USDC - (arb_debt + base_debt)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn netting_also_runs_for_the_ask_owner() {
+    let mut c = setup();
+    // Bob holds free notes from lending to Carol. When his own borrow ask fills, the new
+    // debt nets against them right away.
+    let shares = open_loan(&mut c, "bob.near", "carol.near", 1_000 * ONE_USDC);
+    let ask = borrow(&mut c, "bob.near", ONE_ETH, 400 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "dave.near", 400 * ONE_USDC, 700);
+    borrow_fill(&mut c, bid, ask, 400 * ONE_USDC).unwrap();
+    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+    let netted = &events("netted")[0];
+    assert_eq!(netted["account"], "bob.near");
+    let value: u128 = netted["value"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        value,
+        math::face(400 * ONE_USDC, 1_000, MATURITY - NOW, Rounding::Up)
+    );
+    assert_eq!(c.positions[&key].debt_face, 0);
+    assert_eq!(
+        c.note(&account("bob.near"), MATURITY).free_shares,
+        shares - value
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}

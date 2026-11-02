@@ -88,7 +88,7 @@ Requirements: [rustup](https://rustup.rs) (it installs the Rust version pinned i
 ```bash
 cp .env.example .env              # fill in values as needed, all are optional for local runs
 
-# Contract: unit tests, then a deploy and init test in a local NEAR sandbox
+# Contract: unit tests, then sandbox tests (deploy, and order flows through a mock intents.near)
 (cd contracts && cargo test)
 
 # Backend: API on http://localhost:8080 (GET /health returns {"ok":true})

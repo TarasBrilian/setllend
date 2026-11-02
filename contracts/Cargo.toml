@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["setllend", "tests"]
+members = ["setllend", "mocks/intents", "tests"]
 
 [workspace.package]
 edition = "2024"

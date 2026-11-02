@@ -11,6 +11,8 @@
 - **A `transfer` intent can carry several tokens.** Reject `mt_on_transfer` calls with more than one token.
 - **300 Tgas limit** per transaction: cap fills per `match_orders`.
 - **Storage staking:** every stored order locks NEAR, paid by the contract. Release storage when an order, position, or note entry closes. Watch the contract's NEAR balance and top it up. Users are not limited (D24), so dust-order griefing is an accepted hackathon risk.
+- **Keep NEAR above storage, or a failed payout loses its record (D38).** `on_payout` writes a new free-balance entry when a payout fails. If the contract can't pay for that storage, the callback fails, and the order, balance, or pool was already reduced in the earlier receipt: the tokens stay in Setllend's Intents balance with no record of whose they are (recoverable only by reading the logs and upgrading, D23). The keeper alerts when the contract's free NEAR (balance minus `storage_usage` × byte cost) runs low, and we top it up first.
+- **Deploy and init in one transaction.** `new` is `#[private]`, so only the contract account can call it, but deploying with a separate init still leaves an uninitialized contract on chain. Use `cargo near deploy` with the init call.
 - **Note share math rounds against the acting account** (mint and move round down, burn rounds up), so other holders are never diluted. See [contract-interface.md](contract-interface.md#note-accounting).
 - **Simple liquidation:** the liquidator pays the debt in USDC and receives collateral plus a bonus. No DEX swap inside the contract.
 - **Oracle callbacks re-validate state.** See [oracle.md](oracle.md#integration-pattern-in-the-contract).
@@ -18,6 +20,7 @@
 ## Off-chain
 
 - **Versioned nonce**, salt fetched from `current_salt`. Salt can rotate.
+- **A `sell_note` order can be impossible to fill exactly.** A fill turns the bid's principal into note value at the fill rate (rounded down), then into shares (rounded down), so some share counts are reached by no principal. Example at 8% APR with 21 days left and `V / S = 1`: principal 217 buys 217 shares and 218 buys 219, so 218 is never hit. A fill above the ask's remaining shares is skipped (`ask_oversize`). The matcher sizes each `sell_note` fill as the largest principal whose shares stay within `remaining`, and stops matching an order once no principal fits. The leftover (about 1 unit) stays locked in the order until the owner cancels it, which unlocks and nets it as usual.
 - **Normalize `v`** of EVM wallet signatures to {0, 1}. Wallets differ (27/28 vs 0/1), so test with at least MetaMask and Rabby.
 - **Relayer pays gas:** protect our relayer endpoint from request floods (infrastructure protection, not a user limit: anyone can submit `execute_intents` directly). Use a function-call access key restricted to specific methods.
 - **The signed JSON must be byte-identical** between frontend and backend. Copy shared types, don't retype them. See [repo-structure.md](repo-structure.md).
