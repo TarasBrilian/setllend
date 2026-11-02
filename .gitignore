@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+node_modules/
+target/
+.next/
+
+# Private strategy notes, never committed
+SOT/private/
