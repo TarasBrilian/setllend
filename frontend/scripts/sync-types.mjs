@@ -6,6 +6,12 @@ import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from 
 const src = new URL("../../backend/src/shared/", import.meta.url);
 const dst = new URL("../src/shared/", import.meta.url);
 
+// Fail before touching the committed copy, e.g. in a frontend-only checkout.
+if (!existsSync(src)) {
+  console.error("backend/src/shared not found. Run from a full checkout.");
+  process.exit(1);
+}
+
 const list = (dir) =>
   existsSync(dir)
     ? readdirSync(dir, { recursive: true })

@@ -62,6 +62,20 @@ impl Setllend {
             "Require liq_threshold * (1 + liq_bonus) < 100%"
         );
         require!(!config.collateral_tokens.is_empty(), "No collateral tokens");
+        // Config is fixed forever (D22) and later lookups go by token_id, so reject typos here.
+        let tokens = &config.collateral_tokens;
+        for (i, token) in tokens.iter().enumerate() {
+            require!(
+                token.token_id != config.debt_token,
+                "Debt token cannot be collateral"
+            );
+            require!(
+                tokens[..i]
+                    .iter()
+                    .all(|prev| prev.token_id != token.token_id),
+                "Duplicate collateral token"
+            );
+        }
         Self { config }
     }
 
@@ -127,5 +141,23 @@ mod tests {
             collateral_tokens: vec![],
             ..config()
         });
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate collateral token")]
+    fn new_rejects_duplicate_collateral() {
+        let mut config = config();
+        config
+            .collateral_tokens
+            .push(config.collateral_tokens[0].clone());
+        Setllend::new(config);
+    }
+
+    #[test]
+    #[should_panic(expected = "Debt token cannot be collateral")]
+    fn new_rejects_debt_token_as_collateral() {
+        let mut config = config();
+        config.collateral_tokens[0].token_id = config.debt_token.clone();
+        Setllend::new(config);
     }
 }

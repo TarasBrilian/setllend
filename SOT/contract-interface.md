@@ -272,7 +272,13 @@ pub struct CollateralToken { pub token_id: String, pub decimals: u8, pub feed_id
 
 Close factor (100%) is fixed in code. Max fills per `match_orders` and `min_gas` for `liquidate` are off-chain settings, not part of `Config`.
 
-`new` rejects a config unless `0 < max_ltv < liq_threshold`, `liq_threshold × (1 + liq_bonus) < 100%` (so a liquidation at the threshold can still pay the bonus, the same check Aave applies), and `collateral_tokens` is not empty. These check the owner's parameters at init only. They are not user-facing limits (D24).
+`new` rejects a config unless:
+
+- `0 < max_ltv < liq_threshold`
+- `liq_threshold × (1 + liq_bonus) < 100%`, so a liquidation at the threshold can still pay the bonus. This is a strict form of Aave v3's check (`configureReserveAsCollateral` allows equality, and `ltv <= liquidationThreshold`)
+- `collateral_tokens` is not empty, has no duplicate `token_id`, and does not contain `debt_token`. Config is fixed forever (D22) and later lookups go by `token_id`, so a typo would otherwise need a redeploy
+
+These check the owner's parameters at init only. They are not user-facing limits (D24).
 
 ### Views
 
