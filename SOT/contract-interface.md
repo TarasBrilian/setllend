@@ -1,6 +1,6 @@
 # Contract interface
 
-> **Status: APPROVED v0.2 (2026-11-02).** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
+> **Status: APPROVED v0.3 (2026-11-02).** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. v0.3 adds clarifications found while implementing phase 1 of the contract (D37): the `collateral` field of `order_placed`, skip reasons, burn and dust rules, and view shapes; then from its verification pass (D38): netting on `sell_note` cancel, index paging for `get_orders`, and a private `new`. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
 
 ## Design decisions this interface implements
 
@@ -19,6 +19,8 @@ From [decisions.md](decisions.md). The original proposal numbers P1 to P8 map to
 | D23 | The full-access key is kept during the hackathon and disclosed |
 | D25 | The contract account is `setllend.near` |
 | D26 | **Bad debt is handled in the MVP:** realized during liquidation and shared pro rata by all note holders of that maturity, through share-based note accounting |
+| D37 | **v0.3 clarifications from phase 1:** sync-path skips, `order_placed.collateral`, burn and dust rules, view shapes, skip reasons |
+| D38 | **v0.3 verification pass:** netting also on `sell_note` cancel, `get_orders` paged by index, `new` is private |
 
 ## Verified facts this design relies on
 
@@ -83,6 +85,9 @@ Per maturity:
 | Bad debt `B` realized | `V = max(V − B, 0)`, S unchanged | – |
 
 - Rounding always goes against the account acting, so remaining holders are never diluted.
+- **Burning the whole balance:** when netting or `redeem` burns value equal to the full value of the account's free shares, all its free shares are burned, not `shares_for(value)`. This leaves no dust entry and still rounds against the account.
+- **Last shares gone:** when `S` reaches 0, `V` is set to 0. Any value left from rounding has no holder, and the USDC behind it stays in the redemption pool.
+- **Zero-share fills are rejected** (`zero_shares`): a fill whose note value converts to 0 shares would take the bid's USDC for nothing.
 - Without bad debt, `V / S` stays at about 1 and shares equal face. After bad debt, every holder's notes are worth less by the same fraction.
 - If `V = 0` while `S > 0` (the whole maturity wiped out), new fills in that maturity are rejected, because new notes can't be priced.
 - Invariant: `redemption_pool + Σ debt_face ≥ V`. Rounding surplus stays in the pool.
@@ -167,7 +172,7 @@ Token: an accepted collateral token. Amount: collateral to escrow.
 {"action": "borrow", "data": {"maturity": "1795766400000000000", "max_rate_bps": 800, "principal": "1000000000", "expires_at": null}}
 ```
 
-Effect: creates an ask. No oracle check at placement (checked at fill). Partial fills move collateral pro rata (`collateral × filled_principal / principal`, rounded down) into the position. The fill that completes the order moves all remaining collateral, so no dust stays behind. Event `order_placed`.
+Effect: creates an ask. No oracle check at placement (checked at fill). Partial fills move collateral pro rata into the position, computed from what is left of the order (`collateral_remaining × filled_principal / remaining_principal`, rounded down). The fill that completes the order moves all remaining collateral, so no dust stays behind. Event `order_placed`.
 
 ### `repay`
 
@@ -203,14 +208,14 @@ Events `liquidated`, and `bad_debt_realized` when it applies.
 
 ## `auth_call` actions (→ `on_auth`)
 
-Caller must be `intents.near`. Owner = `signer_id`. Because `auth_call` is detached, failures don't revert the user's intent. The relayer reports the `on_auth` outcome to the frontend.
+Caller must be `intents.near`. Owner = `signer_id`. Because `auth_call` is detached, failures don't revert the user's intent. The relayer reports the `on_auth` outcome to the frontend. For actions that pay out (`cancel`, `withdraw`, `withdraw_collateral`, `redeem`), a successful outcome only means the payout was attempted: if `mt_transfer` fails, `on_payout` still succeeds and credits the free balance, so the relayer must also look for a `payout_failed` event in the receipts.
 
 | Action | `data` | Oracle | Effect |
 |---|---|---|---|
-| `cancel` | `{"order_id": "42"}` | No | Signer must own the order. Removes it, returns remaining escrow via `mt_transfer` (or unlocks notes for `sell_note`). Event `order_cancelled` |
-| `sell_note` | `{"maturity": "…", "value": "1050000000", "max_rate_bps": 650, "expires_at": null}` | No | Same placement rules as `lend`/`borrow` (maturity in the future, `value` greater than zero and within the value of the signer's free shares). Locks `shares_for(value)` (round up) and creates an ask. Event `order_placed` |
+| `cancel` | `{"order_id": "42"}` | No | Signer must own the order. Removes it, returns remaining escrow via `mt_transfer` (or unlocks notes for `sell_note`, then nets them against the signer's debt in that maturity, D20). Allowed at any time, also after expiry or maturity. Event `order_cancelled`, then `netted` if it applies |
+| `sell_note` | `{"maturity": "…", "value": "1050000000", "max_rate_bps": 650, "expires_at": null}` | No | Same placement rules as `lend`/`borrow` (maturity in the future, `value` greater than zero and within the value of the signer's free shares). Locks `shares_for(value)` (round up) and creates an ask. Event `order_placed` (its `size` is the locked shares) |
 | `withdraw_collateral` | `{"maturity": "…", "collateral_token": "…", "amount": "…"}` | **Yes**, if debt remains | No debt: pays immediately. With debt: oracle call → callback re-reads the position, allows it only if `can_open` still holds after withdrawal and `block_timestamp < maturity + grace`. Pays via `mt_transfer`. Event `collateral_withdrawn` |
-| `redeem` | `{"maturity": "…", "value": null}` | No | After maturity. Pays note value from the redemption pool, up to what the pool holds (`null` = all free shares), and burns the matching shares. Unpaid value stays as shares until repayments or liquidations refill the pool. Event `redeemed` |
+| `redeem` | `{"maturity": "…", "value": null}` | No | After maturity. Pays note value from the redemption pool, up to what the pool holds (`null` = all free shares), and burns the matching shares. Unpaid value stays as shares until repayments or liquidations refill the pool. Nothing to pay (no free notes, or an empty pool) panics. Event `redeemed` |
 | `withdraw` | `{"token_id": "…", "amount": null}` | No | Withdraws the internal free balance (failed payouts, D21). `null` = all. Event `withdrawn` |
 
 Example `msg`: `{"action": "cancel", "data": {"order_id": "42"}}`.
@@ -226,12 +231,32 @@ pub struct Fill { pub bid: U64, pub ask: U64, pub principal: U128 }
 
 - Permissionless. Max fills per call: [risk-params.md](risk-params.md).
 - If any fill touches a `borrow` ask: one oracle call for the whole batch → private callback `on_match_prices(fills, …)`. If all asks are `sell_note`: executes synchronously, no oracle.
-- **The callback re-validates every fill**, because orders can be cancelled or filled while the oracle call is in flight. Invalid fills are skipped with event `fill_skipped` (reason), the rest execute.
-- Per fill: both orders exist, same maturity, bid is `lend`, owners differ (no self-trade), neither expired, orders crossed, `dt > 0`, fill rate per D17, `principal` within the bid's remaining principal and within the ask's remaining size (principal for `borrow`, converted shares for `sell_note`), the maturity's `V > 0` or `S = 0`,, and for `borrow` asks the position passes `can_open` after the fill.
+- **Every fill is validated when it executes**, in the synchronous path and in the callback (orders can be cancelled or filled while the oracle call is in flight). Invalid fills are skipped with event `fill_skipped` (reason), the rest execute. An empty `fills` list panics.
+- Per fill: both orders exist, same maturity, bid is `lend`, owners differ (no self-trade), neither expired, orders crossed, `dt > 0`, fill rate per D17, `principal` within the bid's remaining principal and within the ask's remaining size (principal for `borrow`, converted shares for `sell_note`), the maturity's `V > 0` or `S = 0`, and for `borrow` asks the position passes `can_open` after the fill.
 - **`lend` × `borrow`:** bid's USDC goes to the borrower via `mt_transfer`. Bid owner gets new note shares for value `face` (rounded down), borrower gets debt face (rounded up) and pro-rata collateral moved into the position.
 - **`lend` × `sell_note`:** bid's USDC goes to the seller via `mt_transfer`. `shares_for(face)` (rounded down) move from the seller's locked shares to the bid owner's free shares.
-- After each fill, apply netting (D20) to both accounts: the value of free shares and debt in the same maturity cancel out (`n = min(value(free_shares), total debt)`), reducing the account's positions in that maturity in token-ID order. `n` leaves both the debt and `V`, so the redemption pool is unaffected. Event `netted`.
-- Events `order_filled` per fill.
+- After each fill, apply netting (D20) to both accounts (and after a `sell_note` cancel, to its owner, since unlocking is the only other way free shares grow; without it, notes and debt could stay apart past maturity, when no fill can net them): the value of free shares and debt in the same maturity cancel out (`n = min(value(free_shares), total debt)`), reducing the account's positions in that maturity in token-ID order. `n` leaves both the debt and `V`, so the redemption pool is unaffected. Event `netted`.
+- Events `order_filled` per fill. Its `face` is `face(principal, rate)` rounded down: the note value bought, before conversion to shares. The bid gets `shares_for(face)` rounded down, so while `V / S ≠ 1` (e.g. after bad debt) the value of the shares can be up to 1 unit below `face`; `get_notes` has the exact value. For a `borrow` ask, the debt face is `face` or 1 unit more (see [Math](#math)).
+- `fill_skipped` reasons, in the order they are checked:
+
+  | Reason | Meaning |
+  |---|---|
+  | `bid_not_found` / `ask_not_found` | Order doesn't exist (filled, cancelled, or never placed) |
+  | `bid_not_lend` | The bid isn't a `lend` order |
+  | `ask_is_lend` | The ask is a `lend` order |
+  | `maturity_mismatch` | Different maturities |
+  | `self_trade` | Same owner |
+  | `bid_expired` / `ask_expired` | `block_timestamp ≥ expires_at` |
+  | `not_crossed` | `bid.min_rate_bps > ask.max_rate_bps` |
+  | `matured` | `dt ≤ 0` |
+  | `zero_principal` | `principal = 0` |
+  | `bid_oversize` | `principal` above the bid's remaining principal |
+  | `notes_wiped_out` | `V = 0` while `S > 0` |
+  | `ask_oversize` | Above the ask's remaining principal (`borrow`) or shares (`sell_note`) |
+  | `zero_shares` | The fill's note value converts to 0 shares |
+  | `cannot_open` | `borrow` ask only: the position fails `can_open` after the fill |
+
+- **Gas** ✅ measured in sandbox 2026-11-02 against the mock `intents.near` (`contracts/tests/tests/flows.rs`): `match_orders` with 1 / 10 `sell_note` fills burns 3.6 / 13.2 Tgas in the call itself and 7.6 / 47.3 Tgas including the payout receipts. About 1.1 Tgas per fill in the call (1.2 Tgas when the buyer also nets) and 4.4 Tgas per fill in total. Each payout reserves 15 Tgas of static gas (10 Tgas for `mt_transfer`, 5 Tgas for `on_payout`), so prepaid gas, not burnt gas, sets the batch limit: 10 fills need about 165 Tgas attached. `mt_transfer` on the real `intents.near` costs more than on the mock ⚠️, so re-measure on mainnet before raising the fill count.
 
 ### Payout callback
 
@@ -244,8 +269,8 @@ On `mt_transfer` failure, credit `free_balance[account_id][token_id]` and emit `
 ### Admin
 
 ```rust
-#[init] pub fn new(config: Config) -> Self
-pub fn add_maturity(&mut self, maturity: U64)        // owner only, must be in the future
+#[init] #[private] pub fn new(config: Config) -> Self   // only the contract account can init
+pub fn add_maturity(&mut self, maturity: U64)        // owner only, must be in the future and not listed yet
 ```
 
 Maturities are never removed. A maturity accepts new orders and fills until it passes, then only `repay`, `liquidate`, `redeem`, `cancel`, and withdrawals.
@@ -289,13 +314,14 @@ No cross-contract calls in views, so health is computed off-chain with the same 
 | `get_config()` | `Config` |
 | `get_maturities()` | All maturities, past and future (clients compare with the current time) |
 | `get_order(order_id)` | `Order` or `null` |
-| `get_orders(maturity, from_id, limit)` | Open orders of one book, by `order_id` |
-| `get_orders_by_account(account_id)` | Open orders of one account |
+| `get_orders(maturity, from_index, limit)` | `limit` open orders of one book, starting at position `from_index` (`u32`) of the book's index. Reads only that page, so books of any size load (D24). Results are in index order, not `order_id` order (removing an order moves the last one into its slot), so sort client-side and page at one block height for a consistent snapshot. `from_index` (default 0) and `limit` (default: the rest) are optional |
+| `get_order_count(maturity)` | Number of open orders in one book (`u32`), for paging `get_orders` |
+| `get_orders_by_account(account_id)` | Open orders of one account, ascending by `order_id` |
 | `get_position(account_id, maturity, collateral_token)` | `{collateral, debt_face}` or `null` |
-| `get_positions_by_account(account_id)` | All positions of one account |
+| `get_positions_by_account(account_id)` | All positions of one account: `[{maturity, collateral_token, collateral, debt_face}]`, by maturity then token ID |
 | `get_notes(account_id)` | `{maturity: {free_shares, locked_shares, free_value, locked_value}}` |
 | `get_free_balances(account_id)` | `{token_id: amount}` |
-| `get_pool(maturity)` | `{redemption_pool, total_value (V), total_shares (S), bad_debt_total}` |
+| `get_pool(maturity)` | `{redemption_pool, total_value (V), total_shares (S), bad_debt_total}`, or `null` for an unknown maturity |
 
 ## Events
 
@@ -304,9 +330,9 @@ NEP-297 log lines: `EVENT_JSON:{"standard": "setllend", "version": "0.1.0", "eve
 | Event | Data |
 |---|---|
 | `maturity_added` | `maturity` |
-| `order_placed` | `order_id`, `owner`, `kind`, `maturity`, `rate_bps`, `size`, `token_id` (`null` for `sell_note`), `expires_at` |
-| `order_cancelled` | `order_id`, `owner`, `refunded` |
-| `order_filled` | `bid`, `ask`, `ask_kind`, `maturity`, `rate_bps`, `principal`, `face`, `bid_remaining`, `ask_remaining` |
+| `order_placed` | `order_id`, `owner`, `kind`, `maturity`, `rate_bps`, `size` (principal, or locked shares for `sell_note`), `token_id` (`null` for `sell_note`), `collateral` (escrowed collateral for `borrow`, else `null`), `expires_at` |
+| `order_cancelled` | `order_id`, `owner`, `refunded` (USDC for `lend`, collateral for `borrow`, unlocked shares for `sell_note`) |
+| `order_filled` | `bid`, `ask`, `ask_kind`, `maturity`, `rate_bps`, `principal`, `face` (note value bought at the fill rate, before conversion to shares), `bid_remaining`, `ask_remaining` (principal for `borrow`, shares for `sell_note`) |
 | `fill_skipped` | `bid`, `ask`, `reason` |
 | `repaid` | `borrower`, `payer`, `maturity`, `collateral_token`, `amount`, `debt_remaining` |
 | `liquidated` | `borrower`, `liquidator`, `maturity`, `collateral_token`, `repaid`, `seized` |
@@ -316,7 +342,7 @@ NEP-297 log lines: `EVENT_JSON:{"standard": "setllend", "version": "0.1.0", "eve
 | `bad_debt_realized` | `borrower`, `maturity`, `collateral_token`, `amount`, `total_value_after` |
 | `withdrawn` / `payout_failed` | `account`, `token_id`, `amount` |
 
-The matcher rebuilds the book from `get_orders` at startup, then follows events.
+The matcher rebuilds the book from `get_order_count` and `get_orders` pages at startup, all at one block height, then follows events.
 
 ## Storage
 
@@ -348,4 +374,6 @@ This is the message the user signs with ERC-191 (`personal_sign`) in their EVM w
 ## Still open in this file
 
 - Who holds the full-access key and when it is removed (D23 keeps it during the hackathon).
-- Exact gas for `match_orders` per fill and for `liquidate`. Measure in sandbox.
+- In the phase 2 oracle callback, `face` and `can_open` still panic on overflow, which fails the whole batch instead of skipping one fill. Only reachable with extreme sizes (about 1e15 units of debt face, roughly $1B); decide in phase 2 whether to map overflow to a skip reason.
+- Gas for `match_orders` with `borrow` fills (oracle round trip) and for `liquidate`. Measure in sandbox in phase 2. `sell_note` fills are measured, see [Matching](#matching).
+- `on_auth` actions that pay out (`cancel`, `withdraw`, `withdraw_collateral`, `redeem`) reserve 15 Tgas for the payout. The mock's 30 Tgas default `min_gas` was enough in sandbox; check the `auth_call` default on mainnet.

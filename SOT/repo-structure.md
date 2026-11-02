@@ -10,7 +10,7 @@ setllend/
 ├── contracts/            # Rust (near-sdk + cargo-near), one Cargo workspace (D36)
 │   ├── rust-toolchain.toml  # Rust version, same as the reproducible build image
 │   ├── setllend/         # main contract: order escrow, notes, match, repay, liquidation, maturity
-│   ├── mocks/            # mock intents.near, mock oracle, mock token
+│   ├── mocks/            # one crate per mock: intents/ (`mock-intents`), oracle/ in phase 2
 │   └── tests/            # crate `setllend-tests`: helpers in src/, near-workspaces sandbox tests in tests/
 ├── backend/              # Node + TypeScript, one process
 │   └── src/              # index.ts starts the server, app.ts builds the Hono app, config.ts, db.ts
@@ -37,4 +37,5 @@ setllend/
 - **Scripts** (deploy, seed orders, end-to-end demo, dry-run) live in the folder that runs them: `contracts/scripts/`, `backend/scripts/`, `frontend/scripts/`.
 - **Shared types:** `backend/src/shared/` is the single source for `msg` types. The frontend copies it with a script (`npm run sync-types`, also run before `npm run dev`), never retyped by hand, because the signed JSON must be identical. The copy in `frontend/src/shared/` is committed so the Vercel build does not depend on `backend/`. `npm run check-types-sync` fails if the copy has drifted, and CI runs it on every PR. Both follow [contract-interface.md](contract-interface.md).
 - **CI:** `.github/workflows/ci.yml` runs `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` (unit + sandbox) for `contracts/`; `typecheck` and `test` for `backend/`; `check-types-sync`, `typecheck`, `lint`, and `build` for `frontend/`.
+- **Contract code:** `contracts/setllend/src/` has one module per topic (`math`, `state`, `orders`, `notes`, `positions`, `matching`, `payout`, `receiver`, `views`, `events`, `msg`, `config`) and a thin `lib.rs`. Unit tests live in `src/tests/` (plus `math.rs`). Sandbox tests depend on the `setllend` crate only for its stored types, to patch state that phase 1 can't create on-chain yet (notes need a `lend` × `borrow` fill, which needs the oracle).
 - **Env:** one `.env.example` at the root lists every variable. Real values live in `.env` (gitignored) locally and in the hosting dashboard in production. Locally, the backend loads `../.env` with `node --env-file-if-exists`, and `frontend/next.config.ts` loads it with `process.loadEnvFile`. Only `NEXT_PUBLIC_*` variables reach the browser, so secrets like `ONE_CLICK_JWT` never get that prefix.

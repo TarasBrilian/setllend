@@ -19,7 +19,7 @@ Only lending-mechanism parameters (as in Aave or Morpho) and internal technical 
 | Interest basis | Simple, 365-day year | D16 |
 | Oracle max age (`oracle_max_age`) | 60 s | From [oracle.md](oracle.md). The oracle updates about every 20 s ✅ |
 | Oracle max `conf / price` (`oracle_max_conf`) | 100 bps (1%) | From [oracle.md](oracle.md) |
-| Max fills per `match_orders` | **10** (initial) | Internal, matcher-side only: the 300 Tgas limit per transaction. Users never see it. Measure in sandbox and adjust before deploy |
+| Max fills per `match_orders` | **10** (initial) | Internal, matcher-side only: the 300 Tgas limit per transaction. Users never see it. Sandbox 2026-11-02: 10 `sell_note` fills need about 165 Tgas attached, mostly static gas reserved for payouts ([contract-interface.md](contract-interface.md#matching)). Re-measure with `borrow` fills and on mainnet before raising it |
 | `min_gas` for `liquidate` transfers | **100 Tgas** (initial) | Internal, keeper-side only: oracle round trip inside `mt_on_transfer`. Measure in sandbox |
 
 Maturity timestamps (nanoseconds) for `add_maturity`:

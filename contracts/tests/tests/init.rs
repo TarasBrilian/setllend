@@ -5,7 +5,7 @@ use setllend_tests::{default_config, setllend_wasm};
 async fn deploy_and_init() -> anyhow::Result<()> {
     let sandbox = near_workspaces::sandbox().await?;
     let contract = sandbox.dev_deploy(&setllend_wasm().await?).await?;
-    let config = default_config(contract.id().as_str());
+    let config = default_config(contract.id().as_str(), "intents.near");
 
     contract
         .call("new")

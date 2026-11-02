@@ -1,0 +1,16 @@
+[package]
+name = "mock-intents"
+version = "0.1.0"
+description = "Minimal mock of intents.near for the Setllend sandbox tests"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+near-sdk = { workspace = true }

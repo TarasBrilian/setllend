@@ -11,8 +11,11 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
 near-workspaces = { workspace = true }
 serde_json = { workspace = true }
+# Stored types, to build storage keys and values for state patches.
+setllend = { path = "../setllend" }
 
 [dev-dependencies]
 tokio = { workspace = true }
