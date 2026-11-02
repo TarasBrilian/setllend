@@ -1,0 +1,38 @@
+{
+  "name": "setllend-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "npm run sync-types",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "sync-types": "node scripts/sync-types.mjs",
+    "check-types-sync": "node scripts/sync-types.mjs --check"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.105.1",
+    "lightweight-charts": "5.2.1",
+    "next": "16.4.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "viem": "2.57.14",
+    "wagmi": "3.7.9"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "24.19.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.4",
+    "tailwindcss": "^4",
+    "typescript": "6.0.3"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  }
+}

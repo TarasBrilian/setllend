@@ -6,12 +6,13 @@ One public repo ([TarasBrilian/setllend](https://github.com/TarasBrilian/setllen
 setllend/
 ├── SOT/                  # source of truth for development (this folder)
 │   └── private/          # gitignored strategy notes
-├── contracts/            # Rust (near-sdk + cargo-near)
+├── contracts/            # Rust (near-sdk + cargo-near), one Cargo workspace (D36)
+│   ├── rust-toolchain.toml  # Rust version, same as the reproducible build image
 │   ├── setllend/         # main contract: order escrow, notes, match, repay, liquidation, maturity
 │   ├── mocks/            # mock intents.near, mock oracle, mock token
-│   └── tests/            # near-workspaces sandbox
+│   └── tests/            # crate `setllend-tests`: helpers in src/, near-workspaces sandbox tests in tests/
 ├── backend/              # Node + TypeScript, one process
-│   └── src/
+│   └── src/              # index.ts starts the server, app.ts builds the Hono app, config.ts, db.ts
 │       ├── matcher/      # in-memory order book + REST/WS
 │       ├── relayer/      # execute_intents, match_orders
 │       ├── keeper/       # liquidation + maturity settlement
@@ -19,6 +20,9 @@ setllend/
 │       ├── oneclick/     # 1Click wrapper (quote, deposit, withdraw, status)
 │       └── shared/       # Order/msg types, asset IDs, maturities, nonce encoding
 ├── frontend/             # Next.js + wagmi/viem
+│   ├── AGENTS.md         # written by `next dev` (points agents to the bundled Next.js docs), kept as is
+│   ├── scripts/          # sync-types.mjs
+│   └── src/shared/       # copy of backend/src/shared, written by `npm run sync-types`
 ├── AGENTS.md             # instructions for AI agents
 ├── CLAUDE.md             # points to AGENTS.md
 ├── .env.example
@@ -29,6 +33,6 @@ setllend/
 ## Conventions
 
 - **Deploy:** Vercel with root directory `frontend/`. Railway with root directory `backend/`.
-- **Scripts** (deploy, seed orders, end-to-end demo, dry-run) live in the folder that runs them: `contracts/scripts/`, `backend/scripts/`.
-- **Shared types:** `backend/src/shared/` is the single source for `msg` types. The frontend copies it with a script (`sync-types`), never retyped by hand, because the signed JSON must be identical. Both follow [contract-interface.md](contract-interface.md).
-- **Env:** one `.env.example` at the root lists every variable. Real values live in `.env` (gitignored) locally and in the hosting dashboard in production.
+- **Scripts** (deploy, seed orders, end-to-end demo, dry-run) live in the folder that runs them: `contracts/scripts/`, `backend/scripts/`, `frontend/scripts/`.
+- **Shared types:** `backend/src/shared/` is the single source for `msg` types. The frontend copies it with a script (`npm run sync-types`, also run before `npm run dev`), never retyped by hand, because the signed JSON must be identical. The copy in `frontend/src/shared/` is committed so the Vercel build does not depend on `backend/`. `npm run check-types-sync` fails if the copy has drifted. Both follow [contract-interface.md](contract-interface.md).
+- **Env:** one `.env.example` at the root lists every variable. Real values live in `.env` (gitignored) locally and in the hosting dashboard in production. Locally, the backend loads `../.env` with `node --env-file-if-exists`, and `frontend/next.config.ts` loads it with `process.loadEnvFile`. Only `NEXT_PUBLIC_*` variables reach the browser, so secrets like `ONE_CLICK_JWT` never get that prefix.

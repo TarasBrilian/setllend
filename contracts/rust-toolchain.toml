@@ -1,0 +1,4 @@
+# Same Rust version as the reproducible build image in setllend/Cargo.toml.
+[toolchain]
+channel = "1.99.1"
+targets = ["wasm32-unknown-unknown"]
