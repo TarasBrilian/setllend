@@ -2,9 +2,9 @@
 
 Move an item to [decisions.md](decisions.md) once resolved.
 
-1. **Payout path without `generate-intent`:** can a payout use a quote with `depositType: INTENTS` plus a user-signed `transfer` to the deposit address, submitted by our relayer via `execute_intents`? Untested.
+1. **Payout path without `generate-intent`:** can a payout use a quote with `depositType: INTENTS` plus a user-signed `transfer` to the deposit address, submitted by our relayer via `execute_intents`? Untested. Test planned before 2026-11-05 (D31).
 2. **Does `dry: true` quoting have rate limits** with or without a key? Not documented.
-3. **Source for Rhea's variable APR** as the market-maker agent's reference (endpoint/SDK not checked).
+3. **Source for Rhea's variable APR** as the market-maker agent's reference (D30; endpoint/SDK not checked). Also undecided: whether the base rate is Rhea's USDC supply APR, borrow APR, or their midpoint.
 4. **USDC exit without 1Click:** confirm native NEAR USDC `ft_withdraw` to a NEAR account works for an implicit Eth account, and whether a Solver Relay swap is worth building as fallback (D10).
 
 ## Resolved
@@ -19,3 +19,4 @@ Move an item to [decisions.md](decisions.md) once resolved.
 - Contract account → D25 (`setllend.near`).
 - Bad debt → D26 (in MVP, shared pro rata via note shares).
 - `defuse-core` off-chain orders → dropped (D27).
+- Backend/frontend stack, hosting, license, track → D28 to D33.

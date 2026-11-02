@@ -87,4 +87,4 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 
 ## License
 
-*TODO*
+[MIT](LICENSE)

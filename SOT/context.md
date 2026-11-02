@@ -3,7 +3,7 @@
 | Item | Detail |
 |---|---|
 | Event | NEAR HACKATHON ([nearhackathon.com](https://nearhackathon.com)) |
-| Track | `defi`: *"Unstoppable DeFi: Markets that never close"* |
+| Track | `defi`: *"Unstoppable DeFi: Markets that never close"* (D33) |
 | Track description | Exchanges, perps, **lending**, vaults, and trading agents. No custodian, nobody who can switch it off. Cross-chain settlement through NEAR Intents |
 | Track hints | Trading, NEAR Intents, Chain Signatures (optional, Q-011: *"own contract on NEAR that fits the track is enough"*) |
 | Build window | 2026-11-01 to **2026-11-14 23:59 UTC** |

@@ -22,4 +22,5 @@
 - **Relayer pays gas:** protect our relayer endpoint from request floods (infrastructure protection, not a user limit: anyone can submit `execute_intents` directly). Use a function-call access key restricted to specific methods.
 - **The signed JSON must be byte-identical** between frontend and backend. Copy shared types, don't retype them. See [repo-structure.md](repo-structure.md).
 - **Matcher and relayer hosting** must stay up until 2026-11-25.
+- **`lightweight-charts` attribution:** its Apache-2.0 NOTICE requires a link to tradingview.com on the page. Keep the `attributionLogo` chart option on (the default).
 - **No secrets in git history.** The repo is public from the first commit. Secrets go in `.env` (gitignored) or the hosting dashboard.
