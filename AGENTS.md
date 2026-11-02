@@ -16,7 +16,7 @@ Instructions for AI coding agents working in this repo.
 - **Never commit secrets.** The repo is public. Secrets go in `.env` (gitignored). List every new variable in `.env.example` with an empty value.
 - **Never copy or reference content from `SOT/private/`** in tracked files. It is gitignored strategy material.
 - **Shared types:** `backend/src/shared/` is the single source for `msg` types. The frontend copies them with a script, never by hand. See `SOT/repo-structure.md`.
-- **NEAR Intents has no testnet.** Use the sandbox with mocks for tests. Mainnet only with small amounts and the demo deposit cap.
+- **NEAR Intents has no testnet.** Use the sandbox with mocks for tests. When testing on mainnet with our own funds, use small amounts.
 
 ## Layout
 

@@ -4,7 +4,7 @@
 |---|---|
 | 1 debt asset: native NEAR USDC | Multi-asset debt |
 | Collateral ETH(arb) and ETH(base) | Other collateral, native BTC, isolated markets |
-| 2 to 3 fixed maturities (7d / 30d / 90d) | Free-form tenors |
+| 3 fixed maturities (2026-11-13, 11-27, 12-25) plus short demo maturities, see [risk-params.md](risk-params.md) | Free-form tenors |
 | Limit + market orders, price-time priority (D9) | Advanced order types |
 | Order escrow via `transfer` + `msg`, cancel/withdraw via `auth_call` | Pure off-chain signed orders (`defuse-core`, D8) |
 | Health factor + keeper liquidation | Automatic liquidation via swap on Rhea |

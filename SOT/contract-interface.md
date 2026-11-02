@@ -1,21 +1,22 @@
 # Contract interface
 
-> **Status: DRAFT v0.1 (2026-11-02), pending review.** Must be approved before contract work starts on 2026-11-06. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly.
+> **Status: APPROVED v0.1 (2026-11-02).** This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
 
-## Proposed decisions in this draft
+## Design decisions this interface implements
 
-Move these to [decisions.md](decisions.md) once approved.
+From [decisions.md](decisions.md). The original proposal numbers P1 to P8 map to D15 to D22.
 
-| # | Proposal |
+| # | Decision |
 |---|---|
-| P1 | **Everything is quoted in APR (bps)**, including note sales. The contract converts rate to price at fill time. Resolves [open question 7](open-questions.md) |
-| P2 | **Simple interest, 365-day year:** `face = principal × (1 + rate × dt / YEAR)` |
-| P3 | **Fill rate = the maker's limit rate** (the older order, lower `order_id`). The matcher chooses pairs and sizes, never the rate |
-| P4 | **Positions are isolated per (borrower, maturity, collateral token).** No cross-margin |
-| P5 | **Maturity settlement is liquidation.** After `maturity + grace`, any unpaid debt becomes liquidatable regardless of health. No separate settlement method. Resolves most of [open question 8](open-questions.md) |
-| P6 | **Holding note and debt in the same maturity nets automatically.** This is how early repayment by buying notes back works |
-| P7 | **Payouts go straight to the user's Intents balance** via `mt_transfer`. A failed payout is credited to an internal free balance that the user can withdraw later |
-| P8 | **Risk parameters are fixed at init.** The owner can only add maturities. No pause, no parameter changes |
+| D15 (P1) | **Everything is quoted in APR (bps)**, including note sales. The contract converts rate to price at fill time |
+| D16 (P2) | **Simple interest, 365-day year:** `face = principal × (1 + rate × dt / YEAR)` |
+| D17 (P3) | **Fill rate = the maker's limit rate** (the older order, lower `order_id`). The matcher chooses pairs and sizes, never the rate |
+| D18 (P4) | **Positions are isolated per (borrower, maturity, collateral token).** No cross-margin |
+| D19 (P5) | **Maturity settlement is liquidation.** After `maturity + grace`, any unpaid debt becomes liquidatable regardless of health. No separate settlement method |
+| D20 (P6) | **Holding note and debt in the same maturity nets automatically.** This is how early repayment by buying notes back works |
+| D21 (P7) | **Payouts go straight to the user's Intents balance** via `mt_transfer`. A failed payout is credited to an internal free balance that the user can withdraw later |
+| D22 (P8) | **Risk parameters are fixed at init.** The owner can only add maturities. No pause, no parameter changes |
+| D23 | The full-access key is kept during the hackathon and disclosed |
 
 ## Verified facts this design relies on
 
@@ -35,7 +36,7 @@ Checked against [near/intents](https://github.com/near/intents) `main` on 2026-1
 | Field | Type | JSON | Notes |
 |---|---|---|---|
 | Amounts | `u128` | decimal string | Smallest unit. USDC 6 decimals, ETH 18 |
-| Rates | `u32` | number | APR in bps. 700 = 7.00% |
+| Rates | `u32` | number | APR in bps. 700 = 7.00%. Any value is accepted. Checked math rejects only combinations that would overflow |
 | Ratios | `u32` | number | `max_ltv`, `liq_threshold`, `liq_bonus` in bps. 7500 = 75.00% |
 | Timestamps | `u64` | decimal string | Nanoseconds, same as `env::block_timestamp()` |
 | `maturity` | `u64` | decimal string | Must be in the contract's maturity list |
@@ -82,7 +83,7 @@ One book per maturity. Every order is a **bid** (buys notes, escrows USDC) or an
 | `borrow` | ask, issues new notes | Collateral (transfer amount) | `max_rate_bps` | `principal` USDC to receive |
 | `sell_note` | ask, sells existing notes | Notes locked from the seller's note balance | `max_rate_bps` | `face` of notes to sell |
 
-A bid and an ask cross when `bid.min_rate_bps ≤ ask.max_rate_bps`. Fill sizes are always given in **principal** (USDC the bid pays) at the fill rate (P3). For a `sell_note` ask, the contract converts that principal to face and checks it against the ask's remaining face.
+A bid and an ask cross when `bid.min_rate_bps ≤ ask.max_rate_bps`. Fill sizes are always given in **principal** (USDC the bid pays) at the fill rate (D17). For a `sell_note` ask, the contract converts that principal to face and checks it against the ask's remaining face.
 
 ### `Order` (as returned by views)
 
@@ -101,7 +102,7 @@ A bid and an ask cross when `bid.min_rate_bps ≤ ask.max_rate_bps`. Fill sizes 
 
 ### Note balances
 
-Each account has, per maturity, `free_face` and `locked_face`. `sell_note` moves face from free to locked. Netting (P6) and `redeem` only use free face. To redeem notes stuck in an unfilled sell order, cancel it first.
+Each account has, per maturity, `free_face` and `locked_face`. `sell_note` moves face from free to locked. Netting (D20) and `redeem` only use free face. To redeem notes stuck in an unfilled sell order, cancel it first.
 
 ## `transfer` + `msg` actions (→ `mt_on_transfer`)
 
@@ -110,7 +111,7 @@ Rules for every action below:
 - Caller must be `intents.near`. Exactly one token, and it must match the action (debt token or an accepted collateral token).
 - Owner = `sender_id`.
 - Invalid input → panic (full refund). A fully accepted transfer returns `["0"]`.
-- **Placing an order** (`lend`, `borrow`) also requires: `maturity` is listed and still in the future, `expires_at` (if set) is in the future, the account is under max open orders, and the deposit stays within the per-account and global demo caps ([risk-params.md](risk-params.md)).
+- **Placing an order** (`lend`, `borrow`) also requires: `maturity` is listed and still in the future, `expires_at` (if set) is in the future, and the amount is greater than zero. There are no size limits, deposit caps, or order-count limits (D24).
 
 ### `lend`
 
@@ -143,7 +144,7 @@ Token: debt token. Amount: USDC to repay, applied to debt face.
 - `borrower` defaults to `sender_id`. Anyone may repay for someone else.
 - Overpayment is refunded through the return value.
 - Repaid USDC goes to the maturity's redemption pool. Collateral stays in the position until `withdraw_collateral`.
-- Allowed before and after maturity, as long as debt remains. Repaying before maturity pays full face. The cheaper early exit is buying notes back (P6).
+- Allowed before and after maturity, as long as debt remains. Repaying before maturity pays full face. The cheaper early exit is buying notes back (D20).
 
 Event `repaid`.
 
@@ -170,10 +171,10 @@ Caller must be `intents.near`. Owner = `signer_id`. Because `auth_call` is detac
 | Action | `data` | Oracle | Effect |
 |---|---|---|---|
 | `cancel` | `{"order_id": "42"}` | No | Signer must own the order. Removes it, returns remaining escrow via `mt_transfer` (or unlocks notes for `sell_note`). Event `order_cancelled` |
-| `sell_note` | `{"maturity": "…", "face": "1050000000", "max_rate_bps": 650, "expires_at": null}` | No | Same placement rules as `lend`/`borrow` (maturity in the future, max open orders). Moves `face` from the signer's free to locked notes and creates an ask. Event `order_placed` |
+| `sell_note` | `{"maturity": "…", "face": "1050000000", "max_rate_bps": 650, "expires_at": null}` | No | Same placement rules as `lend`/`borrow` (maturity in the future, `face` greater than zero and within the signer's free notes). Moves `face` from the signer's free to locked notes and creates an ask. Event `order_placed` |
 | `withdraw_collateral` | `{"maturity": "…", "collateral_token": "…", "amount": "…"}` | **Yes**, if debt remains | No debt: pays immediately. With debt: oracle call → callback re-reads the position, allows it only if `can_open` still holds after withdrawal and `block_timestamp < maturity + grace`. Pays via `mt_transfer`. Event `collateral_withdrawn` |
 | `redeem` | `{"maturity": "…", "face": null}` | No | After maturity. Pays note face from the redemption pool, up to what the pool holds (`null` = all notes). Unpaid face stays as notes until repayments or liquidations refill the pool. Event `redeemed` |
-| `withdraw` | `{"token_id": "…", "amount": null}` | No | Withdraws the internal free balance (failed payouts, P7). `null` = all. Event `withdrawn` |
+| `withdraw` | `{"token_id": "…", "amount": null}` | No | Withdraws the internal free balance (failed payouts, D21). `null` = all. Event `withdrawn` |
 
 Example `msg`: `{"action": "cancel", "data": {"order_id": "42"}}`.
 
@@ -189,10 +190,10 @@ pub struct Fill { pub bid: U64, pub ask: U64, pub principal: U128 }
 - Permissionless. Max fills per call: [risk-params.md](risk-params.md).
 - If any fill touches a `borrow` ask: one oracle call for the whole batch → private callback `on_match_prices(fills, …)`. If all asks are `sell_note`: executes synchronously, no oracle.
 - **The callback re-validates every fill**, because orders can be cancelled or filled while the oracle call is in flight. Invalid fills are skipped with event `fill_skipped` (reason), the rest execute.
-- Per fill: both orders exist, same maturity, bid is `lend`, owners differ (no self-trade), neither expired, orders crossed, `dt > 0`, fill rate per P3, `principal` within the bid's remaining principal and within the ask's remaining size (principal for `borrow`, converted face for `sell_note`), and for `borrow` asks the position passes `can_open` after the fill.
+- Per fill: both orders exist, same maturity, bid is `lend`, owners differ (no self-trade), neither expired, orders crossed, `dt > 0`, fill rate per D17, `principal` within the bid's remaining principal and within the ask's remaining size (principal for `borrow`, converted face for `sell_note`), and for `borrow` asks the position passes `can_open` after the fill.
 - **`lend` × `borrow`:** bid's USDC goes to the borrower via `mt_transfer`. Bid owner gets note face (rounded down), borrower gets debt face (rounded up) and pro-rata collateral moved into the position.
 - **`lend` × `sell_note`:** bid's USDC goes to the seller via `mt_transfer`. Note face (rounded down) moves from the seller's locked notes to the bid owner's free notes.
-- After each fill, apply netting (P6) to both accounts: free notes and debt in the same maturity cancel out, reducing the account's positions in that maturity in token-ID order. Netted face leaves both the debt and the outstanding note supply, so the redemption pool is unaffected. Event `netted`.
+- After each fill, apply netting (D20) to both accounts: free notes and debt in the same maturity cancel out, reducing the account's positions in that maturity in token-ID order. Netted face leaves both the debt and the outstanding note supply, so the redemption pool is unaffected. Event `netted`.
 - Events `order_filled` per fill.
 
 ### Payout callback
@@ -212,7 +213,7 @@ pub fn add_maturity(&mut self, maturity: U64)        // owner only, must be in t
 
 Maturities are never removed. A maturity accepts new orders and fills until it passes, then only `repay`, `liquidate`, `redeem`, `cancel`, and withdrawals.
 
-`Config` (fixed after init, P8): `owner_id`, `intents_contract` (`intents.near`), `oracle_contract` (`aggregate-oracle.near`), `debt_token` + USDC feed ID, `collateral_tokens` (token ID, decimals, feed ID), and every value in [risk-params.md](risk-params.md).
+`Config` (fixed after init, D22): `owner_id`, `intents_contract` (`intents.near`), `oracle_contract` (`aggregate-oracle.near`), `debt_token` + USDC feed ID, `collateral_tokens` (token ID, decimals, feed ID), and every value in [risk-params.md](risk-params.md).
 
 ### Views
 
@@ -254,7 +255,7 @@ The matcher rebuilds the book from `get_orders` at startup, then follows events.
 ## Storage
 
 - Users never hold wNEAR, so the **contract pays storage** from its own NEAR balance. `AuthCall.attached_deposit` stays 0.
-- Bounded by max open orders per account ([risk-params.md](risk-params.md)). Orders are deleted when filled or cancelled, positions when both collateral and debt reach zero, note entries when both faces reach zero. Deletion frees storage.
+- Not capped per account (D24). The contract keeps enough NEAR for storage and is topped up when needed. Orders are deleted when filled or cancelled, positions when both collateral and debt reach zero, note entries when both faces reach zero. Deletion frees storage.
 - Expired orders (`expires_at` passed) are never filled. The owner cancels to get funds back.
 
 ## Example: relayer payload for a `lend` order 📄
@@ -281,6 +282,6 @@ This is the message the user signs with ERC-191 (`personal_sign`) in their EVM w
 ## Still open in this file
 
 - Contract account name (e.g. `setllend.near`).
-- Upgradeability and who holds the full-access key (trust model impact).
+- Who holds the full-access key and when it is removed (D23 keeps it during the hackathon).
 - Bad debt: if collateral can't cover debt, how the redemption shortfall is shared among note holders. MVP assumption: keepers liquidate before this happens.
 - Exact gas for `match_orders` per fill and for `liquidate`. Measure in sandbox.

@@ -10,7 +10,7 @@
 - **`mt_transfer` payouts to `intents.near` are async** and need exactly 1 yoctoNEAR attached 📄. Use a callback and re-credit the internal balance on failure.
 - **A `transfer` intent can carry several tokens.** Reject `mt_on_transfer` calls with more than one token.
 - **300 Tgas limit** per transaction: cap fills per `match_orders`.
-- **Storage staking:** every stored order locks NEAR. Cap orders per user, charge a small fee, or release storage when an order closes. The contract needs NEAR capital for storage.
+- **Storage staking:** every stored order locks NEAR, paid by the contract. Release storage when an order, position, or note entry closes. Watch the contract's NEAR balance and top it up. Users are not limited (D24), so dust-order griefing is an accepted hackathon risk.
 - **Simple liquidation:** the liquidator pays the debt in USDC and receives collateral plus a bonus. No DEX swap inside the contract.
 - **Oracle callbacks re-validate state.** See [oracle.md](oracle.md#integration-pattern-in-the-contract).
 
@@ -18,7 +18,7 @@
 
 - **Versioned nonce**, salt fetched from `current_salt`. Salt can rotate.
 - **Normalize `v`** of EVM wallet signatures to {0, 1}. Wallets differ (27/28 vs 0/1), so test with at least MetaMask and Rabby.
-- **Relayer pays gas and storage:** rate-limit it to prevent spam. Use a function-call access key restricted to specific methods.
+- **Relayer pays gas:** protect our relayer endpoint from request floods (infrastructure protection, not a user limit: anyone can submit `execute_intents` directly). Use a function-call access key restricted to specific methods.
 - **The signed JSON must be byte-identical** between frontend and backend. Copy shared types, don't retype them. See [repo-structure.md](repo-structure.md).
 - **Matcher and relayer hosting** must stay up until 2026-11-25.
 - **No secrets in git history.** The repo is public from the first commit. Secrets go in `.env` (gitignored) or the hosting dashboard.

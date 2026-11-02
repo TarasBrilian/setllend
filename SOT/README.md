@@ -25,7 +25,7 @@ This folder is the single source of truth for building Setllend. The root `READM
 | [intents-primitives.md](intents-primitives.md) | NEAR Intents primitives we use and their verified status |
 | [user-actions.md](user-actions.md) | Every user action, its mechanism, and an end-to-end flow |
 | [contract-interface.md](contract-interface.md) | `msg` formats and contract methods. **Contract between all components** |
-| [risk-params.md](risk-params.md) | LTV, liquidation threshold, bonus, caps, maturities |
+| [risk-params.md](risk-params.md) | LTV, liquidation threshold, bonus, grace, maturities, oracle guards |
 | [oracle.md](oracle.md) | Oracle survey, `aggregate-oracle.near`, risks, integration pattern |
 | [assets-and-flows.md](assets-and-flows.md) | Asset IDs, money paths, 1Click notes and fees |
 | [pitfalls.md](pitfalls.md) | Known technical traps (contract and off-chain) |
