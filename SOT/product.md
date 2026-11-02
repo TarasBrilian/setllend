@@ -12,7 +12,7 @@
 
 Lenders and borrowers trade one instrument:
 
-- **Lend** = buy a fixed-rate note, a claim to receive 1 USDC at maturity T.
+- **Lend** = buy a fixed-rate note, a claim to receive 1 USDC at maturity T. If a borrower in that maturity defaults beyond their collateral, every note in the maturity absorbs the loss pro rata (D26).
 - **Borrow** = sell that note (a short position that must be collateralized).
 - Book prices are quoted in APR with a 1 bps tick, then converted to a discount price.
 

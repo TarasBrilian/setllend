@@ -6,8 +6,9 @@
 | Collateral ETH(arb) and ETH(base) | Other collateral, native BTC, isolated markets |
 | 3 fixed maturities (2026-11-13, 11-27, 12-25) plus short demo maturities, see [risk-params.md](risk-params.md) | Free-form tenors |
 | Limit + market orders, price-time priority (D9) | Advanced order types |
-| Order escrow via `transfer` + `msg`, cancel/withdraw via `auth_call` | Pure off-chain signed orders (`defuse-core`, D8) |
+| Order escrow via `transfer` + `msg`, cancel/withdraw via `auth_call` | Pure off-chain signed orders (dropped, D27) |
 | Health factor + keeper liquidation | Automatic liquidation via swap on Rhea |
+| Bad-debt realization, shared pro rata by note holders (D26) | Insurance fund, reserve factor |
 | Maturity settlement (repay or seize collateral) | Auto-rollover |
 | Exit before maturity (sell the note) | Notes as freely transferable tokens |
 | Base / Arbitrum deposits and payouts via 1Click + dry-run mode (D10) | Other chains, direct Solver Relay |

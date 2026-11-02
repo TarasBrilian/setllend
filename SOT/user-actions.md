@@ -15,7 +15,8 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Withdraw collateral | `auth_call` → `withdraw_collateral{maturity, collateral_token, amount}` | 1 signature | **Yes** (if debt remains) |
 | Redeem at maturity | `auth_call` → `redeem{maturity}` | 1 signature | No |
 | Liquidate (unhealthy, or unpaid after maturity + grace) | Keeper `transfer`s USDC, `msg = liquidate{borrower, maturity, collateral_token}`. If not liquidatable, funds are refunded automatically | – | **Yes** |
-| Exit before maturity | `auth_call` → `sell_note{maturity, face, max_rate_bps}`: sell notes on the same book, quoted in APR | 1 signature | No |
+| Bad debt (automatic) | Realized inside `liquidate` when collateral runs out with debt left. Note value in that maturity drops pro rata | – | **Yes** |
+| Exit before maturity | `auth_call` → `sell_note{maturity, value, max_rate_bps}`: sell notes on the same book, quoted in APR | 1 signature | No |
 
 ## End-to-end flow (demo)
 

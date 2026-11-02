@@ -11,6 +11,7 @@
 - **A `transfer` intent can carry several tokens.** Reject `mt_on_transfer` calls with more than one token.
 - **300 Tgas limit** per transaction: cap fills per `match_orders`.
 - **Storage staking:** every stored order locks NEAR, paid by the contract. Release storage when an order, position, or note entry closes. Watch the contract's NEAR balance and top it up. Users are not limited (D24), so dust-order griefing is an accepted hackathon risk.
+- **Note share math rounds against the acting account** (mint and move round down, burn rounds up), so other holders are never diluted. See [contract-interface.md](contract-interface.md#note-accounting).
 - **Simple liquidation:** the liquidator pays the debt in USDC and receives collateral plus a bonus. No DEX swap inside the contract.
 - **Oracle callbacks re-validate state.** See [oracle.md](oracle.md#integration-pattern-in-the-contract).
 

@@ -69,7 +69,8 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 - Bridges (Omni / PoA) for Base and Arbitrum assets.
 - `aggregate-oracle.near`, operated and upgradeable by Rhea.
 - 1Click for cross-chain swaps.
-- Liveness of the matcher and relayer.
+- Liveness of the matcher, relayer, and keeper.
+- Bad debt: if a borrower's collateral can't cover their debt, the loss is shared pro rata by lenders in that maturity.
 
 ## Repository
 
