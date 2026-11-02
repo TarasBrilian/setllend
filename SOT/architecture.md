@@ -35,7 +35,7 @@
 | Matcher | `backend/src/matcher/` | In-memory CLOB per maturity, REST + WebSocket, indexes contract events |
 | Relayer | `backend/src/relayer/` | Submits `execute_intents` and `match_orders`, pays gas |
 | Keeper | `backend/src/keeper/` | Liquidations and maturity settlement |
-| Market-maker agent | `backend/src/mm-agent/` | Quotes bid/ask fixed rates around Rhea's variable APR plus a spread |
+| Market-maker agent | `backend/src/mm-agent/` | Quotes fixed lend/borrow rates at the midpoint of Rhea's USDC supply and borrow APR, ± a spread (D30, D34) |
 | 1Click wrapper | `backend/src/oneclick/` | Quotes, deposits, withdrawals, status (D11) |
 | Frontend | `frontend/` | EVM wallet login, order book, positions, history |
 

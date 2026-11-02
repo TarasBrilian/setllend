@@ -1,6 +1,6 @@
 # Assets and money flows
 
-## Asset IDs (from 1Click `GET /v0/tokens`)
+## Asset IDs (from 1Click `GET /v0/tokens`, rechecked ✅ 2026-11-02)
 
 | Asset | Chain | Decimals | Intents asset ID | Role |
 |---|---|---|---|---|
@@ -29,7 +29,9 @@ The temporary $1,000 minimum (changelog 2026-09-09) does not block these paths: 
 - `POST /v0/generate-intent` and `POST /v0/submit-intent` (used for payouts from an Intents balance) **require a partner API key**. 📄
 - Swap statuses: `PENDING_DEPOSIT`, `KNOWN_DEPOSIT_TX`, `PROCESSING`, `SUCCESS`, `INCOMPLETE_DEPOSIT`, `REFUNDED`, `FAILED`. Show all of them in the UI, including `REFUNDED` and `FAILED`.
 - For same-asset withdrawals without a swap, the Intents SDK has `processWithdrawal` via bridge (Omni / PoA, both support Base and Arbitrum). This is the 1Click-independent exit path for ETH collateral. It does not cover native NEAR USDC, which has no same-asset route to Base/Arbitrum (D10).
-- Partner key (type "Distribution Channel") obtained 2026-11-02. Stored only in backend env as `ONE_CLICK_JWT`, sent as `Authorization: Bearer <key>`. Never in the frontend or git.
+- Partner key (type "Distribution Channel") obtained 2026-11-02. Stored only in backend env as `ONE_CLICK_JWT`, sent as `X-API-Key: <key>` (recommended; `Authorization: Bearer` is the legacy form and also works). Never in the frontend or git.
+- The Explorer API (`explorer.near-intents.org/api/v0`) needs a separate key with `key_type: explorer`. Our distribution-channel key gets 400 `INVALID_TOKEN` there ✅ 2026-11-02. Not needed for the MVP: track our swaps with `GET /v0/status`.
+- Solver Relay `quote` (`POST https://solver-relay-v2.chaindefuser.com/rpc`) returned prices for Base USDC → NEAR USDC and Arbitrum USDC → NEAR USDC on 2026-11-02, with and without a key ✅. This is the D10 fallback route if 1Click quoting stays down.
 
 ## 1Click fees
 

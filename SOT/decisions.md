@@ -37,6 +37,7 @@ Append new decisions at the bottom. To reverse one, add a new decision that supe
 | D31 | 2026-11-02 | **Test the 1Click payout path before writing payout code** (open question #1), together with the dry-quote key test. Unlike the dry quote, it moves real funds, so it needs a small USDC balance on an Intents account | Payouts are the riskiest untested flow. If the path fails, the fallback in D10 must be planned before 2026-11-12 |
 | D32 | 2026-11-02 | **License: MIT** | Permissive and standard for hackathon code |
 | D33 | 2026-11-02 | **Submit to the `defi` track only** (`"tracks": ["defi"]`). The `agents` track was considered and rejected | "Agent Economy" looks for agents that spend, negotiate, and hire other agents. Our market-maker agent only earns spread, so entering would be forced. The `defi` track already lists "trading agents", which covers it |
+| D34 | 2026-11-02 | **Refines D30: the market-maker agent's base rate is the midpoint of the reference market's USDC supply APR and borrow APR.** The agent lends at base + spread and borrows at base − spread. The spread is an agent setting | Anchoring each side to a different APR either makes the agent's own lend and borrow orders cross (supply + spread below borrow − spread) or leaves a gap too wide to trade. One midpoint gives tight quotes that never cross |
 
 ## Review triggers for D10
 
