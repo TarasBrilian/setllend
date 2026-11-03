@@ -8,13 +8,13 @@ import { useState } from "react";
 import { type AccountView, type CollateralTokenInfo, getBook, type LoanView, type PricesView } from "@/lib/api";
 import { health, legsOf, legsOfRaw, liquidationPriceOf, maxWithdrawOf } from "@/lib/collateral";
 import { formatMaturity, formatUsd, maturityToMs, usdcToNumber } from "@/lib/format";
-import { formatTokenAmount, MOCK_ASSETS, TOKENS, tokenAmount, tokenLabel } from "@/lib/tokens";
+import { formatTokenAmount, TOKENS, tokenAmount, tokenLabel } from "@/lib/tokens";
 import { useStepper } from "@/lib/use-stepper";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import type { Config, NoteView, OrderView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, useChain, useChainOptions, useEvmAddress, useSignPrefix } from "../form-parts";
+import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
 import { Modal } from "../modal";
 import { SellNoteForm } from "../order-form";
 import { TokenIcon } from "../token-icon";
@@ -163,7 +163,7 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
   const [amount, setAmount] = useState(String(debt));
   const [chain, setChain] = useChain("Arbitrum");
   const signPrefix = useSignPrefix();
-  const evmAddress = useEvmAddress(true, chain);
+  const addresses = useAddresses([chain]);
   const value = Number(amount) || 0;
   const after = Math.max(0, debt - value);
   const beforeMaturity = nowMs < maturityToMs(loan.maturity);
@@ -171,7 +171,7 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
   let error: string | undefined;
   if (value <= 0) error = "Enter an amount";
   else if (value > debt) error = "More than your debt";
-  else if (evmAddress.error) error = evmAddress.error;
+  else if (addresses.error) error = addresses.error;
 
   return (
     <Flow
@@ -184,7 +184,7 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
         <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
       </Field>
       <ChainRow label="Pay USDC from" value={chain} onChange={setChain} />
-      {evmAddress.field}
+      {addresses.fields}
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         <Row label="Debt after" value={formatUsd(after)} />
         <Row label="Health factor after" value={formatHealth(health(after, legsOfRaw(loan.collateral, tokens, prices)))} />
@@ -286,13 +286,13 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   const overdue = debt > 0 && nowMs >= maturityToMs(loan.maturity) + Number(BigInt(config.grace) / 1_000_000n);
   const chain = TOKENS[token].chain;
   const signPrefix = useSignPrefix();
-  const evmAddress = useEvmAddress(chain !== "NEAR", chain);
+  const addresses = useAddresses([chain]);
 
   let error: string | undefined;
   if (overdue) error = "Overdue: repay first";
   else if (value <= 0) error = "Enter an amount";
   else if (value > maxRounded) error = debt > 0 ? "Above the borrow limit after withdrawal" : "More than this collateral";
-  else if (evmAddress.error) error = evmAddress.error;
+  else if (addresses.error) error = addresses.error;
 
   return (
     <Flow
@@ -301,7 +301,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
         "Sign the withdrawal with your wallet",
         ...(debt > 0 ? ["Setllend checks oracle prices and your borrow limit"] : []),
         `${TOKENS[token].symbol} reaches your Intents balance`,
-        chain === "NEAR" ? "It stays there, ready to withdraw or reuse" : `It is sent to your wallet on ${chain}`,
+        chain === "NEAR" ? "It stays there, ready to withdraw or reuse" : chain === "Bitcoin" ? payOutStep("BTC", chain) : `It is sent to your wallet on ${chain}`,
       ]}
       error={error}
       label="Withdraw collateral"
@@ -328,7 +328,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
         <Row label="Health factor after" value={formatHealth(health(debt, afterLegs))} />
         {debt > 0 && <Row label={`Liquidation price (${TOKENS[token].symbol})`} value={formatUsd(liquidationPriceOf(debt, afterLegs, i))} />}
       </dl>
-      {evmAddress.field}
+      {addresses.fields}
     </Flow>
   );
 }
@@ -343,12 +343,12 @@ function RedeemForm({ note, onDone }: { note: NoteView; onDone: () => void }) {
   const free = usdcToNumber(note.free_value);
   const [chain, setChain] = useChain("Base");
   const signPrefix = useSignPrefix();
-  const evmAddress = useEvmAddress(true, chain);
+  const addresses = useAddresses([chain]);
   const locked = BigInt(note.locked_value) > 0n;
   return (
     <Flow
       steps={[...signPrefix, "Sign the redemption with your wallet", "USDC reaches your Intents balance", payOutStep("USDC", chain)]}
-      error={free === 0 ? "No free notes to redeem" : evmAddress.error}
+      error={free === 0 ? "No free notes to redeem" : addresses.error}
       label={`Redeem ${formatUsd(free)}`}
       onDone={onDone}
     >
@@ -357,7 +357,7 @@ function RedeemForm({ note, onDone }: { note: NoteView; onDone: () => void }) {
       </dl>
       {locked && <p className="text-xs text-faint">Notes listed for sale stay locked. Cancel the sell order to redeem them too.</p>}
       <ChainRow label="Receive USDC on" value={chain} onChange={setChain} />
-      {evmAddress.field}
+      {addresses.fields}
     </Flow>
   );
 }
@@ -387,13 +387,13 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   const [pickedChain, setChain] = useChain("Base");
   const chain: Chain = pickChain ? pickedChain : (meta.chain as Chain);
   const signPrefix = useSignPrefix();
-  const evmAddress = useEvmAddress(true, chain);
+  const addresses = useAddresses([chain]);
   const n = Number(value) || 0;
 
   let error: string | undefined;
   if (n <= 0) error = "Enter an amount";
   else if (n > total) error = "More than your balance";
-  else if (evmAddress.error) error = evmAddress.error;
+  else if (addresses.error) error = addresses.error;
 
   const steps = [
     ...signPrefix,
@@ -408,15 +408,19 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
         <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} className={amountInput} />
       </Field>
       {pickChain ? <ChainRow label="Send to" value={chain} onChange={setChain} /> : <p className="text-xs text-faint">Goes back to {chain}, the chain it came from.</p>}
-      {evmAddress.field}
+      {addresses.fields}
     </Flow>
   );
 }
 
-type DepositAsset = "USDC" | "ETH" | "WBTC" | "NEAR";
-const EVM_ASSETS: DepositAsset[] = ["USDC", "ETH", "WBTC", "NEAR"];
-const NEAR_ASSETS: DepositAsset[] = ["NEAR", "USDC"];
-const DEPOSIT_FROM: Chain[] = [...CHAINS, "NEAR"];
+type DepositAsset = "USDC" | "ETH" | "BTC" | "NEAR";
+const ASSETS_FROM: Record<Chain, DepositAsset[]> = {
+  Arbitrum: ["USDC", "ETH", "NEAR"],
+  Base: ["USDC", "ETH", "NEAR"],
+  NEAR: ["NEAR", "USDC"],
+  Bitcoin: ["BTC"],
+};
+const DEPOSIT_FROM: Chain[] = [...CHAINS, "NEAR", "Bitcoin"];
 const PAY_WITH = ["USDC", "ETH"] as const;
 
 /**
@@ -432,13 +436,13 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
   const [connectError, setConnectError] = useState<string>();
   const n = Number(amount) || 0;
   const fromNear = from === "NEAR";
-  const assets = fromNear ? NEAR_ASSETS : EVM_ASSETS;
-  const isSwap = !fromNear && asset === "NEAR";
+  const assets = ASSETS_FROM[from];
+  const isSwap = (from === "Arbitrum" || from === "Base") && asset === "NEAR";
   const payUsd = payWith === "USDC" ? n : n * (prices?.[ASSETS.ethArb]?.usd ?? 0);
-  const nearOut = payUsd / (prices?.[MOCK_ASSETS.near]?.usd ?? Infinity);
+  const nearOut = payUsd / (prices?.[ASSETS.wnear]?.usd ?? Infinity);
   const unit = isSwap ? payWith : asset;
   const receiver = active?.accountId ?? "your account";
-  const evmAddress = useEvmAddress(true, from);
+  const addresses = useAddresses([from]);
 
   let steps: string[];
   if (fromNear) {
@@ -448,6 +452,8 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
         : [`Sign one NEAR transaction: deposit ${amount} USDC to NEAR Intents for ${receiver}`, "USDC reaches your Intents balance in seconds"];
   } else if (isSwap) {
     steps = [`Get a 1Click swap quote: ${amount} ${payWith} on ${from} to NEAR`, `Send ${amount} ${payWith} to the 1Click deposit address`, `≈ ${nearOut.toFixed(2)} NEAR reaches your Intents balance`];
+  } else if (from === "Bitcoin") {
+    steps = [`Get a 1Click quote: ${amount} BTC on Bitcoin to NEAR Intents`, payInStep(amount, "BTC", from), "BTC reaches your Intents balance after Bitcoin confirmations, not as collateral"];
   } else {
     steps = [`Get a 1Click quote: ${amount} ${asset} on ${from} to NEAR Intents`, `Send ${amount} ${asset} to the 1Click deposit address`, `${asset} reaches your Intents balance, not as collateral`];
   }
@@ -456,7 +462,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
   if (!active) error = "Connect an account first";
   else if (fromNear && !near) error = "Connect a NEAR wallet to send from NEAR";
   else if (n <= 0) error = "Enter an amount";
-  else if (evmAddress.error) error = evmAddress.error;
+  else if (addresses.error) error = addresses.error;
 
   return (
     <Flow steps={steps} error={error} label={isSwap ? "Buy NEAR" : `Deposit ${asset}`} onDone={onDone}>
@@ -466,7 +472,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
         options={DEPOSIT_FROM}
         onChange={(c) => {
           setFrom(c);
-          if (c === "NEAR" && !NEAR_ASSETS.includes(asset)) setAsset("NEAR");
+          if (!ASSETS_FROM[c].includes(asset)) setAsset(ASSETS_FROM[c][0]);
         }}
       />
       <div className="flex items-center justify-between text-sm">
@@ -508,6 +514,8 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
             ? `≈ ${nearOut.toFixed(2)} NEAR, swapped by 1Click`
             : fromNear
               ? "No 1Click: straight from your NEAR account to NEAR Intents."
+              : from === "Bitcoin"
+                ? "From any Bitcoin wallet. Add it to a loan as collateral whenever you like."
               : asset === "USDC"
                 ? "For lend orders and repayments."
                 : "Add it to a loan as collateral whenever you like."
@@ -515,7 +523,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
       >
         <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
       </Field>
-      {evmAddress.field}
+      {addresses.fields}
     </Flow>
   );
 }

@@ -9,11 +9,12 @@ Move an item to [decisions.md](decisions.md) once resolved.
 5. *Moved to Resolved (2026-11-03).*
 6. *Moved to Resolved (2026-11-03).*
 7. **NEP-413 intents from a named account** ⚠️: the keeper's signing path needs `add_public_key` on `intents.near` and a `nep413` payload. Not tested yet. The envelope format can be checked now, before the account exists: sign with a throwaway ed25519 key as its implicit account (64 hex characters), which should need no `add_public_key` (unverified ⚠️), and call `simulate_intents`. The `add_public_key` step itself is checked once `backend.setllend.near` exists.
-8. **D48 collateral tokens** ⚠️: are WBTC on Arbitrum and on Base listed by 1Click `/v0/tokens` (and with which Intents asset IDs), or should Base use cbBTC? Does a 1Click swap from Arbitrum/Base USDC or ETH to NEAR in an Intents balance quote? Which oracle feeds price WBTC and NEAR on `aggregate-oracle.near`? And the WBTC and NEAR risk parameters ([risk-params.md](risk-params.md#per-token-parameters-d48-proposed)).
+8. *Moved to Resolved (D52). Number kept because D48 links to it.*
 9. **NEAR users (D51)** ⚠️: do Meteor, MyNearWallet, and Intear sign NEP-413 messages (`signMessage`) that `intents.near` accepts? (Meteor connects ✅ 2026-11-03, tested by the user.) What does `add_public_key` on `intents.near` cost a user (deposit, gas), and does `wrap.near` need a `storage_deposit` before `near_deposit` for a new account? Test with small amounts once a NEAR wallet is at hand; #7 covers the same registration for the keeper.
 
 ## Resolved
 
+- D48 collateral tokens (#8) → D52: native BTC (`btc.omft.near`) and NEAR (`wrap.near`) at 70/80/5. WBTC isn't on 1Click for Arbitrum or Base, and cbBTC has no oracle feed. USDC → NEAR swaps quote. Feeds BTC/USD and NEAR/USD are live on `aggregate-oracle.near` ✅ 2026-11-03.
 - Backend account and funding (#5) → `backend.setllend.near`, about 0.5 NEAR for gas, keeper USDC chosen at funding time and kept small because the account's Intents balance is a hot wallet (D43). No FastNear key for now: following the tip uses about 103 of the 180 free requests per minute, and since the book and keeper read state (D40, D45), backfill only feeds history. Add `NEARDATA_API_KEY` if `/health` shows lag or 429s on Railway.
 - Sandbox end-to-end backend test (#6) → not built: neardata doesn't exist for a sandbox, so the follower couldn't be covered, and the Rust sandbox tests already cover the contract. A scripted mainnet smoke test with small amounts runs after the deploy ([backend.md](backend.md#tests)).
 

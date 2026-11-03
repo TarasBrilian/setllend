@@ -13,7 +13,7 @@ import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
 import type { NoteView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useChain, useChainOptions, useEvmAddress, useSignPrefix } from "./form-parts";
+import { amountInput, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -51,7 +51,8 @@ export function OrderForm({
   const isBorrow = side === "borrow";
   const bestRate = (isBorrow ? book.bids[0] : book.asks[0])?.rate_bps;
   const tokens = useQuery({ queryKey: ["collateral-tokens"], queryFn: getCollateralTokens, enabled: isBorrow });
-  const account = useAccount().active?.accountId;
+  const active = useAccount().active;
+  const account = active?.accountId;
   const chains = useChainOptions();
   const signPrefix = useSignPrefix();
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: isBorrow && account !== undefined });
@@ -81,10 +82,9 @@ export function OrderForm({
   const existingDebt = loan ? usdcToNumber(loan.debt_face) : 0;
   const totalDebt = existingDebt + face;
   const available = (token: TokenId) => (deposits[token] ? tokenAmount(token, deposits[token]) : 0);
-  // An EVM leg: the USDC payment or payout chain, or a new collateral deposit from Arbitrum or Base.
-  const evmCollateral = isBorrow && source === "New deposit" ? legs.find((l) => TOKENS[l.token].chain !== "NEAR" && Number(l.amount) > 0) : undefined;
-  const evmLegChain = chain !== "NEAR" ? chain : evmCollateral ? TOKENS[evmCollateral.token].chain : "NEAR";
-  const evmAddress = useEvmAddress(evmLegChain !== "NEAR", evmLegChain);
+  // 1Click legs that may need an address: the USDC payment or payout chain, and new collateral deposits.
+  const depositChains = isBorrow && source === "New deposit" ? legs.filter((l) => Number(l.amount) > 0).map((l) => TOKENS[l.token].chain) : [];
+  const addresses = useAddresses([chain, ...depositChains]);
 
   let error: string | undefined;
   if (principal <= 0) error = "Enter an amount";
@@ -93,7 +93,7 @@ export function OrderForm({
   else if (isBorrow && source !== "Existing loan" && Object.values(added).every((a) => a <= 0)) error = "Enter collateral";
   else if (isBorrow && source === "Deposited" && legs.some((l) => (Number(l.amount) || 0) > available(l.token))) error = "More than your deposit";
   else if (isBorrow && totalDebt > limit) error = "Above your borrow limit";
-  else if (evmAddress.error) error = evmAddress.error;
+  else if (addresses.error) error = addresses.error;
 
   let rateHint: React.ReactNode;
   if (mode === "Market") {
@@ -112,9 +112,10 @@ export function OrderForm({
   const depositSteps = Object.entries(added)
     .filter(([, amount]) => amount > 0)
     .map(([token, amount]) =>
-      TOKENS[token].symbol === "NEAR"
+      // A NEAR account sends NEAR itself; an EVM account buys it with a 1Click swap.
+      TOKENS[token].symbol === "NEAR" && active?.kind !== "near"
         ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap`
-        : `Deposit ${formatTokenAmount(token, amount)} from ${TOKENS[token].chain} via 1Click`,
+        : payInStep(String(amount), TOKENS[token].symbol, TOKENS[token].chain),
     );
   const steps = isBorrow
     ? [
@@ -190,7 +191,7 @@ export function OrderForm({
         <Segmented options={chains} value={chain} onChange={setChain} />
       </div>
 
-      {evmAddress.field}
+      {addresses.fields}
 
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         {isBorrow ? (

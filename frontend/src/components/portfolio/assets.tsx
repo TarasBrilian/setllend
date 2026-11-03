@@ -4,7 +4,7 @@ import { formatUnits } from "viem";
 import type { ActiveAccount } from "@/lib/account";
 import type { AccountView, CollateralTokenInfo, PricesView } from "@/lib/api";
 import { formatUsd } from "@/lib/format";
-import { formatTokenAmount, MOCK_ASSETS, TOKENS, tokenAmount } from "@/lib/tokens";
+import { formatTokenAmount, TOKENS, tokenAmount } from "@/lib/tokens";
 import { useNearBalances } from "@/lib/use-near-balances";
 import { useWalletBalances, type WalletChain } from "@/lib/use-wallet-balances";
 import { ASSETS, DECIMALS } from "@/shared/assets";
@@ -19,7 +19,6 @@ const WALLET_CHAINS: WalletChain[] = ["Base", "Arbitrum"];
 const WALLET_TOKENS = {
   USDC: { Base: ASSETS.usdcBase, Arbitrum: ASSETS.usdcArb },
   ETH: { Base: ASSETS.ethBase, Arbitrum: ASSETS.ethArb },
-  WBTC: { Base: MOCK_ASSETS.wbtcBase, Arbitrum: MOCK_ASSETS.wbtcArb },
 } as const;
 
 /**
@@ -49,13 +48,12 @@ export function Assets({
   const walletRows: Row[] =
     active.kind === "near"
       ? [
-          { key: "near-native", token: MOCK_ASSETS.near, where: "Wallet · NEAR", amount: units(nearWallet.data?.near, 24) },
+          { key: "near-native", token: ASSETS.wnear, where: "Wallet · NEAR", amount: units(nearWallet.data?.near, 24) },
           { key: "near-usdc", token: ASSETS.usdcNear, where: "Wallet · NEAR", amount: units(nearWallet.data?.usdc, DECIMALS.usdc) },
         ]
       : WALLET_CHAINS.flatMap((chain) => [
           { key: `usdc-${chain}`, token: WALLET_TOKENS.USDC[chain], where: `Wallet · ${chain}`, amount: units(wallet.usdc[chain], DECIMALS.usdc) },
           { key: `eth-${chain}`, token: WALLET_TOKENS.ETH[chain], where: `Wallet · ${chain}`, amount: units(wallet.eth[chain], DECIMALS.eth) },
-          { key: `wbtc-${chain}`, token: WALLET_TOKENS.WBTC[chain], where: `Wallet · ${chain}`, amount: units(wallet.wbtc[chain], 8) },
         ]);
   const rows: Row[] = [
     ...walletRows,

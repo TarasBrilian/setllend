@@ -10,7 +10,14 @@
 | ETH | Arbitrum | 18 | `nep141:arb.omft.near` | Collateral |
 | ETH | Base | 18 | `nep141:base.omft.near` | Collateral |
 
-Proposed collateral for D48 (UI mock only) ⚠️: WBTC on Arbitrum and Base, deposited through 1Click, and NEAR (`nep141:wrap.near`), deposited from a NEAR wallet (D51) or bought with a 1Click swap from USDC or ETH on Arbitrum or Base. Their Intents asset IDs and 1Click support are not checked yet. On Base, cbBTC is more common than WBTC. See [open-questions.md](open-questions.md) #8.
+Collateral added by D48 and D52 (contract work pending), from 1Click `GET /v0/tokens` and keyed dry quotes ✅ 2026-11-03:
+
+| Asset | Chain | Decimals | Intents asset ID | How it arrives |
+|---|---|---|---|---|
+| BTC | Bitcoin | 8 | `nep141:btc.omft.near` | 1Click deposit from the Bitcoin network: 0.0001 BTC in, 0.00009996 BTC out, about 805 s |
+| NEAR | NEAR | 24 | `nep141:wrap.near` | From a NEAR wallet (D51), or a 1Click swap: 5 USDC from Arbitrum → 1.2708 NEAR (about 25 s), from Base → 1.2724 NEAR (about 35 s) |
+
+1Click lists no BTC asset on Arbitrum (ARB, ETH, GMX, SWEAT, USDC, USDT0, WETH) and only cbBTC on Base (`nep141:base-0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf.omft.near`, deposit quoted ✅); cbBTC is not used because no oracle feed prices it (D52). Requests to 1Click from scripts need a `User-Agent` header, or Cloudflare answers 403 (error 1010).
 
 Deposits from NEAR (D51): NEAR goes through `wrap.near` (`near_deposit`, then `ft_transfer_call` to `intents.near`, both in one transaction), native USDC through `ft_transfer_call` on its token contract. `msg` is the receiving Intents account ID; empty credits the sender 📄 (near/intents `d340060`, `ft_on_transfer`). Not tested by us ⚠️ ([open-questions.md](open-questions.md) #9).
 

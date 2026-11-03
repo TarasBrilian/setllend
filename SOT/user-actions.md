@@ -23,6 +23,7 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Action | Mechanism | Decision |
 |---|---|---|
 | Deposit from Arbitrum or Base | 1Click into the user's Intents balance; not collateral until added | D48, D49 |
+| Deposit from Bitcoin | 1Click from any Bitcoin wallet to a deposit address, about 15 minutes; refunds go to a Bitcoin address the user enters | D52 |
 | Deposit from NEAR | `ft_transfer_call` to `intents.near`, `msg` = the receiving account; NEAR is wrapped through `wrap.near` in the same transaction. A NEAR transaction, so the user pays its gas | D51 |
 | Add collateral | `transfer` collateral tokens, `msg = add_collateral{maturity}`, while the loan has debt. No oracle | D48 |
 | Borrow against a loan's collateral | `auth_call` borrow order without escrow, checked with `can_open` at fill | D50 |
