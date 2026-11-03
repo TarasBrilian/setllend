@@ -32,7 +32,7 @@
 | Component | Folder | Role |
 |---|---|---|
 | Contract | `contracts/setllend/` | Escrow, positions/notes, matching rules, health factor, repay, liquidation, maturity settlement |
-| Matcher | `backend/src/matcher/` | In-memory CLOB per maturity, REST + WebSocket, indexes contract events |
+| Matcher | `backend/src/matcher/` | In-memory CLOB per maturity, REST + WebSocket. Events come from a block follower in `backend/src/chain/` (D40 in [backend.md](backend.md)) |
 | Relayer | `backend/src/relayer/` | Submits `execute_intents` and `match_orders`, pays gas |
 | Keeper | `backend/src/keeper/` | Liquidations and maturity settlement |
 | Market-maker agent | `backend/src/mm-agent/` | Quotes fixed lend/borrow rates at a per-maturity base rate ± a spread. The base starts from config and follows recent fills in Setllend's own book, with no external rate source (D35) |
