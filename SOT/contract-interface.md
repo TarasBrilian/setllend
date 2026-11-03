@@ -1,6 +1,6 @@
 # Contract interface
 
-> **Status: APPROVED v0.3 (2026-11-02).** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. v0.3 adds clarifications found while implementing phase 1 of the contract (D37): the `collateral` field of `order_placed`, skip reasons, burn and dust rules, and view shapes; then from its verification pass (D38): netting on `sell_note` cancel, index paging for `get_orders`, and a private `new`. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
+> **Status: v0.4 (2026-11-03), awaiting approval; v0.3 approved 2026-11-02.** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. v0.3 adds clarifications found while implementing phase 1 of the contract (D37): the `collateral` field of `order_placed`, skip reasons, burn and dust rules, and view shapes; then from its verification pass (D38): netting on `sell_note` cancel, index paging for `get_orders`, and a private `new`. v0.4 adds clarifications from phase 2 (D39): the `no_price` skip reason, price validation in the contract, mid-price seizure, and when the price callbacks panic. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
 
 ## Design decisions this interface implements
 
@@ -21,6 +21,7 @@ From [decisions.md](decisions.md). The original proposal numbers P1 to P8 map to
 | D26 | **Bad debt is handled in the MVP:** realized during liquidation and shared pro rata by all note holders of that maturity, through share-based note accounting |
 | D37 | **v0.3 clarifications from phase 1:** sync-path skips, `order_placed.collateral`, burn and dust rules, view shapes, skip reasons |
 | D38 | **v0.3 verification pass:** netting also on `sell_note` cancel, `get_orders` paged by index, `new` is private |
+| D39 | **v0.4 clarifications from phase 2:** `no_price` skips, price validation, mid-price seizure, callback panics |
 
 ## Verified facts this design relies on
 
@@ -31,6 +32,7 @@ Checked against [near/intents](https://github.com/near/intents) `main` on 2026-1
 - `token_ids` passed to us are Intents asset IDs as strings, e.g. `nep141:17208628…`. `sender_id` is the signer of the `transfer` intent.
 - A `transfer` intent may carry **several tokens** in one call. Our contract accepts exactly one.
 - `msg` and `min_gas` of the notification are **flattened** into the `transfer` intent JSON. Default `min_gas` 30 Tgas, minimum 5 Tgas.
+- `auth_call` has its own `min_gas`, **default 10 Tgas** (`AuthCall::MIN_GAS_DEFAULT`, read 2026-11-03). For both, `min_gas` is static gas, and the remaining gas of the receipt is split evenly across the promises it creates, so the call may get more but is only guaranteed `min_gas`.
 - `on_auth(signer_id, msg) -> PromiseOrValue<()>`. Caller must be whitelisted by `predecessor_account_id` (`crates/near/auth-call/src/lib.rs`).
 - `auth_call` runs **detached**: the intent batch succeeds even if `on_auth` fails. The relayer must check the `on_auth` receipt outcome. Keep `attached_deposit` at 0 (it is taken from the user's wNEAR and never refunded on failure).
 - `intents.near::mt_transfer(receiver_id, token_id, amount, approval, memo)` needs **exactly 1 yoctoNEAR** and authenticates the predecessor, so our contract can move its own Intents balance.
@@ -111,7 +113,15 @@ liquidatable:    debt_face > 0  AND  (health_factor < 1  OR  block_timestamp ≥
 ```
 
 - Ratios are in bps, so `× max_ltv` means `× max_ltv / 10^4`. The implementation compares cross-multiplied integers instead of dividing. Worst case `1000 ETH (1e21) × price (~1e12) × 10^4` ≈ 1e37, still below `u128::MAX`.
-- Reject the price if older than `oracle_max_age` or if `conf / price > oracle_max_conf`. Parameter values: [risk-params.md](risk-params.md).
+- **Price validation (D39):** a price is usable only if `price > 0`, `conf / price ≤ oracle_max_conf`, and `publish_time` is within `oracle_max_age` seconds of the block time, before or after (as Pyth checks it). The contract checks the age itself as well as passing it to `list_prices_no_older_than`, because the oracle's source is private. Parameter values: [risk-params.md](risk-params.md).
+- **Seizure uses the mid price (D39):** in `liquidate`, collateral and repaid debt are valued at `price` without `conf`, as in Aave. Only `can_open` and the health factor use the conservative `price ∓ conf`.
+
+```
+seized(repaid)     = repaid × debt_price × (1 + liq_bonus) / collateral_price        (rounded down)
+repay_for(all)     = collateral × collateral_price / (debt_price × (1 + liq_bonus))  (rounded up)
+```
+
+  Both are computed as cross-multiplied integers with the common power of ten cancelled. They overflow above roughly $300M in one call; a liquidator splits a larger position into several calls.
 
 ## Book model
 
@@ -197,12 +207,13 @@ Token: debt token. Amount: USDC the liquidator offers. Anything above the positi
 {"action": "liquidate", "data": {"borrower": "0xabc…", "maturity": "1795766400000000000", "collateral_token": "nep141:arb.omft.near"}}
 ```
 
-- Returns a **Promise**: oracle call → private callback. The callback re-reads the position (another liquidation or repayment may have landed in between) and returns the refund vector, so a non-liquidatable position refunds the keeper in full.
-- Seized collateral = `repaid_usd × (1 + liq_bonus) / collateral_price`, capped at the position's collateral. Paid to the keeper via `mt_transfer`. Excess USDC refunded.
+- Before the oracle call: the token must be the debt token and the position must exist with debt. Otherwise panic (full refund, no oracle call).
+- Returns a **Promise**: oracle call → private callback `on_liquidate_prices`. The callback re-reads the position (another liquidation or repayment may have landed in between) and returns the refund vector. It panics, so the keeper is refunded in full, if the position has no debt, is neither unhealthy nor overdue, has no usable price, or the seizure rounds to 0 (D39). The panic message is the reason.
+- Seized collateral = `repaid_usd × (1 + liq_bonus) / collateral_price` at mid prices (see [Math](#math)), capped at the position's collateral. When capped, the keeper repays only `repay_for(all)`. Paid to the keeper via `mt_transfer` (detached; a failed payout lands in the keeper's free balance). Excess USDC refunded.
 - The repaid USDC goes to the maturity's redemption pool, like `repay`.
 - If the position's collateral reaches zero while debt remains, the rest is realized as bad debt (see [Bad debt](#bad-debt-d26)).
 - Close factor 100% (MVP).
-- The keeper must set `min_gas` on the `transfer` intent high enough for the oracle round trip (proposed 100 Tgas, measure in sandbox).
+- The keeper must set `min_gas` on the `transfer` intent high enough for the oracle round trip. Sandbox 2026-11-03 ✅: a full liquidation burns about 16 Tgas in total with 100 Tgas attached; keep 100 Tgas until measured on mainnet.
 
 Events `liquidated`, and `bad_debt_realized` when it applies.
 
@@ -214,7 +225,7 @@ Caller must be `intents.near`. Owner = `signer_id`. Because `auth_call` is detac
 |---|---|---|---|
 | `cancel` | `{"order_id": "42"}` | No | Signer must own the order. Removes it, returns remaining escrow via `mt_transfer` (or unlocks notes for `sell_note`, then nets them against the signer's debt in that maturity, D20). Allowed at any time, also after expiry or maturity. Event `order_cancelled`, then `netted` if it applies |
 | `sell_note` | `{"maturity": "…", "value": "1050000000", "max_rate_bps": 650, "expires_at": null}` | No | Same placement rules as `lend`/`borrow` (maturity in the future, `value` greater than zero and within the value of the signer's free shares). Locks `shares_for(value)` (round up) and creates an ask. Event `order_placed` (its `size` is the locked shares) |
-| `withdraw_collateral` | `{"maturity": "…", "collateral_token": "…", "amount": "…"}` | **Yes**, if debt remains | No debt: pays immediately. With debt: oracle call → callback re-reads the position, allows it only if `can_open` still holds after withdrawal and `block_timestamp < maturity + grace`. Pays via `mt_transfer`. Event `collateral_withdrawn` |
+| `withdraw_collateral` | `{"maturity": "…", "collateral_token": "…", "amount": "…"}` | **Yes**, if debt remains | No debt: pays immediately. With debt: rejected upfront once `block_timestamp ≥ maturity + grace`; otherwise oracle call → callback `on_withdraw_collateral_prices` re-reads the position and allows it only if `can_open` still holds after withdrawal, still before `maturity + grace`. If the debt was repaid meanwhile, no price is needed. Panics with the reason otherwise (D39). Pays via `mt_transfer`. Event `collateral_withdrawn` |
 | `redeem` | `{"maturity": "…", "value": null}` | No | After maturity. Pays note value from the redemption pool, up to what the pool holds (`null` = all free shares), and burns the matching shares. Unpaid value stays as shares until repayments or liquidations refill the pool. Nothing to pay (no free notes, or an empty pool) panics. Event `redeemed` |
 | `withdraw` | `{"token_id": "…", "amount": null}` | No | Withdraws the internal free balance (failed payouts, D21). `null` = all. Event `withdrawn` |
 
@@ -230,7 +241,8 @@ pub struct Fill { pub bid: U64, pub ask: U64, pub principal: U128 }
 ```
 
 - Permissionless. Max fills per call: [risk-params.md](risk-params.md).
-- If any fill touches a `borrow` ask: one oracle call for the whole batch → private callback `on_match_prices(fills, …)`. If all asks are `sell_note`: executes synchronously, no oracle.
+- If any fill touches a `borrow` ask: one oracle call for the whole batch (the debt feed and every collateral feed) → private callback `on_match_prices(fills, …)`. If all asks are `sell_note`: executes synchronously, no oracle.
+- In the callback, a `borrow` fill without usable prices (failed call, `null`, or a price that fails validation) is skipped with `no_price`. `sell_note` fills in the same batch still settle, since they need no price (D39). A response that doesn't parse as the oracle's JSON panics the callback instead: no fill of the batch executes and no state changes, so the matcher can resubmit the `sell_note` fills alone.
 - **Every fill is validated when it executes**, in the synchronous path and in the callback (orders can be cancelled or filled while the oracle call is in flight). Invalid fills are skipped with event `fill_skipped` (reason), the rest execute. An empty `fills` list panics.
 - Per fill: both orders exist, same maturity, bid is `lend`, owners differ (no self-trade), neither expired, orders crossed, `dt > 0`, fill rate per D17, `principal` within the bid's remaining principal and within the ask's remaining size (principal for `borrow`, converted shares for `sell_note`), the maturity's `V > 0` or `S = 0`, and for `borrow` asks the position passes `can_open` after the fill.
 - **`lend` × `borrow`:** bid's USDC goes to the borrower via `mt_transfer`. Bid owner gets new note shares for value `face` (rounded down), borrower gets debt face (rounded up) and pro-rata collateral moved into the position.
@@ -254,8 +266,10 @@ pub struct Fill { pub bid: U64, pub ask: U64, pub principal: U128 }
   | `notes_wiped_out` | `V = 0` while `S > 0` |
   | `ask_oversize` | Above the ask's remaining principal (`borrow`) or shares (`sell_note`) |
   | `zero_shares` | The fill's note value converts to 0 shares |
+  | `no_price` | `borrow` ask only: no usable price for the collateral or debt feed (D39) |
   | `cannot_open` | `borrow` ask only: the position fails `can_open` after the fill |
 
+- **Gas of `borrow` fills** ✅ measured in sandbox 2026-11-03 against the mock oracle (`contracts/tests/tests/flows.rs`): a batch with 1 / 10 `borrow` fills burns 2.5 / 2.6 Tgas in the call and 13.8 / 60.8 Tgas in total, oracle round trip and payouts included. Prepaid gas sets the limit, as for `sell_note` fills: 10 Tgas static for the oracle call, 10 Tgas for `on_match_prices` plus all unused gas, and 15 Tgas per payout, so 10 `borrow` fills need about 170 Tgas attached. Re-measure on mainnet, where the real oracle and `intents.near` cost more ⚠️.
 - **Gas** ✅ measured in sandbox 2026-11-02 against the mock `intents.near` (`contracts/tests/tests/flows.rs`): `match_orders` with 1 / 10 `sell_note` fills burns 3.6 / 13.2 Tgas in the call itself and 7.6 / 47.3 Tgas including the payout receipts. About 1.1 Tgas per fill in the call (1.2 Tgas when the buyer also nets) and 4.4 Tgas per fill in total. Each payout reserves 15 Tgas of static gas (10 Tgas for `mt_transfer`, 5 Tgas for `on_payout`), so prepaid gas, not burnt gas, sets the batch limit: 10 fills need about 165 Tgas attached. `mt_transfer` on the real `intents.near` costs more than on the mock ⚠️, so re-measure on mainnet before raising the fill count.
 
 ### Payout callback
@@ -265,6 +279,18 @@ pub struct Fill { pub bid: U64, pub ask: U64, pub principal: U128 }
 ```
 
 On `mt_transfer` failure, credit `free_balance[account_id][token_id]` and emit `payout_failed` (the `lost_found` pattern from `escrow-swap`).
+
+### Price callbacks
+
+Each receives the `list_prices_no_older_than` result as its promise result and validates it (see [Math](#math)). All are `#[private]`.
+
+```rust
+#[private] pub fn on_match_prices(&mut self, fills: Vec<Fill>)                                        // match_orders
+#[private] pub fn on_liquidate_prices(&mut self, liquidator: AccountId, amount: U128, data: LiquidateMsg) -> Vec<U128>  // refund vector
+#[private] pub fn on_withdraw_collateral_prices(&mut self, account_id: AccountId, data: WithdrawCollateralMsg) -> Promise
+```
+
+Static gas: 10 Tgas for the oracle call, 10 Tgas for `on_match_prices` and 20 Tgas for the other two, each callback also getting all unused gas.
 
 ### Admin
 
@@ -374,6 +400,6 @@ This is the message the user signs with ERC-191 (`personal_sign`) in their EVM w
 ## Still open in this file
 
 - Who holds the full-access key and when it is removed (D23 keeps it during the hackathon).
-- In the phase 2 oracle callback, `face` and `can_open` still panic on overflow, which fails the whole batch instead of skipping one fill. Only reachable with extreme sizes (about 1e15 units of debt face, roughly $1B); decide in phase 2 whether to map overflow to a skip reason.
-- Gas for `match_orders` with `borrow` fills (oracle round trip) and for `liquidate`. Measure in sandbox in phase 2. `sell_note` fills are measured, see [Matching](#matching).
-- `on_auth` actions that pay out (`cancel`, `withdraw`, `withdraw_collateral`, `redeem`) reserve 15 Tgas for the payout. The mock's 30 Tgas default `min_gas` was enough in sandbox; check the `auth_call` default on mainnet.
+- `on_auth` actions that pay out (`cancel`, `withdraw`, `withdraw_collateral`, `redeem`) reserve 15 Tgas for the payout, and `withdraw_collateral` with debt reserves about 30 Tgas more for the oracle round trip (10 Tgas oracle call, 20 Tgas callback). That is more than the 10 Tgas `auth_call` default guarantees, so the relayer always sets `min_gas` itself (see [pitfalls.md](pitfalls.md#off-chain)). The sandbox mock splits remaining gas like `intents.near`, so its tests pass with the default too and don't prove the default is enough.
+- A future collateral token with few decimals (e.g. BTC with 8) would let a dust debt seize 0 units, so `liquidate` panics (`Nothing to seize`) and only a repayment clears it. Not reachable with the configured ETH tokens (18 decimals); revisit before adding such a token, which needs a redeploy anyway (D22).
+- Gas of `match_orders`, `liquidate`, and `withdraw_collateral` with debt against the real `intents.near` and `aggregate-oracle.near`. Measured in sandbox only, see [Matching](#matching) and [`liquidate`](#liquidate).

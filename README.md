@@ -62,7 +62,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 - **No custody by the operator.** Every fund movement comes from a user-signed intent verified by `intents.near`.
 - **Permissionless matching.** Orders are escrowed on-chain, so anyone can rebuild the book and run a matcher.
 - **Exit without the operator.** Cancel and withdraw work through `auth_call` from any relayer, and ETH collateral returns to its origin chain through the bridge directly.
-- **No admin pause.** If the oracle is stale, new loans and liquidations stop, while repay, cancel, redeem, and withdrawals keep working.
+- **No admin pause.** If the oracle is stale, new loans, liquidations, and collateral withdrawals against open debt stop, while repay, cancel, note sales, redeem, and other withdrawals keep working.
 
 ### Dependencies and risks
 
@@ -88,7 +88,7 @@ Requirements: [rustup](https://rustup.rs) (it installs the Rust version pinned i
 ```bash
 cp .env.example .env              # fill in values as needed, all are optional for local runs
 
-# Contract: unit tests, then sandbox tests (deploy, and order flows through a mock intents.near)
+# Contract: unit tests, then sandbox tests (deploy, and order, liquidation, and bad-debt flows through mock intents.near and oracle contracts)
 (cd contracts && cargo test)
 
 # Backend: API on http://localhost:8080 (GET /health returns {"ok":true})

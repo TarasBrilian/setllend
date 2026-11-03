@@ -212,14 +212,6 @@ fn withdraw_collateral_without_debt_pays_and_deletes_position() {
 }
 
 #[test]
-#[should_panic(expected = "Not implemented: withdrawing collateral with debt needs the oracle")]
-fn withdraw_collateral_with_debt_is_not_implemented_yet() {
-    let mut c = setup();
-    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
-    auth(&mut c, "bob.near", withdraw_collateral_msg(1));
-}
-
-#[test]
 #[should_panic(expected = "Amount exceeds collateral")]
 fn withdraw_collateral_rejects_more_than_collateral() {
     let mut c = setup();
@@ -493,6 +485,106 @@ fn value_left_without_holders_is_dropped() {
     assert_eq!(
         (pool.total_value, pool.total_shares, pool.redemption_pool),
         (0, 0, 0)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+/// Bob's `withdraw_collateral` while debt remains: the oracle call goes out first.
+fn start_withdraw(c: &mut Setllend, amount: u128) {
+    assert!(matches!(
+        auth_result(c, "bob.near", withdraw_collateral_msg(amount)),
+        PromiseOrValue::Promise(_)
+    ));
+    assert_fetched_prices();
+    assert!(events("collateral_withdrawn").is_empty());
+}
+
+fn finish_withdraw(
+    c: &mut Setllend,
+    amount: u128,
+    response: Result<OracleResponse, near_sdk::PromiseError>,
+) {
+    context(CONTRACT);
+    let data = crate::msg::WithdrawCollateralMsg {
+        maturity: U64(MATURITY),
+        collateral_token: ETH_ARB.into(),
+        amount: U128(amount),
+    };
+    let _ = c.on_withdraw_collateral_prices(account("bob.near"), data, response);
+}
+
+#[test]
+fn withdraw_collateral_with_debt_keeps_max_ltv() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    // About 1,008.22 USDC of face at 70% LTV needs 0.7202 ETH at $2,000, so 0.25 ETH is free.
+    start_withdraw(&mut c, ONE_ETH / 4);
+    finish_withdraw(&mut c, ONE_ETH / 4, Ok(oracle_response(2_000)));
+    assert_eq!(
+        payouts(),
+        vec![("bob.near".into(), ETH_ARB.into(), ONE_ETH / 4)]
+    );
+    assert_eq!(events("collateral_withdrawn").len(), 1);
+    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
+    assert_eq!(c.positions[&key].collateral, ONE_ETH * 3 / 4);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+#[should_panic(expected = "Withdrawal exceeds max LTV")]
+fn withdraw_collateral_with_debt_rejects_going_above_max_ltv() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    start_withdraw(&mut c, ONE_ETH * 3 / 10);
+    finish_withdraw(&mut c, ONE_ETH * 3 / 10, Ok(oracle_response(2_000)));
+}
+
+#[test]
+#[should_panic(expected = "Withdrawal exceeds max LTV")]
+fn withdraw_collateral_callback_uses_debt_added_meanwhile() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    // 0.25 ETH is free against about 1,008 USDC of face at $2,000...
+    start_withdraw(&mut c, ONE_ETH / 4);
+    // ...but Bob borrows 200 USDC more into the same position while the oracle call runs.
+    let ask = borrow_with(&mut c, "bob.near", ETH_ARB, 1, 200 * ONE_USDC, 1_000);
+    let bid = lend(&mut c, "carol.near", 200 * ONE_USDC, 1_000);
+    borrow_fill(&mut c, bid, ask, 200 * ONE_USDC).unwrap();
+    finish_withdraw(&mut c, ONE_ETH / 4, Ok(oracle_response(2_000)));
+}
+
+#[test]
+#[should_panic(expected = "No price")]
+fn withdraw_collateral_with_debt_needs_a_price() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    start_withdraw(&mut c, 1);
+    finish_withdraw(&mut c, 1, Err(near_sdk::PromiseError::Failed));
+}
+
+#[test]
+#[should_panic(expected = "Debt is overdue")]
+fn withdraw_collateral_is_blocked_once_debt_is_overdue() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    set_time(MATURITY + config().grace.0);
+    auth(&mut c, "bob.near", withdraw_collateral_msg(1));
+}
+
+#[test]
+fn withdrawal_needs_no_price_if_the_debt_was_repaid_meanwhile() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    start_withdraw(&mut c, ONE_ETH);
+    repay_all(&mut c, "bob.near");
+    finish_withdraw(&mut c, ONE_ETH, Err(near_sdk::PromiseError::Failed));
+    assert_eq!(
+        payouts(),
+        vec![("bob.near".into(), ETH_ARB.into(), ONE_ETH)]
+    );
+    assert!(
+        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
+            .is_none()
     );
     assert_invariants(&c, &ACCOUNTS);
 }

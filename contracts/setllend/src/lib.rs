@@ -12,6 +12,7 @@ mod matching;
 pub mod math;
 pub mod msg;
 mod notes;
+mod oracle;
 mod orders;
 mod payout;
 mod positions;
@@ -25,6 +26,7 @@ mod tests;
 pub use config::{CollateralToken, Config};
 pub use matching::Fill;
 pub use math::Price;
+pub use oracle::{OraclePrice, OracleResponse};
 pub use views::{AccountPositionView, NoteView, OrderView, PoolView, PositionView};
 
 use state::{BalanceKey, NoteBalance, NoteKey, Order, Pool, Position, PositionKey, StorageKey};

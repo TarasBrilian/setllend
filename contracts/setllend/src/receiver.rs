@@ -61,7 +61,10 @@ impl Setllend {
                 require!(is_debt_token, "Wrong token");
                 self.repay(sender_id, amount, data)
             }
-            TransferMsg::Liquidate(_) => env::panic_str("Not implemented: liquidate"),
+            TransferMsg::Liquidate(data) => {
+                require!(is_debt_token, "Wrong token");
+                return PromiseOrValue::Promise(self.liquidate(sender_id, amount, data));
+            }
         };
         PromiseOrValue::Value(vec![U128(refund)])
     }

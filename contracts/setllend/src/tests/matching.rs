@@ -220,22 +220,6 @@ fn fill_moving_zero_shares_is_skipped() {
 }
 
 #[test]
-#[should_panic(expected = "Not implemented: borrow fills need the oracle")]
-fn batch_with_a_borrow_ask_is_not_implemented_yet() {
-    let mut c = setup();
-    let (_, sell_ask) = note_seller(&mut c, 500 * ONE_USDC, 900);
-    let borrow_ask = borrow(&mut c, "dave.near", ONE_ETH, 100 * ONE_USDC, 900);
-    let bid = lend(&mut c, "carol.near", 300 * ONE_USDC, 800);
-    match_orders(
-        &mut c,
-        vec![
-            fill(bid, sell_ask, ONE_USDC),
-            fill(bid, borrow_ask, ONE_USDC),
-        ],
-    );
-}
-
-#[test]
 #[should_panic(expected = "No fills")]
 fn empty_batch_panics() {
     let mut c = setup();
@@ -460,4 +444,177 @@ fn netting_also_runs_for_the_ask_owner() {
         shares - value
     );
     assert_invariants(&c, &ACCOUNTS);
+}
+
+/// `match_orders` as the matcher sends it, then `on_match_prices` with `response`.
+fn match_with_oracle(
+    c: &mut Setllend,
+    fills: Vec<Fill>,
+    response: Result<OracleResponse, near_sdk::PromiseError>,
+) {
+    context(MATCHER);
+    assert!(matches!(
+        c.match_orders(fills.clone()),
+        PromiseOrValue::Promise(_)
+    ));
+    assert_fetched_prices();
+    assert!(
+        created_calls()
+            .iter()
+            .any(|(receiver, method, _)| receiver == CONTRACT && method == "on_match_prices")
+    );
+    // Nothing settles before the prices arrive.
+    assert!(events("order_filled").is_empty());
+    context(CONTRACT);
+    c.on_match_prices(fills, response);
+}
+
+/// Alice sells notes, Dave asks to borrow, and Carol bids into both. Returns (bid, sell, borrow).
+fn mixed_book(c: &mut Setllend) -> (u64, u64, u64) {
+    let (_, sell_ask) = note_seller(c, 500 * ONE_USDC, 900);
+    let borrow_ask = borrow(c, "dave.near", ONE_ETH, 100 * ONE_USDC, 900);
+    let bid = lend(c, "carol.near", 300 * ONE_USDC, 800);
+    (bid, sell_ask, borrow_ask)
+}
+
+#[test]
+fn batch_with_a_borrow_ask_settles_in_the_price_callback() {
+    let mut c = setup();
+    let (bid, sell_ask, borrow_ask) = mixed_book(&mut c);
+    let fills = vec![
+        fill(bid, sell_ask, 100 * ONE_USDC),
+        fill(bid, borrow_ask, 100 * ONE_USDC),
+    ];
+    match_with_oracle(&mut c, fills, Ok(oracle_response(2_000)));
+
+    assert!(skipped_reasons().is_empty());
+    let kinds: Vec<Value> = events("order_filled")
+        .iter()
+        .map(|data| data["ask_kind"].clone())
+        .collect();
+    assert_eq!(kinds, vec![json!("sell_note"), json!("borrow")]);
+    assert_eq!(
+        payouts(),
+        vec![
+            ("alice.near".into(), USDC.into(), 100 * ONE_USDC),
+            ("dave.near".into(), USDC.into(), 100 * ONE_USDC),
+        ]
+    );
+    let position = c
+        .get_position(account("dave.near"), U64(MATURITY), ETH_ARB.into())
+        .unwrap();
+    assert_eq!(position.collateral, U128(ONE_ETH));
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn price_callback_revalidates_fills() {
+    let mut c = setup();
+    let (bid, _, borrow_ask) = mixed_book(&mut c);
+    let fills = vec![fill(bid, borrow_ask, 100 * ONE_USDC)];
+    context(MATCHER);
+    let _ = c.match_orders(fills.clone());
+    // Dave cancels while the oracle call is in flight.
+    auth(
+        &mut c,
+        "dave.near",
+        json!({"action": "cancel", "data": {"order_id": borrow_ask.to_string()}}),
+    );
+    context(CONTRACT);
+    c.on_match_prices(fills, Ok(oracle_response(2_000)));
+    assert_eq!(skipped_reasons(), vec!["ask_not_found"]);
+    assert!(events("order_filled").is_empty());
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn without_a_usable_price_borrow_fills_skip_and_note_sales_settle() {
+    let eth = eth_price(2_000);
+    let fresh_usdc = (USDC_FEED.to_string(), oracle_price(&usdc_price(), 0));
+    let with_eth = |price: Option<OraclePrice>| {
+        Ok(OracleResponse::from([
+            (ETH_FEED.to_string(), price),
+            fresh_usdc.clone(),
+        ]))
+    };
+    let cases: Vec<(&str, Result<OracleResponse, near_sdk::PromiseError>)> = vec![
+        ("call failed", Err(near_sdk::PromiseError::Failed)),
+        ("stale on the oracle", with_eth(None)),
+        (
+            "feed missing",
+            Ok(OracleResponse::from([fresh_usdc.clone()])),
+        ),
+        ("older than 60 s", with_eth(oracle_price(&eth, 61))),
+        ("61 s in the future", with_eth(oracle_price(&eth, -61))),
+        (
+            "conf above 1%",
+            with_eth(oracle_price(
+                &Price {
+                    conf: 2_000_000_001, // $20.00000001 on $2,000
+                    ..eth
+                },
+                0,
+            )),
+        ),
+        (
+            "zero price",
+            with_eth(oracle_price(&Price { price: 0, ..eth }, 0)),
+        ),
+        (
+            "debt feed stale",
+            Ok(OracleResponse::from([
+                (ETH_FEED.to_string(), oracle_price(&eth, 0)),
+                (USDC_FEED.to_string(), None),
+            ])),
+        ),
+    ];
+    for (case, response) in cases {
+        // The mocked blockchain is thread-local: a new thread starts with empty storage.
+        std::thread::spawn(move || without_a_usable_price(case, response))
+            .join()
+            .unwrap_or_else(|_| panic!("case failed: {case}"));
+    }
+}
+
+fn without_a_usable_price(case: &str, response: Result<OracleResponse, near_sdk::PromiseError>) {
+    {
+        let mut c = setup();
+        let (bid, sell_ask, borrow_ask) = mixed_book(&mut c);
+        let fills = vec![
+            fill(bid, borrow_ask, 100 * ONE_USDC),
+            fill(bid, sell_ask, 100 * ONE_USDC),
+        ];
+        match_with_oracle(&mut c, fills, response);
+        assert_eq!(skipped_reasons(), vec!["no_price"], "{case}");
+        let filled = events("order_filled");
+        assert_eq!(filled.len(), 1, "{case}");
+        assert_eq!(filled[0]["ask_kind"], "sell_note", "{case}");
+        assert!(
+            c.get_position(account("dave.near"), U64(MATURITY), ETH_ARB.into())
+                .is_none(),
+            "{case}"
+        );
+        assert_invariants(&c, &ACCOUNTS);
+    }
+}
+
+#[test]
+fn prices_at_the_limits_are_accepted() {
+    let mut c = setup();
+    let (bid, _, borrow_ask) = mixed_book(&mut c);
+    let eth = Price {
+        conf: 2_000_000_000, // exactly 1% of $2,000
+        ..eth_price(2_000)
+    };
+    let response = OracleResponse::from([
+        (ETH_FEED.to_string(), oracle_price(&eth, 60)),
+        (USDC_FEED.to_string(), oracle_price(&usdc_price(), 60)),
+    ]);
+    match_with_oracle(
+        &mut c,
+        vec![fill(bid, borrow_ask, 100 * ONE_USDC)],
+        Ok(response),
+    );
+    assert!(skipped_reasons().is_empty());
+    assert_eq!(events("order_filled").len(), 1);
 }

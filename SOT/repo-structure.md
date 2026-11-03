@@ -10,7 +10,7 @@ setllend/
 ├── contracts/            # Rust (near-sdk + cargo-near), one Cargo workspace (D36)
 │   ├── rust-toolchain.toml  # Rust version, same as the reproducible build image
 │   ├── setllend/         # main contract: order escrow, notes, match, repay, liquidation, maturity
-│   ├── mocks/            # one crate per mock: intents/ (`mock-intents`), oracle/ in phase 2
+│   ├── mocks/            # one crate per mock: intents/ (`mock-intents`), oracle/ (`mock-oracle`)
 │   └── tests/            # crate `setllend-tests`: helpers in src/, near-workspaces sandbox tests in tests/
 ├── backend/              # Node + TypeScript, one process
 │   └── src/              # index.ts starts the server, app.ts builds the Hono app, config.ts, db.ts

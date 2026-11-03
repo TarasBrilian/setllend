@@ -14,8 +14,10 @@ use near_sdk::serde_json::{self, json};
 use near_sdk::store::LookupMap;
 use near_sdk::{AccountId, Gas, GasWeight, NearToken, Promise, env, near, require};
 
-/// Default `min_gas` of a notification, as on `intents.near`.
+/// Default `min_gas` of a `transfer` notification and of an `auth_call`, as on `intents.near`.
+/// Both calls also get a share of the remaining gas (weight 1), as there.
 const DEFAULT_MIN_GAS: Gas = Gas::from_tgas(30);
+const AUTH_CALL_MIN_GAS_DEFAULT: Gas = Gas::from_tgas(10);
 const GAS_RESOLVE: Gas = Gas::from_tgas(10);
 
 #[near(contract_state)]
@@ -163,7 +165,7 @@ impl MockIntents {
     /// call succeeds even if `on_auth` fails.
     pub fn auth_call(&mut self, receiver_id: AccountId, msg: String, min_gas: Option<U64>) {
         let args = json!({ "signer_id": env::predecessor_account_id(), "msg": msg });
-        let gas = min_gas.map_or(DEFAULT_MIN_GAS, |g| Gas::from_gas(g.0));
+        let gas = min_gas.map_or(AUTH_CALL_MIN_GAS_DEFAULT, |g| Gas::from_gas(g.0));
         Promise::new(receiver_id)
             .function_call_weight(
                 "on_auth",
