@@ -1,6 +1,6 @@
 # Backend: matcher, relayer, keeper
 
-> **Status: APPROVED v0.2 (2026-11-03).** D40 to D46 in [decisions.md](decisions.md). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
+> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
 One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, a block follower, and three components that share them. The market-maker agent and the 1Click wrapper are out of scope here (scheduled 2026-11-11 and 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what they will use.
 
@@ -211,6 +211,7 @@ SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the boo
 | `cursor` | Last processed height of the live cursor, and the range still to backfill | Follower restart |
 | `events` | Every Setllend event: `block_height`, `receipt_id`, `log_index`, `tx_hash`, `block_timestamp`, `event`, `data` (JSON). Primary key `(receipt_id, log_index)` | Trade history, rate chart, account history, the market-maker agent's fill feed (D35) |
 | `submissions` | Every transaction we send: `tx_hash`, `kind` (`intent`, `match`, `liquidate`), signer, request JSON, status, error, timestamps | In-flight batch recovery, relayer audit, keeper history |
+| `oneclick` | Every 1Click quote made through the API (D49): id, account, direction (`deposit`, `withdraw`), asset in and out, chain, amount, deposit address, 1Click status, timestamps | The user's history, status polling |
 
 Schema changes run as numbered migrations at startup.
 
@@ -229,6 +230,7 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `NEAR_INTENTS_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_KEEPER_SIGNING_KEY` | none (keeper read-only) | **Yes** |
+| `ONE_CLICK_JWT` | none (1Click endpoints off). Already in `.env.example` | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
 
@@ -240,10 +242,15 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 |---|---|---|
 | GET | `/health` | `ok`, follower lag, last batch, last keeper scan, storage alert |
 | GET | `/api/config` | Contract `Config` (cached) |
-| GET | `/api/maturities` | `[{maturity, open}]`, `open` = still in the future |
+| GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
+| GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |
 | GET | `/api/book/:maturity` | `{bids, asks}`: price levels `{rate_bps, size, orders}` plus the order list. Level sizes are USDC principal; a `sell_note` ask's principal is its `remaining_value` discounted at its own rate to `now` (display only), and its order entry also carries `remaining_value` |
-| GET | `/api/trades/:maturity?limit=` | Recent `order_filled` events, newest first |
-| GET | `/api/accounts/:account` | Open orders, positions with health, notes, free balances (views plus `shared/math.ts`) |
+| GET | `/api/trades/:maturity?since=&limit=` | `order_filled` events with their block time, newest first, from the `events` table. `since` (ns) bounds the rate chart's range |
+| GET | `/api/accounts/:account` | Open orders, loans with health (positions until D48), notes, free balances (views plus `shared/math.ts`); deposits, the Intents balance of every known token (`mt_batch_balance_of` on `intents.near`); and per maturity and side the account's fill totals: principal, face, and principal-weighted rate. Fills are attributed through the `order_placed` owner of each order, since `order_filled` names only order IDs (D49) |
+| GET | `/api/accounts/:account/history?before=&limit=` | Every event that names the account (orders, fills through their orders, repay, redeem, withdrawals, liquidation) and its 1Click deposits and withdrawals from `oneclick`, newest first |
+| GET | `/api/collateral-tokens` | Collateral tokens with their parameters and frozen flag (D48; until then, the `Config` tokens with the global values) |
+| POST | `/api/oneclick/quote` | `{account, direction, asset, chain, amount, to?}` → a 1Click quote with its deposit address, stored in `oneclick`. `to` buys another asset, such as NEAR from USDC (D48). Uses `ONE_CLICK_JWT`, which never reaches the browser |
+| GET | `/api/oneclick/:id` | Status of a stored quote. The backend also polls every open one until 1Click reports a final status |
 | GET | `/api/prices` | Validated oracle prices and their age |
 | GET | `/api/intents/salt` | `{salt}` from `current_salt` |
 | POST | `/api/intents` | See [Relayer](#submitting-user-intents) |
@@ -257,11 +264,22 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 - `{"type": "book", "maturity", "bids", "asks"}`: the full aggregated book after every reload (books are small enough that diffs are not worth it).
 - `{"type": "trade", ...order_filled}`.
 - `{"type": "event", "account", "event"}`: every event that names the account, including the outcome of its relayed intents.
+- `{"type": "oneclick", "account", ...}`: a status change of one of the account's 1Click quotes.
+
+## D48 changes
+
+Written after the contract implements D48 ([contract-interface.md](contract-interface.md#proposed-deposits-and-multi-token-collateral-d48)); everything above describes v0.5 until then.
+
+- **Shared types and math:** the new `msg` and `auth_call` shapes, loan and collateral-token views, new events, and `shared/math.ts` with per-token `max_ltv` and `liq_threshold` (`can_open` and health sum over a loan's tokens). Golden fixture entries for each.
+- **Relayer:** accepts a `transfer` with several tokens for `borrow` and with one or more collateral tokens for `add_collateral` (replaces the one-token rule of D42 for those two), and the `auth_call` borrow against an existing loan. Rejects a frozen token before simulating, for a clearer error.
+- **Matcher:** the `can_open` pre-check of a borrow fill counts the loan's existing collateral plus the order's escrow released by the fill, each at its own `max_ltv`. One oracle call per batch still covers every feed involved.
+- **Keeper:** reads loans with the paged loans view (D45 becomes `get_loans`), validates every collateral feed, marks a loan eligible at the summed threshold, and estimates the pro rata seizure per token. Seized collateral can be several tokens; they stay on the backend account until sold by hand.
+- **Parameter updates:** an owner update to a token's parameters applies at once (D50). The book, keeper, and `/api/collateral-tokens` reload on the update event, and loans it makes liquidatable are picked up by the next scan like any other.
 
 ## Interfaces for later components
 
 - **Market-maker agent** (`mm-agent/`, D35): reads `book.snapshot(maturity)` and subscribes to `matcher.onFill`. Places and cancels orders as an ordinary participant through the same intent builders and `relayer.submit`. It needs its own Intents account, separate from the keeper's, so its orders never self-trade against keeper flows and its capital stays apart.
-- **1Click wrapper** (`oneclick/`, D11): `quoteDeposit`, `quoteWithdraw`, `status`. The keeper calls it later to sell seized ETH for USDC; until then that is manual.
+- **1Click wrapper** (`oneclick/`, D11): `quoteDeposit`, `quoteWithdraw`, `status`. Behind the API's 1Click endpoints (D49). The keeper calls it later to sell seized collateral for USDC; until then that is manual.
 
 ## Tests
 

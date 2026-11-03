@@ -1,6 +1,6 @@
 # Risk parameters
 
-> **Status: APPROVED v0.1 (2026-11-02).** All values are fixed at contract init (D22), so a change means a redeploy.
+> **Status: APPROVED v0.1 (2026-11-02).** All values are fixed at contract init (D22), so a change means a redeploy. D48 and D50, once implemented, replace this for collateral: each token gets its own values, which the owner can update at once ([per-token parameters](#per-token-parameters-d48-proposed)).
 
 Only lending-mechanism parameters (as in Aave or Morpho) and internal technical settings live here. There are **no user-facing limits**: no minimum or maximum order size, no deposit caps, no order-count limits, no rate range (D24).
 

@@ -32,8 +32,9 @@ type Common = {
 
 const toPercent = (bps: number | undefined) => (bps === undefined ? "" : (bps / 100).toFixed(2));
 
-type Source = "Deposited" | "New deposit";
-const SOURCES: Source[] = ["Deposited", "New deposit"];
+// "Existing loan" borrows more against the collateral of the loan already open in this maturity,
+// adding none (an `auth_call` borrow, D50).
+type Source = "New deposit" | "Deposited" | "Existing loan";
 type Leg = { token: TokenId; amount: string };
 
 /** Lend or Borrow order form. Submitting only simulates (D47). Borrow collateral follows the proposed D48. */
@@ -55,6 +56,8 @@ export function OrderForm({
   const account = address?.toLowerCase();
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: isBorrow && account !== undefined });
   const deposits = mine.data?.deposits ?? {};
+  // One loan per maturity (D48): a new borrow adds to the loan already open here, if any.
+  const loan = mine.data?.loans.find((l) => l.maturity === book.maturity);
 
   const [mode, setMode] = useState<OrderMode>(initialMode);
   const [amount, setAmount] = useState("1000");
@@ -70,18 +73,22 @@ export function OrderForm({
   const rateBps = mode === "Market" ? (market.avgBps ?? 0) : limitBps;
   const face = faceAtMaturity(principal, rateBps, maturityToMs(book.maturity), nowMs);
 
-  const amounts = Object.fromEntries(legs.map((l) => [l.token, Number(l.amount) || 0]));
+  const added = source === "Existing loan" ? {} : Object.fromEntries(legs.map((l) => [l.token, Number(l.amount) || 0]));
+  const amounts = { ...added };
+  for (const [token, raw] of Object.entries(loan?.collateral ?? {})) amounts[token] = (amounts[token] ?? 0) + tokenAmount(token, raw);
   const collateral = legsOf(amounts, tokens.data, prices);
   const limit = borrowLimit(collateral);
+  const existingDebt = loan ? usdcToNumber(loan.debt_face) : 0;
+  const totalDebt = existingDebt + face;
   const available = (token: TokenId) => (deposits[token] ? tokenAmount(token, deposits[token]) : 0);
 
   let error: string | undefined;
   if (principal <= 0) error = "Enter an amount";
   else if (mode === "Market" && market.filled === 0) error = "No orders to fill. Use Limit";
   else if (rateBps <= 0) error = "Enter a rate";
-  else if (isBorrow && collateral.every((c) => c.amount <= 0)) error = "Enter collateral";
+  else if (isBorrow && source !== "Existing loan" && Object.values(added).every((a) => a <= 0)) error = "Enter collateral";
   else if (isBorrow && source === "Deposited" && legs.some((l) => (Number(l.amount) || 0) > available(l.token))) error = "More than your deposit";
-  else if (isBorrow && face > limit) error = "Above your borrow limit";
+  else if (isBorrow && totalDebt > limit) error = "Above your borrow limit";
 
   let rateHint: React.ReactNode;
   if (mode === "Market") {
@@ -97,17 +104,17 @@ export function OrderForm({
     rateHint = `Waits in the book. Market rate is ${formatRate(bestRate)}.`;
   }
 
-  const depositSteps = collateral
-    .filter((c) => c.amount > 0)
-    .map((c) =>
-      TOKENS[c.token].symbol === "NEAR"
-        ? `Buy ${formatTokenAmount(c.token, c.amount)} with a 1Click swap`
-        : `Deposit ${formatTokenAmount(c.token, c.amount)} from ${TOKENS[c.token].chain} via 1Click`,
+  const depositSteps = Object.entries(added)
+    .filter(([, amount]) => amount > 0)
+    .map(([token, amount]) =>
+      TOKENS[token].symbol === "NEAR"
+        ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap`
+        : `Deposit ${formatTokenAmount(token, amount)} from ${TOKENS[token].chain} via 1Click`,
     );
   const steps = isBorrow
     ? [
         ...(source === "New deposit" ? depositSteps : []),
-        "Sign the borrow order with your wallet",
+        source === "Existing loan" ? "Sign the borrow order with your wallet (no collateral added)" : "Sign the borrow order with your wallet",
         `Order placed. After a match, USDC is sent to ${chain}`,
       ]
     : [
@@ -155,12 +162,17 @@ export function OrderForm({
             source={source}
             onSource={setSource}
             available={available}
-            canUseDeposits={account !== undefined}
+            sources={account === undefined ? [] : loan ? ["New deposit", "Deposited", "Existing loan"] : ["New deposit", "Deposited"]}
           />
+          {loan && (
+            <p className="-mt-1.5 text-xs text-faint">
+              Adds to your {formatMaturity(loan.maturity)} loan: {formatUsd(existingDebt)} debt today. Health and limit below count it.
+            </p>
+          )}
           {principal > 0 && collateral.some((c) => c.value > 0) && (
             <HealthBar
-              health={health(face, collateral)}
-              liquidation={collateral.map((c, i) => ({ token: c.token, price: liquidationPriceOf(face, collateral, i) })).filter((_, i) => collateral[i].amount > 0)}
+              health={health(totalDebt, collateral)}
+              liquidation={collateral.map((c, i) => ({ token: c.token, price: liquidationPriceOf(totalDebt, collateral, i) })).filter((_, i) => collateral[i].amount > 0)}
             />
           )}
         </>
@@ -174,8 +186,9 @@ export function OrderForm({
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         {isBorrow ? (
           <>
-            <Row label="Debt at maturity" value={formatUsd(face)} />
-            <Row label="Borrow limit" value={limit > 0 ? `${formatUsd(limit)} (${Math.round((face / limit) * 100)}% used)` : "–"} tone={face > limit ? "warn" : undefined} />
+            <Row label={loan ? "New debt at maturity" : "Debt at maturity"} value={formatUsd(face)} />
+            {loan && <Row label="Loan debt after" value={formatUsd(totalDebt)} />}
+            <Row label="Borrow limit" value={limit > 0 ? `${formatUsd(limit)} (${Math.round((totalDebt / limit) * 100)}% used)` : "–"} tone={totalDebt > limit ? "warn" : undefined} />
           </>
         ) : (
           <>
@@ -199,7 +212,7 @@ function CollateralLegs({
   source,
   onSource,
   available,
-  canUseDeposits,
+  sources,
 }: {
   legs: Leg[];
   onChange: (legs: Leg[]) => void;
@@ -207,7 +220,8 @@ function CollateralLegs({
   source: Source;
   onSource: (source: Source) => void;
   available: (token: TokenId) => number;
-  canUseDeposits: boolean;
+  /** Sources the user can pick; empty before connecting (new deposit only). */
+  sources: Source[];
 }) {
   const [adding, setAdding] = useState(false);
   const addable = (tokens ?? []).filter((t) => !t.frozen && !legs.some((l) => l.token === t.token_id));
@@ -215,59 +229,69 @@ function CollateralLegs({
 
   return (
     <div>
-      <div className="mb-1.5 flex items-center justify-between text-sm">
-        <span className="text-muted">Collateral</span>
-        {canUseDeposits && <Segmented options={SOURCES} value={source} onChange={onSource} />}
-      </div>
-      <ul className="space-y-1.5">
-        {legs.map((leg, i) => (
-          <li key={leg.token} className="rounded-xl border border-line bg-background/50 px-3 py-2 focus-within:border-accent/60">
-            <div className="flex items-center gap-2">
-              <TokenIcon token={leg.token} className="size-5 shrink-0" />
-              <span className="shrink-0 text-sm text-muted">{tokenLabel(leg.token)}</span>
-              <input
-                inputMode="decimal"
-                value={leg.amount}
-                onChange={(e) => set(i, { ...leg, amount: e.target.value })}
-                className="w-full min-w-0 bg-transparent text-right text-lg font-semibold tabular-nums outline-none"
-              />
-              {legs.length > 1 && (
-                <button type="button" aria-label={`Remove ${tokenLabel(leg.token)}`} className="shrink-0 px-1 text-faint hover:text-white" onClick={() => set(i, null)}>
-                  ×
+      <p className="mb-1.5 text-sm text-muted">Collateral</p>
+      {sources.length > 1 && (
+        <div className="mb-2">
+          <Segmented options={sources} value={source} onChange={onSource} />
+        </div>
+      )}
+      {source === "Existing loan" ? (
+        <p className="rounded-xl border border-line bg-background/50 px-3 py-2.5 text-xs text-muted">
+          No new collateral. The loan&apos;s current collateral backs the extra debt.
+        </p>
+      ) : (
+        <>
+        <ul className="space-y-1.5">
+          {legs.map((leg, i) => (
+            <li key={leg.token} className="rounded-xl border border-line bg-background/50 px-3 py-2 focus-within:border-accent/60">
+              <div className="flex items-center gap-2">
+                <TokenIcon token={leg.token} className="size-5 shrink-0" />
+                <span className="shrink-0 text-sm text-muted">{tokenLabel(leg.token)}</span>
+                <input
+                  inputMode="decimal"
+                  value={leg.amount}
+                  onChange={(e) => set(i, { ...leg, amount: e.target.value })}
+                  className="w-full min-w-0 bg-transparent text-right text-lg font-semibold tabular-nums outline-none"
+                />
+                {legs.length > 1 && (
+                  <button type="button" aria-label={`Remove ${tokenLabel(leg.token)}`} className="shrink-0 px-1 text-faint hover:text-white" onClick={() => set(i, null)}>
+                    ×
+                  </button>
+                )}
+              </div>
+              {source === "Deposited" && (
+                <button type="button" className="mt-0.5 text-xs text-faint hover:text-muted" onClick={() => set(i, { ...leg, amount: String(available(leg.token)) })}>
+                  Deposited: {formatTokenAmount(leg.token, available(leg.token))} · Max
                 </button>
               )}
+            </li>
+          ))}
+        </ul>
+        {addable.length > 0 &&
+          (adding ? (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {addable.map((t) => (
+                <button
+                  key={t.token_id}
+                  type="button"
+                  className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs text-muted hover:text-white"
+                  onClick={() => {
+                    onChange([...legs, { token: t.token_id, amount: "" }]);
+                    setAdding(false);
+                  }}
+                >
+                  <TokenIcon token={t.token_id} className="size-3.5" />
+                  {tokenLabel(t.token_id)}
+                </button>
+              ))}
             </div>
-            {source === "Deposited" && (
-              <button type="button" className="mt-0.5 text-xs text-faint hover:text-muted" onClick={() => set(i, { ...leg, amount: String(available(leg.token)) })}>
-                Deposited: {formatTokenAmount(leg.token, available(leg.token))} · Max
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-      {addable.length > 0 &&
-        (adding ? (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {addable.map((t) => (
-              <button
-                key={t.token_id}
-                type="button"
-                className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-xs text-muted hover:text-white"
-                onClick={() => {
-                  onChange([...legs, { token: t.token_id, amount: "" }]);
-                  setAdding(false);
-                }}
-              >
-                <TokenIcon token={t.token_id} className="size-3.5" />
-                {tokenLabel(t.token_id)}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <button type="button" className="mt-1.5 text-xs font-medium text-accent-soft hover:text-accent" onClick={() => setAdding(true)}>
-            + Add token
-          </button>
-        ))}
+          ) : (
+            <button type="button" className="mt-1.5 text-xs font-medium text-accent-soft hover:text-accent" onClick={() => setAdding(true)}>
+              + Add token
+            </button>
+          ))}
+        </>
+      )}
     </div>
   );
 }
