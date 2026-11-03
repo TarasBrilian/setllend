@@ -1,11 +1,13 @@
-// Intent payloads for intents.near: the message a user signs with ERC-191 (`personal_sign`) and
-// the relayer submits with `execute_intents`. Field names and encodings follow near/intents
-// (contracts/defuse/core, read at commit d340060 on 2026-11-03):
+// Intent payloads for intents.near: the message a user signs with ERC-191 (`personal_sign`), or a
+// NEAR account with NEP-413, and the relayer submits with `execute_intents`. Field names and
+// encodings follow near/intents (contracts/defuse/core, read at commit d340060 on 2026-11-03):
 // - payload: {signer_id, verifying_contract, deadline (RFC 3339), nonce (base64), intents}
 // - transfer: {intent, receiver_id, tokens, msg, min_gas}; `msg` and `min_gas` are flattened
 // - auth_call: {intent, contract_id, msg, min_gas}; `attached_deposit` stays 0, so it is omitted
 // - gas is a decimal string of gas units
 // - versioned nonce: magic 5628f6c6 ‖ version 0 ‖ salt (4) ‖ deadline ns (i64 LE) ‖ 15 random bytes
+// - NEP-413: {message: JSON of {signer_id, deadline, intents}, nonce (base64), recipient}, the
+//   verifying contract as `recipient`
 
 import { ACCOUNTS } from "./assets.ts";
 import { type AccountId, type TokenId, type U128, dateToNs, isAccountId, u128 } from "./encoding.ts";
@@ -168,6 +170,89 @@ export function erc191Signature(hexSignature: string): string {
 
 export function signedErc191(payload: string, hexSignature: string): SignedErc191Payload {
   return { standard: "erc191", payload, signature: erc191Signature(hexSignature) };
+}
+
+/**
+ * NEP-413 payload of a NEAR account's intents (D51; the keeper's, D43). `message` is the JSON
+ * `{signer_id, deadline, intents}`; the versioned nonce and the verifying contract
+ * (`recipient`) sit beside it. Built once and submitted unchanged, like the ERC-191 payload.
+ */
+export type Nep413Payload = { message: string; nonce: string; recipient: AccountId };
+
+export function buildNep413Payload(params: {
+  signerId: AccountId;
+  intents: SetllendIntent[];
+  deadline: Date;
+  salt: string;
+  random?: Uint8Array;
+  verifyingContract?: AccountId;
+}): Nep413Payload {
+  if (!isAccountId(params.signerId)) throw new TypeError("signerId must be a lowercase account ID");
+  const message = JSON.stringify({
+    signer_id: params.signerId,
+    deadline: params.deadline.toISOString(),
+    intents: params.intents,
+  });
+  return {
+    message,
+    nonce: versionedNonce(params.salt, params.deadline, params.random),
+    recipient: params.verifyingContract ?? ACCOUNTS.intents,
+  };
+}
+
+/** NEP-413 prefix: 2^31 + 413, so a signed message can never be a valid transaction. */
+const NEP413_TAG = 2 ** 31 + 413;
+
+/**
+ * The bytes whose SHA-256 the key signs: the tag (u32 LE), then the borsh payload `message`,
+ * `nonce` ([u8; 32]), `recipient`, and no callback URL. A wallet's `signMessage` builds and
+ * hashes these itself from `message`, `nonce`, and `recipient`; the keeper signs the hash.
+ */
+export function nep413SigningBytes(payload: Nep413Payload): Uint8Array<ArrayBuffer> {
+  const nonce = fromBase64(payload.nonce);
+  if (nonce.length !== 32) throw new TypeError("nonce must be 32 bytes");
+  const encoder = new TextEncoder();
+  const message = encoder.encode(payload.message);
+  const recipient = encoder.encode(payload.recipient);
+  const bytes = new Uint8Array(4 + 4 + message.length + 32 + 4 + recipient.length + 1);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+  view.setUint32(offset, NEP413_TAG, true);
+  offset += 4;
+  view.setUint32(offset, message.length, true);
+  bytes.set(message, (offset += 4));
+  offset += message.length;
+  bytes.set(nonce, offset);
+  offset += 32;
+  view.setUint32(offset, recipient.length, true);
+  bytes.set(recipient, (offset += 4));
+  // The last byte stays 0: `callback_url` is `None`.
+  return bytes;
+}
+
+/** SHA-256 of `nep413SigningBytes`, the 32 bytes an ed25519 key signs. */
+export async function nep413Hash(payload: Nep413Payload): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", nep413SigningBytes(payload)));
+}
+
+/** One element of `execute_intents({signed: [...]})` for a NEAR account's signature. */
+export type SignedNep413Payload = {
+  standard: "nep413";
+  payload: Nep413Payload;
+  /** `ed25519:` + base58, registered for the signer on `intents.near` (`add_public_key`). */
+  public_key: string;
+  /** `ed25519:` + base58 of the 64-byte signature. */
+  signature: string;
+};
+
+export function signedNep413(payload: Nep413Payload, publicKey: string, signature: Uint8Array): SignedNep413Payload {
+  if (!/^ed25519:[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(publicKey)) throw new TypeError("publicKey must be ed25519:<base58>");
+  if (signature.length !== 64) throw new TypeError("signature must be 64 bytes");
+  return { standard: "nep413", payload, public_key: publicKey, signature: `ed25519:${toBase58(signature)}` };
+}
+
+function fromBase64(text: string): Uint8Array {
+  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 }
 
 function toBase64(bytes: Uint8Array): string {

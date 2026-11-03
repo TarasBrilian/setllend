@@ -1,13 +1,18 @@
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ASSETS } from "./assets.ts";
 import {
   MIN_GAS,
   buildIntentPayload,
+  buildNep413Payload,
   erc191Signature,
+  nep413Hash,
+  nep413SigningBytes,
   setllendAuthCall,
   setllendTransfer,
   setllendTransferMany,
   signedErc191,
+  signedNep413,
   versionedNonce,
 } from "./intents.ts";
 
@@ -184,3 +189,66 @@ describe("ERC-191 signature", () => {
     expect(signedErc191("{}", `0x${r}${s}1b`)).toMatchObject({ standard: "erc191", payload: "{}" });
   });
 });
+
+describe("NEP-413 payload", () => {
+  const keeper = "backend.setllend.near";
+  const intent = setllendTransfer(ASSETS.usdcNear, 5n, {
+    action: "liquidate",
+    data: { borrower: SIGNER, maturity: MATURITY },
+  });
+  const payload = buildNep413Payload({ signerId: keeper, intents: [intent], deadline: DEADLINE, salt: "0a1b2c3d", random: RANDOM });
+
+  it("puts signer, deadline, and intents in the message, the nonce and intents.near beside it", () => {
+    expect(JSON.parse(payload.message)).toEqual({ signer_id: keeper, deadline: DEADLINE.toISOString(), intents: [intent] });
+    expect(payload.recipient).toBe("intents.near");
+    expect(payload.nonce).toBe(versionedNonce("0a1b2c3d", DEADLINE, RANDOM));
+  });
+
+  it("serializes tag, message, nonce, recipient, and no callback URL with borsh", () => {
+    const bytes = nep413SigningBytes(payload);
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint32(0, true)).toBe(2 ** 31 + 413);
+    const messageLength = view.getUint32(4, true);
+    expect(new TextDecoder().decode(bytes.slice(8, 8 + messageLength))).toBe(payload.message);
+    const nonceAt = 8 + messageLength;
+    expect(bytes.slice(nonceAt, nonceAt + 32)).toEqual(fromBase64(payload.nonce));
+    expect(view.getUint32(nonceAt + 32, true)).toBe("intents.near".length);
+    expect(new TextDecoder().decode(bytes.slice(nonceAt + 36, -1))).toBe("intents.near");
+    expect(bytes.at(-1)).toBe(0);
+    expect(bytes.length).toBe(nonceAt + 36 + "intents.near".length + 1);
+  });
+
+  it("hashes with SHA-256 and wraps an ed25519 signature that verifies", async () => {
+    const hash = await nep413Hash(payload);
+    expect(Buffer.from(hash)).toEqual(createHash("sha256").update(nep413SigningBytes(payload)).digest());
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const signature = sign(null, hash, privateKey);
+    const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+    const signed = signedNep413(payload, `ed25519:${toBase58(raw)}`, signature);
+    expect(signed).toMatchObject({ standard: "nep413", payload });
+    expect(fromBase58(signed.signature.slice("ed25519:".length))).toEqual(Uint8Array.from(signature));
+    expect(verify(null, hash, publicKey, fromBase58(signed.signature.slice("ed25519:".length)))).toBe(true);
+  });
+
+  it("rejects bad inputs", () => {
+    expect(() => buildNep413Payload({ signerId: "Backend.near", intents: [intent], deadline: DEADLINE, salt: "0a1b2c3d" })).toThrow();
+    expect(() => nep413SigningBytes({ ...payload, nonce: "AAAA" })).toThrow("32 bytes");
+    expect(() => signedNep413(payload, "secp256k1:abc", new Uint8Array(64))).toThrow();
+    expect(() => signedNep413(payload, `ed25519:${"1".repeat(32)}`, new Uint8Array(65))).toThrow();
+  });
+});
+
+function toBase58(bytes: Uint8Array): string {
+  let n = 0n;
+  for (const byte of bytes) n = (n << 8n) | BigInt(byte);
+  let out = "";
+  while (n > 0n) {
+    out = BASE58[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    out = "1" + out;
+  }
+  return out;
+}
