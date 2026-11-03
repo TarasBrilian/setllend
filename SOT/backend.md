@@ -46,7 +46,7 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 4. **Jump** at startup and when the live cursor is more than 1,000 blocks behind (about 10 minutes): load at the latest final height, which becomes the new `H`.
 5. **Two cursors.** After a load at `H`, the *live* cursor runs from `H + 1` and feeds the book reloads, the matcher, and WebSocket. Blocks between the old cursor and `H` are *backfilled* with the spare request budget, into SQLite only (trade and account history). So a gap never stalls matching, which waits only for the live cursor.
 
-`sell_note` orders show `remaining_value` from the pool (`get_pool`), since value per share moves after bad debt.
+`sell_note` orders carry `remaining_value` from the `get_orders` view. Every change to a pool (fills, `repaid`, `liquidated`, `redeemed`, `netted`, `bad_debt_realized`) comes with an event that names the maturity, so the reload it triggers refreshes the pool and these values.
 
 ## Matcher (D41)
 
@@ -82,7 +82,7 @@ for each maturity m with m > now, in ascending order:
 ```
 
 - **Why the `can_open` search is sound:** ignoring rounding, collateral and debt face both grow linearly with `p`, so the principals that pass form an interval that starts at 0 (when 1 unit passes) or ends at the full size (when it doesn't). Only the first case has a boundary below the full size worth searching. The chosen `p` is checked again exactly, with the contract's rounding (a fill that completes the order moves all remaining collateral).
-- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with `max_ltv` and conservative prices, and the position after the fill exactly as `fill_borrow` builds it (existing position from `get_position`, plus pro-rata collateral, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). Pools come from `get_pool`, read before each batch.
+- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with `max_ltv` and conservative prices, and the position after the fill exactly as `fill_borrow` builds it (existing position from `get_position`, plus pro-rata collateral, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). The pool comes from the book's last reload ([Book](#book), step 1). Positions are not part of the book, so `get_position` is read for each `borrow` ask when a batch is built.
 - **Prices for pre-checks** come from the same oracle call the contract makes (`list_prices_no_older_than` on `oracle_contract`, `age = oracle_max_age`), validated with the contract's rules at the latest block time. Without usable prices, `borrow` asks are left out and `sell_note` fills still go ahead.
 - **Timing is safe in one direction:** execution happens after `now`, so `dt` only shrinks. A smaller `dt` means a smaller face and fewer shares, so a `sell_note` size that fits at `now` still fits. For `can_open`, a later block only lowers the debt face, which helps.
 - **No safety margins** (D24): the matcher submits whatever passes the pre-checks at current prices. If prices move and the contract skips a fill, the matcher parks it instead of retrying at once.
@@ -134,7 +134,7 @@ Parked pairs and orders are kept in memory only; a restart clears them, which co
    | `auth_call` | `on_auth` (and its price callback, if any) succeeded | Panic message, e.g. `Order not found`, `Not the order owner`, `Debt is overdue`, `Withdrawal exceeds max LTV`, `No price` |
    | payouts | — | A `payout_failed` event means the funds are in the contract's free balance; the response says so and `withdraw` recovers them |
 
-6. **Respond** with `{tx_hash, ok, action, events, error}`. The book and WebSocket pick the same events up from the follower.
+6. **Respond** with `{tx_hash, ok, action, events, error}`. The follower picks the same events up later, which triggers the book reload and the WebSocket push.
 
 **Error codes:** `invalid_payload`, `not_setllend`, `min_gas_too_low`, `simulation_failed`, `submit_failed`, `rejected` (contract panic, with `reason`), `payout_failed`, `pending` (receipts not all executed within 30 s; `tx_hash` is returned and the result arrives over WebSocket).
 
@@ -187,7 +187,8 @@ Each scan also reads the contract's `view_account`: free NEAR = `amount − stor
 
 ## Account and keys (D43)
 
-- **`backend.setllend.near`**, a subaccount created by `setllend.near`, so explorers show the link to the contract. It holds no key of `setllend.near`. It pays gas (about 0.5 NEAR to start), and its `intents.near` balance holds the keeper's USDC and the seized collateral.
+- **`backend.setllend.near`**, a subaccount created by `setllend.near`, so explorers show the link to the contract. It holds no key of `setllend.near`. It pays gas, and its `intents.near` balance holds the keeper's USDC and the seized collateral.
+- **Funding:** create it with a small initial balance (the new account's balance comes out of `setllend.near`, whose NEAR pays the contract's storage), then top it up to about 0.5 NEAR from the user's wallet. Create it while `setllend.near` still has its full-access key.
 - **Three keys:**
 
   | Env variable | Kind | Allows | Used by |
@@ -253,7 +254,7 @@ All amounts stay decimal strings, as on chain.
 
 The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "account:<account_id>"]}`. The server pushes:
 
-- `{"type": "book", "maturity", "bids", "asks"}`: the full aggregated book after every change (books are small enough that diffs are not worth it).
+- `{"type": "book", "maturity", "bids", "asks"}`: the full aggregated book after every reload (books are small enough that diffs are not worth it).
 - `{"type": "trade", ...order_filled}`.
 - `{"type": "event", "account", "event"}`: every event that names the account, including the outcome of its relayed intents.
 
