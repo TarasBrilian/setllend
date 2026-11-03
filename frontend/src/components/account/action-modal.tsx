@@ -14,7 +14,7 @@ import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import type { Config, NoteView, OrderView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
+import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, bridgeOutStep, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
 import { Modal } from "../modal";
 import { SellNoteForm } from "../order-form";
 import { TokenIcon } from "../token-icon";
@@ -301,7 +301,9 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
         "Sign the withdrawal with your wallet",
         ...(debt > 0 ? ["Setllend checks oracle prices and your borrow limit"] : []),
         `${TOKENS[token].symbol} reaches your Intents balance`,
-        chain === "NEAR" ? "It stays there, ready to withdraw or reuse" : chain === "Bitcoin" ? payOutStep("BTC", chain) : `It is sent to your wallet on ${chain}`,
+        ...(chain === "NEAR"
+          ? ["It stays there, ready to withdraw or reuse"]
+          : [`Sign the bridge withdrawal to ${chain}`, bridgeOutStep(TOKENS[token].symbol, chain)]),
       ]}
       error={error}
       label="Withdraw collateral"
@@ -382,7 +384,8 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   const meta = TOKENS[token];
   const total = tokenAmount(token, amount);
   const [value, setValue] = useState(String(total));
-  // USDC and NEAR-native tokens can go to any chain the account uses; bridged tokens return to their own.
+  // USDC and NEAR-native tokens can go to any chain the account uses; ETH and BTC return to their own
+  // through the bridge (D10, D52).
   const pickChain = meta.chain === "NEAR";
   const [pickedChain, setChain] = useChain("Base");
   const chain: Chain = pickChain ? pickedChain : (meta.chain as Chain);
@@ -398,8 +401,12 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   const steps = [
     ...signPrefix,
     ...(source === "free" ? ["Sign the Setllend withdrawal with your wallet", `${meta.symbol} reaches your Intents balance`] : []),
-    chain === "NEAR" ? "Sign the withdrawal from NEAR Intents" : `Sign the 1Click withdrawal to ${chain}`,
-    meta.symbol === "NEAR" && chain !== "NEAR" ? `1Click swaps it to USDC on ${chain}` : payOutStep(meta.symbol, chain),
+    ...(!pickChain
+      ? [`Sign the bridge withdrawal to ${chain}`, bridgeOutStep(meta.symbol, chain)]
+      : [
+          chain === "NEAR" ? "Sign the withdrawal from NEAR Intents" : `Sign the 1Click withdrawal to ${chain}`,
+          meta.symbol === "NEAR" && chain !== "NEAR" ? `1Click swaps it to USDC on ${chain}` : payOutStep(meta.symbol, chain),
+        ]),
   ];
 
   return (

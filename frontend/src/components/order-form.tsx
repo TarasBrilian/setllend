@@ -114,7 +114,7 @@ export function OrderForm({
     .map(([token, amount]) =>
       // A NEAR account sends NEAR itself; an EVM account buys it with a 1Click swap.
       TOKENS[token].symbol === "NEAR" && active?.kind !== "near"
-        ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap`
+        ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap from USDC on ${chain === "NEAR" ? "Arbitrum" : chain}`
         : payInStep(String(amount), TOKENS[token].symbol, TOKENS[token].chain),
     );
   const steps = isBorrow

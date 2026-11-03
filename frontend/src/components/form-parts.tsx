@@ -73,6 +73,11 @@ export function payOutStep(symbol: string, chain: Chain): string {
   return `1Click sends ${symbol} to your wallet on ${chain}`;
 }
 
+/** ETH and BTC leave through the bridge to their own chain (`processWithdrawal`, D10, D52), not 1Click. */
+export function bridgeOutStep(symbol: string, chain: Chain): string {
+  return chain === "Bitcoin" ? `The bridge sends ${symbol} to your Bitcoin address` : `The bridge sends ${symbol} to your wallet on ${chain}`;
+}
+
 /** Before its first signed intent, a NEAR account registers its key on `intents.near` (D51). */
 export function useSignPrefix(): string[] {
   return useAccount().active?.kind === "near" ? ["Register your key on NEAR Intents (first time only)"] : [];
