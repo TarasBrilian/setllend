@@ -65,6 +65,12 @@ export type ProtocolStats = {
 /** `GET /api/trades/:maturity`: an `order_filled` event with its block time (ns), newest first. */
 export type Trade = OrderFilled & { timestamp: U64 };
 
+/**
+ * A push on WebSocket `/ws` (SOT/backend.md#websocket-ws), the kinds the UI uses: the full book after every reload,
+ * and every fill.
+ */
+export type LiveMessage = ({ type: "book" } & Book) | ({ type: "trade" } & Trade);
+
 /** Totals of one maturity for the detail page. Not in the backend API yet, see SOT/frontend.md#data. */
 export type MaturityStats = {
   maturity: U64;

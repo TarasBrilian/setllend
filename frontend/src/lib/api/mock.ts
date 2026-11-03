@@ -13,6 +13,7 @@ import type {
   HistoryEntry,
   FillTotals,
   HistoryKind,
+  LiveMessage,
   MaturityInfo,
   MaturityStats,
   PricesView,
@@ -87,6 +88,8 @@ function level(kind: OrderKind, maturity: U64, [rate_bps, usdc]: [number, number
   return { rate_bps, size: o.remaining, orders: [o] };
 }
 
+// The live book of each maturity. The market simulator replaces entries, never mutates them, so a
+// book handed out earlier stays as it was.
 const BOOKS: Record<U64, Book> = Object.fromEntries(
   MATURITIES.map((maturity) => [
     maturity,
@@ -256,10 +259,19 @@ export function getMaturityStats(maturity: U64): Promise<MaturityStats> {
 
 const tradeCache = new Map<U64, Trade[]>();
 
-/** About 12 days of fills, one every 3 hours, newest first, ending at the book's mid rate. */
+// Simple interest to maturity (D16).
+function faceOf(principal: bigint, rateBps: number, maturity: U64, timeMs: number): bigint {
+  return principal + (principal * BigInt(rateBps) * (BigInt(maturity) / 1_000_000n - BigInt(timeMs))) / (10_000n * 365n * 86_400_000n);
+}
+
 export function getTrades(maturity: U64, limit = 50): Promise<Trade[]> {
+  if (!BOOK_SEED[maturity]) return Promise.reject(new Error(`Unknown maturity ${maturity}`));
+  return delay(tradesOf(maturity).slice(0, limit));
+}
+
+/** About 12 days of fills, one every 3 hours, newest first, ending at the book's mid rate, plus the simulator's fills. */
+function tradesOf(maturity: U64): Trade[] {
   const seed = BOOK_SEED[maturity];
-  if (!seed) return Promise.reject(new Error(`Unknown maturity ${maturity}`));
   let trades = tradeCache.get(maturity);
   if (!trades) {
     const mid = (seed.bids[0][0] + seed.asks[0][0]) / 2;
@@ -280,8 +292,7 @@ export function getTrades(maturity: U64, limit = 50): Promise<Trade[]> {
         maturity,
         rate_bps: rateBps,
         principal: String(principal),
-        // Simple interest to maturity (D16).
-        face: String(principal + (principal * BigInt(rateBps) * (BigInt(maturity) / 1_000_000n - BigInt(timeMs))) / (10_000n * 365n * 86_400_000n)),
+        face: String(faceOf(principal, rateBps, maturity, timeMs)),
         bid_remaining: "0",
         ask_remaining: "0",
         timestamp: String(BigInt(timeMs) * 1_000_000n),
@@ -290,5 +301,171 @@ export function getTrades(maturity: U64, limit = 50): Promise<Trade[]> {
     }
     tradeCache.set(maturity, trades);
   }
-  return delay(trades.slice(0, limit));
+  return trades;
+}
+
+// Market simulator: stands in for other traders until real orders exist, so the book moves and its
+// flashes can be seen (SOT/frontend.md#data). Each open maturity gets one random event every 0.5 to
+// 1.5 s: a fill at the best level that sometimes sweeps 2 levels, a new order, or a cancel, with
+// the spread kept at most MAX_SPREAD_BPS wide.
+// It runs only while someone subscribes, and pushes what `/ws` would push: the trades first, then the
+// full book.
+
+type Listener = { channels: Set<string>; onMessage: (message: LiveMessage) => void };
+const listeners = new Set<Listener>();
+const simTimers = new Map<U64, ReturnType<typeof setTimeout>>();
+
+/** Mirrors WebSocket `/ws` (SOT/backend.md#websocket-ws) for `book:<maturity>` and `trades:<maturity>`. Returns the unsubscribe. */
+export function subscribe(channels: string[], onMessage: (message: LiveMessage) => void): () => void {
+  const listener = { channels: new Set(channels), onMessage };
+  listeners.add(listener);
+  if (simTimers.size === 0) MATURITIES.forEach(scheduleSim);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      simTimers.forEach(clearTimeout);
+      simTimers.clear();
+    }
+  };
+}
+
+function push(channel: string, message: LiveMessage) {
+  listeners.forEach((l) => l.channels.has(channel) && l.onMessage(message));
+}
+
+function scheduleSim(maturity: U64) {
+  // A passed maturity takes no new orders.
+  if (BigInt(maturity) <= BigInt(Date.now()) * 1_000_000n) return;
+  simTimers.set(
+    maturity,
+    setTimeout(() => {
+      simulateEvent(maturity);
+      scheduleSim(maturity);
+    }, 500 + Math.random() * 1_000),
+  );
+}
+
+const pick = <T,>(items: T[]): T => items[Math.floor(Math.random() * items.length)];
+/** Whole multiples of `step` USDC between `min` and `max`, in raw units. */
+const randomUsdc = (min: number, max: number, step: number) => BigInt(Math.round((min + Math.random() * (max - min)) / step) * step) * USDC;
+const MIN_LEVELS = 4;
+const MAX_LEVELS = 9;
+/** Wider than this, the next event is a new order inside the spread, so fill rates stay close together. */
+const MAX_SPREAD_BPS = 30;
+
+function withSize(level: BookLevel, size: bigint): BookLevel {
+  return { ...level, size: String(size), orders: [{ ...level.orders[0], remaining: String(size) }] };
+}
+
+function simulateEvent(maturity: U64) {
+  const nowMs = Date.now();
+  const book = BOOKS[maturity];
+  const bestOffer = book.bids[0]?.rate_bps;
+  const bestRequest = book.asks[0]?.rate_bps;
+  const wide = bestOffer !== undefined && bestRequest !== undefined && bestOffer - bestRequest > MAX_SPREAD_BPS;
+
+  // The mid drifts back toward the seed's, where the trade history ends: a fill of lend offers raises
+  // it and a new one lowers it, the other way round for borrow requests. `up` is the chance to raise it.
+  const seed = BOOK_SEED[maturity];
+  const drift = bestOffer !== undefined && bestRequest !== undefined ? (bestOffer + bestRequest) / 2 - (seed.bids[0][0] + seed.asks[0][0]) / 2 : 0;
+  const up = Math.min(0.9, Math.max(0.1, 0.5 - drift / 40));
+
+  const roll = Math.random();
+  let event: "fill" | "add" | "cancel" = wide ? "add" : roll < 0.4 ? "fill" : roll < 0.8 ? "add" : "cancel";
+  const raise = Math.random() < up;
+  const side: "bids" | "asks" = event === "cancel" ? pick(["bids", "asks"]) : (event === "fill") === raise ? "bids" : "asks";
+  // Keep each side between MIN_LEVELS and MAX_LEVELS, so the book neither drains nor bloats. A refill
+  // adds depth at the far end, where it doesn't move the mid.
+  const refill = book[side].length <= MIN_LEVELS;
+  if (refill) event = "add";
+  else if (book[side].length >= MAX_LEVELS && event === "add") event = Math.random() < 0.5 ? "fill" : "cancel";
+  const levels = book[side];
+
+  let next: BookLevel[];
+  if (event === "fill") {
+    // A taker on the other side fills the best levels at their own rates (D17).
+    const sweep = Math.random() < 0.15 ? 2 : 1;
+    const reach = levels.slice(0, sweep).reduce((sum, l) => sum + BigInt(l.size), 0n);
+    const last = BigInt(levels[Math.min(sweep, levels.length) - 1].size);
+    let wanted = reach - last + (last * BigInt(15 + Math.floor(Math.random() * 86))) / 100n;
+    wanted = (wanted / (100n * USDC)) * 100n * USDC || 100n * USDC;
+    const takerId = String(nextOrderId++);
+    // The taker's kind matters only as the trade's `ask_kind` when it takes a lend offer.
+    const takerKind = Math.random() < 0.8 ? "borrow" : "sell_note";
+    next = [...levels];
+    while (wanted > 0n && next.length > 0) {
+      const maker = next[0];
+      const size = BigInt(maker.size);
+      const filled = size < wanted ? size : wanted;
+      wanted -= filled;
+      const rest = size - filled;
+      if (rest === 0n) next.shift();
+      else next[0] = withSize(maker, rest);
+      const makerId = maker.orders[0].order_id;
+      const trade: Trade = {
+        bid: side === "bids" ? makerId : takerId,
+        ask: side === "asks" ? makerId : takerId,
+        ask_kind: side === "asks" ? (maker.orders[0].kind as Trade["ask_kind"]) : takerKind,
+        maturity,
+        rate_bps: maker.rate_bps,
+        principal: String(filled),
+        face: String(faceOf(filled, maker.rate_bps, maturity, nowMs)),
+        bid_remaining: String(side === "bids" ? rest : wanted),
+        ask_remaining: String(side === "asks" ? rest : wanted),
+        timestamp: String(BigInt(nowMs) * 1_000_000n),
+      };
+      tradesOf(maturity).unshift(trade);
+      push(`trades:${maturity}`, { type: "trade", ...trade });
+    }
+  } else if (event === "add") {
+    next = addOrder(book, side, refill ? "far" : wide ? "inside" : "near");
+  } else {
+    // Cancel all or part of a random level.
+    const index = Math.floor(Math.random() * levels.length);
+    const size = BigInt(levels[index].size);
+    // What stays is whole hundreds of USDC, like every other amount here.
+    const step = 100n * USDC;
+    const rest = Math.random() < 0.5 ? 0n : ((size * BigInt(40 + Math.floor(Math.random() * 41))) / 100n / step) * step;
+    next = rest === 0n ? levels.filter((_, i) => i !== index) : levels.map((l, i) => (i === index ? withSize(l, rest) : l));
+  }
+
+  BOOKS[maturity] = { ...book, [side]: next };
+  push(`book:${maturity}`, { type: "book", ...BOOKS[maturity] });
+}
+
+/**
+ * A new resting order that never crosses the other side, on the 5 bps grid. `near`: added to a level, or a new level
+ * more likely near the spread. `inside`: a new level inside the spread. `far`: a new level beyond the last one.
+ */
+function addOrder(book: Book, side: "bids" | "asks", where: "near" | "inside" | "far"): BookLevel[] {
+  const levels = book[side];
+  if (where === "near" && levels.length > 0 && Math.random() < 0.5) {
+    const index = Math.floor(Math.random() * levels.length);
+    return levels.map((l, i) => (i === index ? withSize(l, BigInt(l.size) + randomUsdc(2_000, 40_000, 500)) : l));
+  }
+  const taken = new Set(levels.map((l) => l.rate_bps));
+  const seed = BOOK_SEED[book.maturity];
+  // Lend offers rest above the best borrow request, borrow requests below the best lend offer.
+  const [low, high] =
+    side === "bids"
+      ? [(book.asks[0]?.rate_bps ?? seed.asks[0][0]) + 5, (levels.at(-1)?.rate_bps ?? seed.bids.at(-1)![0]) + 20]
+      : [(levels.at(-1)?.rate_bps ?? seed.asks.at(-1)![0]) - 20, (book.bids[0]?.rate_bps ?? seed.bids[0][0]) - 5];
+  const free: number[] = [];
+  for (let rate = Math.ceil(low / 5) * 5; rate <= high; rate += 5) if (!taken.has(rate)) free.push(rate);
+  if (free.length === 0) return levels;
+  // Nearest the spread first; squaring a uniform draw favors the front.
+  if (side === "asks") free.reverse();
+  const best = levels[0]?.rate_bps;
+  const last = levels.at(-1)?.rate_bps;
+  const inside = best === undefined ? free : free.filter((r) => (side === "bids" ? r < best : r > best));
+  const beyond = last === undefined ? free : free.filter((r) => (side === "bids" ? r > last : r < last));
+  const rate =
+    where === "inside" && inside.length > 0
+      ? pick(inside)
+      : where === "far" && beyond.length > 0
+        ? pick(beyond)
+        : free[Math.floor(Math.random() ** 2 * free.length)];
+  const created = level(side === "bids" ? "lend" : "borrow", book.maturity, [rate, Number(randomUsdc(5_000, 120_000, 500) / USDC)]);
+  // Bids lowest rate first, asks highest first (D41).
+  return [...levels, created].sort((a, b) => (side === "bids" ? a.rate_bps - b.rate_bps : b.rate_bps - a.rate_bps));
 }

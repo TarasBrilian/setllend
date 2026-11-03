@@ -3,6 +3,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { getBook, getCollateralTokens, getMaturities, getPrices } from "@/lib/api";
+import { useLiveMarket } from "@/lib/use-live-market";
 import { useNowMs } from "@/lib/use-now";
 import type { U64 } from "@/shared/encoding";
 import type { OrderSide } from "@/lib/orders";
@@ -20,6 +21,7 @@ export function MarketGrid() {
   const books = useQueries({
     queries: open.map(({ maturity }) => ({ queryKey: ["book", maturity], queryFn: () => getBook(maturity) })),
   });
+  useLiveMarket(open.map((m) => m.maturity));
 
   if (maturities.error || tokens.error) {
     return <p className="mt-8 text-red-400">Could not load markets. Try again later.</p>;

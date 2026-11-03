@@ -8,6 +8,9 @@ import {
   createOptionsChart,
   CrosshairMode,
   type DeepPartial,
+  type IChartApi,
+  type IChartApiBase,
+  type ISeriesApi,
   type LineData,
   LineStyle,
   LineType,
@@ -23,6 +26,10 @@ import { Tabs } from "./tabs";
 const COLORS = { text: "#a29a93", line: "#2c2622", accent: "#f97316", borrow: "#34d399" };
 const RANGES = { "1D": 1, "7D": 7, All: Infinity } as const;
 type Range = keyof typeof RANGES;
+/** The smallest rate range on the Rate History axis, in percentage points. */
+const MIN_RATE_SPAN = 0.5;
+/** Rate History period per range, in seconds. */
+const BUCKET_S: Record<number, number> = { [RANGES["1D"]]: 15 * 60, [RANGES["7D"]]: 3_600, [RANGES.All]: 3 * 3_600 };
 
 // Shared by both charts. The TradingView attribution logo stays on (SOT/pitfalls.md#off-chain).
 const BASE_OPTIONS = {
@@ -60,37 +67,68 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
   const container = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<{ x: number; y: number; time: number; rate: number } | null>(null);
 
-  // Oldest first, one point per fill, as the chart requires.
+  // One point per period, oldest first: the principal-weighted average rate of its fills. Fills on both sides of
+  // the spread land close together in time, so single fills would zigzag by the spread's width.
   const points = useMemo(() => {
     const from = (nowMs - days * 86_400_000) * 1_000_000;
-    return trades
-      .filter((t) => Number(t.timestamp) >= from)
-      .map((t) => ({ time: Math.floor(Number(BigInt(t.timestamp) / 1_000_000_000n)) as UTCTimestamp, value: t.rate_bps / 100 }))
-      .reverse();
+    const bucketS = BUCKET_S[days];
+    const buckets = new Map<number, { usdc: number; weighted: number }>();
+    for (const t of trades) {
+      if (Number(t.timestamp) < from) continue;
+      const time = Math.floor(Number(BigInt(t.timestamp) / 1_000_000_000n) / bucketS) * bucketS;
+      const usdc = usdcToNumber(t.principal);
+      const bucket = buckets.get(time) ?? { usdc: 0, weighted: 0 };
+      bucket.usdc += usdc;
+      bucket.weighted += usdc * t.rate_bps;
+      buckets.set(time, bucket);
+    }
+    return [...buckets]
+      .map(([time, b]) => ({ time: time as UTCTimestamp, value: b.weighted / b.usdc / 100 }))
+      .sort((a, b) => a.time - b.time);
   }, [trades, days, nowMs]);
+  const series = useRef<{ chart: IChartApi; area: ISeriesApi<"Area"> } | null>(null);
 
+  // The chart is built once per range; new fills only replace its data, so a hover survives them.
   useEffect(() => {
     const chart = createChart(container.current!, {
       ...BASE_OPTIONS,
       timeScale: { borderVisible: false, timeVisible: days <= 1, fixLeftEdge: true, fixRightEdge: true },
     });
-    const series = chart.addSeries(AreaSeries, {
+    const area = chart.addSeries(AreaSeries, {
       lineColor: COLORS.accent,
       lineWidth: 2,
       topColor: "rgba(249, 115, 22, 0.35)",
       bottomColor: "rgba(249, 115, 22, 0)",
       priceLineVisible: false,
       priceFormat: { type: "custom", formatter: (v: number) => `${v.toFixed(2)}%`, minMove: 0.01 },
+      // At least MIN_RATE_SPAN of rate on the axis, so a few bps of movement don't fill the chart.
+      autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
+        const info = original();
+        const range = info?.priceRange;
+        if (range && range.maxValue - range.minValue < MIN_RATE_SPAN) {
+          const mid = (range.maxValue + range.minValue) / 2;
+          range.minValue = mid - MIN_RATE_SPAN / 2;
+          range.maxValue = mid + MIN_RATE_SPAN / 2;
+        }
+        return info;
+      },
       crosshairMarkerBorderColor: "#fff",
       crosshairMarkerBackgroundColor: COLORS.accent,
     });
-    series.setData(points);
-    chart.timeScale().fitContent();
+    series.current = { chart, area };
     chart.subscribeCrosshairMove((param) => {
-      const data = param.seriesData.get(series) as LineData<UTCTimestamp> | undefined;
+      const data = param.seriesData.get(area) as LineData<UTCTimestamp> | undefined;
       setTip(param.point && param.time !== undefined && data ? { x: param.point.x, y: param.point.y, time: param.time as number, rate: data.value } : null);
     });
-    return () => chart.remove();
+    return () => {
+      series.current = null;
+      chart.remove();
+    };
+  }, [days]);
+
+  useEffect(() => {
+    series.current?.area.setData(points);
+    series.current?.chart.timeScale().fitContent();
   }, [points, days]);
 
   return (
@@ -115,7 +153,9 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
 /** Cumulative USDC by rate: lend offers grow to the right from the best offer, borrow requests to the left. */
 function Depth({ book }: { book: Book }) {
   const container = useRef<HTMLDivElement>(null);
+  const series = useRef<{ chart: IChartApiBase<number>; lend: ISeriesApi<"Area", number>; borrow: ISeriesApi<"Area", number> } | null>(null);
 
+  // Built once; a new book only replaces the data.
   useEffect(() => {
     const chart = createOptionsChart(container.current!, {
       ...BASE_OPTIONS,
@@ -132,19 +172,6 @@ function Depth({ book }: { book: Book }) {
       if (info?.priceRange) info.priceRange.minValue = 0;
       return info;
     };
-
-    // Lend offers: the depth at rate x is every offer at or below x, held until the next level.
-    let total = 0;
-    const offers = book.bids.map((level) => ({ time: level.rate_bps / 100, value: (total += usdcToNumber(level.size)) }));
-
-    // Borrow requests, lowest rate first: the depth at x is every request at or above x. Each step
-    // holds the depth of the levels above it, so a lead point carries the full total.
-    const requests = [...book.asks].reverse();
-    const sizes = requests.map((level) => usdcToNumber(level.size));
-    let above = sizes.reduce((a, b) => a + b, 0);
-    const requestPoints = requests.length === 0 ? [] : [{ time: requests[0].rate_bps / 100 - 0.05, value: above }];
-    requests.forEach((level, i) => requestPoints.push({ time: level.rate_bps / 100, value: (above -= sizes[i]) }));
-
     const lend = chart.addSeries(AreaSeries, {
       lineColor: COLORS.accent,
       topColor: "rgba(249, 115, 22, 0.35)",
@@ -165,10 +192,30 @@ function Depth({ book }: { book: Book }) {
       priceFormat: usdcFormat,
       autoscaleInfoProvider: fromZero,
     });
-    lend.setData(offers);
-    borrow.setData(requestPoints);
-    chart.timeScale().fitContent();
-    return () => chart.remove();
+    series.current = { chart, lend, borrow };
+    return () => {
+      series.current = null;
+      chart.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!series.current) return;
+    // Lend offers: the depth at rate x is every offer at or below x, held until the next level.
+    let total = 0;
+    const offers = book.bids.map((level) => ({ time: level.rate_bps / 100, value: (total += usdcToNumber(level.size)) }));
+
+    // Borrow requests, lowest rate first: the depth at x is every request at or above x. Each step
+    // holds the depth of the levels above it, so a lead point carries the full total.
+    const requests = [...book.asks].reverse();
+    const sizes = requests.map((level) => usdcToNumber(level.size));
+    let above = sizes.reduce((a, b) => a + b, 0);
+    const requestPoints = requests.length === 0 ? [] : [{ time: requests[0].rate_bps / 100 - 0.05, value: above }];
+    requests.forEach((level, i) => requestPoints.push({ time: level.rate_bps / 100, value: (above -= sizes[i]) }));
+
+    series.current.lend.setData(offers);
+    series.current.borrow.setData(requestPoints);
+    series.current.chart.timeScale().fitContent();
   }, [book]);
 
   return (

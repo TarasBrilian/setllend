@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useAccount } from "@/lib/account";
 import { getAccount, getBook, getConfig, getMaturities, getMaturityStats, getPrices, getTrades } from "@/lib/api";
 import { daysUntil, formatMaturity, usdcToNumber, usdParts } from "@/lib/format";
+import { useLiveMarket } from "@/lib/use-live-market";
 import { useNowMs } from "@/lib/use-now";
 import { ASSETS } from "@/shared/assets";
 import type { U64 } from "@/shared/encoding";
@@ -28,6 +29,7 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
   const trades = useQuery({ queryKey: ["trades", maturity], queryFn: () => getTrades(maturity, 200), enabled: known === true });
   const stats = useQuery({ queryKey: ["maturity-stats", maturity], queryFn: () => getMaturityStats(maturity), enabled: known === true });
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: account !== undefined });
+  useLiveMarket(known ? [maturity] : []);
 
   const [panel, setPanel] = useState<PanelState>({ tab: "Lend", nonce: 0 });
 
@@ -82,7 +84,7 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
       {book.data && trades.data && config.data && nowMs !== null ? (
         // Fixed widths for the book and the order panel give the chart the rest. One fixed height for
         // all three; a taller form scrolls inside its panel.
-        <div className="grid h-[36rem] grid-cols-[minmax(0,1fr)_17.5rem_19rem] grid-rows-[minmax(0,1fr)] gap-5">
+        <div className="grid h-[30rem] grid-cols-[minmax(0,1fr)_17.5rem_19rem] grid-rows-[minmax(0,1fr)] gap-5">
           <ChartPanel book={book.data} trades={trades.data} nowMs={nowMs} />
           <BookPanel
             book={book.data}
@@ -101,7 +103,7 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)_17.5rem_19rem] gap-5">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-[36rem] animate-pulse rounded-3xl border border-line bg-surface/60" />
+            <div key={i} className="h-[30rem] animate-pulse rounded-3xl border border-line bg-surface/60" />
           ))}
         </div>
       )}
