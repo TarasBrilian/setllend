@@ -23,6 +23,21 @@
 
 The temporary $1,000 minimum (changelog 2026-09-09) does not block these paths: the changelog says deposits to and withdrawals from Intents are unaffected, and the $20 quotes succeeded.
 
+## Keyed dry quotes (2026-11-03) ✅
+
+With the partner key (`X-API-Key`), `EXACT_INPUT`, slippage 1%, at 06:40 UTC. Deposits: `recipientType: INTENTS` to the user's lowercase implicit Eth account, refund to the wallet on the origin chain. Payouts: `depositType: INTENTS` and `refundType: INTENTS` to the same lowercase account, recipient is the wallet on the destination chain. Address casing rules: [pitfalls.md](pitfalls.md#off-chain).
+
+| Path | In | Out | `withdrawFee` | Est. time |
+|---|---|---|---|---|
+| Deposit: Base USDC → NEAR USDC in Intents | 5 USDC | 4.999585 USDC | 0 | about 35 s |
+| Deposit: Arbitrum USDC → NEAR USDC in Intents | 5 USDC | 4.999553 USDC | 0 | about 25 s |
+| Deposit: Arbitrum ETH → ETH(arb) in Intents | 0.01 ETH | 0.01 ETH | 0 | about 25 s |
+| Payout: NEAR USDC in Intents → Base USDC | 5 USDC | 4.99659 USDC | 0.0024 USDC | about 12 s |
+| Payout: NEAR USDC in Intents → Arbitrum USDC | 5 USDC | 4.993868 USDC | 0.0053 USDC | about 9 s |
+| Payout: ETH(arb) in Intents → Base ETH | 0.01 ETH | 0.00999742 ETH | 0.00000056 ETH | about 12 s |
+
+Arbitrum ETH → Base ETH (origin → origin) also quoted with and without the key, same output.
+
 ## 1Click notes
 
 - Since 2026-10-27 all 1Click swaps are confidential (settled on the NEAR Private Shard). `recipientType: INTENTS` still lands in the **public** `intents.near` balance that the contract can use.
