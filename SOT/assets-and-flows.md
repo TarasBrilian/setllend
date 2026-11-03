@@ -38,10 +38,28 @@ With the partner key (`X-API-Key`), `EXACT_INPUT`, slippage 1%, at 06:40 UTC. De
 
 Arbitrum ETH → Base ETH (origin → origin) also quoted with and without the key, same output.
 
+## Real-funds test (2026-11-03) ✅
+
+Closes D31 and open question #1. Run with $1 from a test EOA, partner key, `EXACT_INPUT`, slippage 1%.
+
+| Leg | In | Out | Fee | Time |
+|---|---|---|---|---|
+| Deposit: Arbitrum USDC (wallet) → NEAR USDC in Intents | 1 USDC | 0.999799 USDC | none charged | `SUCCESS` about 1 min after the Arbitrum transfer |
+| Payout: NEAR USDC in Intents → Arbitrum USDC (wallet) | 0.999799 USDC | 0.994297 USDC | `withdrawFee` 0.0053 USDC | `SUCCESS` about 15 s after `submit-intent` |
+
+Both legs checked on-chain: `mt_balance_of` on `intents.near` showed 999799 after the deposit and 0 after the payout, and the Arbitrum receipt shows the USDC transfer to the wallet. $1 is above any minimum on these routes.
+
+Payout path as it ran:
+
+1. `POST /v0/quote` with `dry: false`, `depositType: INTENTS`, `refundType: INTENTS`, `refundTo` = lowercase Intents account, `recipientType: DESTINATION_CHAIN`. The `depositAddress` is a 64-hex implicit NEAR account, not an EVM address.
+2. `POST /v0/generate-intent` with `type: swap_transfer`, `standard: erc191`, `signerId` = lowercase Intents account. **Accepted our key** (201). The payload is a JSON string with `verifying_contract: intents.near`, a 1Click-supplied `nonce`, `deadline` = the quote deadline, and one plain `transfer` intent of the full amount to the `depositAddress` (no `token_diff`).
+3. The user signs the payload string unchanged with `personal_sign`.
+4. `POST /v0/submit-intent` with `signedData: { standard: "erc191", payload, signature }`. `signature` is `secp256k1:` + base58 of the 65 bytes `r ‖ s ‖ v`, with `v` normalized from 27/28 to 0/1. No `public_key` field. Returns `intentHash`. Track with `GET /v0/status?depositAddress=…`, as with any swap.
+
 ## 1Click notes
 
 - Since 2026-10-27 all 1Click swaps are confidential (settled on the NEAR Private Shard). `recipientType: INTENTS` still lands in the **public** `intents.near` balance that the contract can use.
-- `POST /v0/generate-intent` and `POST /v0/submit-intent` (used for payouts from an Intents balance) **require a partner API key**. 📄
+- `POST /v0/generate-intent` and `POST /v0/submit-intent` (used for payouts from an Intents balance) **require a partner API key** 📄, and accept ours ✅ 2026-11-03 ([real-funds test](#real-funds-test-2026-11-03-)).
 - Swap statuses: `PENDING_DEPOSIT`, `KNOWN_DEPOSIT_TX`, `PROCESSING`, `SUCCESS`, `INCOMPLETE_DEPOSIT`, `REFUNDED`, `FAILED`. Show all of them in the UI, including `REFUNDED` and `FAILED`.
 - For same-asset withdrawals without a swap, the Intents SDK has `processWithdrawal` via bridge (Omni / PoA, both support Base and Arbitrum). This is the 1Click-independent exit path for ETH collateral. It does not cover native NEAR USDC, which has no same-asset route to Base/Arbitrum (D10).
 - Partner key (type "Distribution Channel") obtained 2026-11-02. Stored only in backend env as `ONE_CLICK_JWT`, sent as `X-API-Key: <key>` (recommended; `Authorization: Bearer` is the legacy form and also works). Never in the frontend or git.
