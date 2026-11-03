@@ -17,7 +17,8 @@ export type BookLevel = { rate_bps: number; size: U128; orders: OrderView[] };
 export type Book = { maturity: U64; bids: BookLevel[]; asks: BookLevel[] };
 
 /**
- * A loan in one maturity, backed by one or more collateral tokens (D48). `health_factor` is null without debt.
+ * A loan in one maturity, backed by one or more collateral tokens (D48). `health_factor` uses conservative prices, as
+ * the keeper does, and is null without debt or without a usable price.
  */
 export type LoanView = { maturity: U64; debt_face: U128; collateral: Record<TokenId, U128>; health_factor: number | null };
 
@@ -47,7 +48,10 @@ export type CollateralTokenInfo = {
   frozen: boolean;
 };
 
-/** `GET /api/prices`: validated USD prices by token ID, with their age in seconds. */
+/**
+ * `GET /api/prices`: validated USD prices by token ID, with their age in seconds. The real API also returns the raw
+ * `price`, `conf`, and `expo` (SOT/backend.md#api); they join this type when the UI is wired to it.
+ */
 export type PricesView = Record<TokenId, { usd: number; age_s: number }>;
 
 /** Protocol totals for the Market hero. Not in the backend API yet, see SOT/frontend.md#data. */

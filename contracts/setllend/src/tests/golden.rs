@@ -1,6 +1,7 @@
 //! Golden JSON shared with the TypeScript types in `backend/src/shared/`. Every entry is the exact
 //! string the contract parses (`msg`, `match_orders` args, oracle response) or produces (views,
 //! event logs). The backend tests build the same values and must produce byte-identical strings.
+//! The `math` entry holds inputs and results of `math.rs`, which `shared/math.ts` must reproduce.
 //!
 //! The test fails on any difference with `fixtures/golden.json`. After an intended change, rewrite
 //! the file with `UPDATE_GOLDEN=1 cargo test -p setllend golden` and update the TypeScript side.
@@ -14,6 +15,7 @@ use near_sdk::serde_json::{self, Map};
 
 use super::*;
 use crate::events::{self, Filled};
+use crate::math;
 use crate::msg::{
     AddCollateralMsg, AuthMsg, BorrowMsg, CancelMsg, LendMsg, LiquidateMsg, RedeemMsg, RepayMsg,
     SellNoteMsg, TransferMsg, WithdrawCollateralMsg, WithdrawMsg,
@@ -402,6 +404,192 @@ fn event_logs() -> Vec<String> {
     get_logs()
 }
 
+/// Deterministic inputs for the math vectors (xorshift64*), so the fixture never changes by
+/// itself.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[self.below(items.len() as u64) as usize]
+    }
+}
+
+/// A price around `usd_lo..usd_hi` dollars, in one of the exponents the oracle could use, with a
+/// confidence of up to 1.5% (sometimes 0).
+fn random_price(rng: &mut Rng, usd_lo: u64, usd_hi: u64) -> math::Price {
+    let expo = rng.pick(&[-8, -8, -5, -12]);
+    let cents = usd_lo * 100 + rng.below((usd_hi - usd_lo) * 100 + 1);
+    let price = i64::try_from(u128::from(cents) * 10u128.pow((-expo - 2) as u32)).unwrap();
+    let conf = if rng.below(4) == 0 {
+        0
+    } else {
+        price as u64 * rng.below(151) / 10_000
+    };
+    math::Price { price, conf, expo }
+}
+
+fn random_debt_price(rng: &mut Rng) -> math::Price {
+    math::Price {
+        price: 98_000_000 + rng.below(4_000_001) as i64,
+        conf: rng.below(100_001),
+        expo: -8,
+    }
+}
+
+/// One to three of ETH, BTC, and NEAR, from dust to thousands of tokens.
+fn random_collateral(rng: &mut Rng, ratios: &[u32]) -> Vec<math::Collateral> {
+    let kinds: [(u8, u64, u64); 3] = [(18, 1_500, 4_000), (8, 30_000, 120_000), (24, 1, 10)];
+    let first = rng.below(3) as usize;
+    let count = 1 + rng.below(3) as usize;
+    (0..count)
+        .map(|i| {
+            let (decimals, lo, hi) = kinds[(first + i) % 3];
+            let unit = 10u128.pow(u32::from(decimals));
+            let amount =
+                u128::from(rng.below(1_000_000) + 1) * unit / 1_000 + u128::from(rng.below(1_000));
+            math::Collateral {
+                amount,
+                decimals,
+                price: random_price(rng, lo, hi),
+                ratio: rng.pick(ratios),
+            }
+        })
+        .collect()
+}
+
+fn price_json(price: &math::Price) -> Value {
+    json!({ "price": price.price.to_string(), "conf": price.conf.to_string(), "expo": price.expo })
+}
+
+fn collateral_json(collateral: &[math::Collateral]) -> Value {
+    collateral
+        .iter()
+        .map(|token| {
+            json!({
+                "amount": token.amount.to_string(),
+                "decimals": token.decimals,
+                "price": price_json(&token.price),
+                "ratio": token.ratio,
+            })
+        })
+        .collect()
+}
+
+/// Largest debt face `can_open` accepts (0 if not even 1 unit), found with `can_open` itself, so
+/// a port must agree at the exact boundary.
+fn max_debt(collateral: &[math::Collateral], debt_price: &math::Price) -> u128 {
+    if !math::can_open(collateral, 1, debt_price) {
+        return 0;
+    }
+    let (mut lo, mut hi) = (1u128, 2u128);
+    while math::can_open(collateral, hi, debt_price) {
+        lo = hi;
+        hi *= 2;
+    }
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if math::can_open(collateral, mid, debt_price) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Inputs and results of `math.rs` for `backend/src/shared/math.ts`, which must reproduce every
+/// result exactly (rounding included).
+fn math_vectors() -> Value {
+    const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
+    let mut rng = Rng(0x5e71_1e4d);
+
+    let face: Vec<Value> = (0..30)
+        .map(|_| {
+            let principal = u128::from(rng.below(1_000_000_000_000) + 1);
+            let rate_bps = rng.pick(&[0, 1, 500, 800, 1_234, 10_000, 50_000]);
+            let dt = rng.below(400 * DAY_NS) + 1;
+            json!({
+                "principal": principal.to_string(),
+                "rate_bps": rate_bps,
+                "dt": dt.to_string(),
+                "down": math::face(principal, rate_bps, dt, math::Rounding::Down).to_string(),
+                "up": math::face(principal, rate_bps, dt, math::Rounding::Up).to_string(),
+            })
+        })
+        .collect();
+
+    let shares: Vec<Value> = (0..30)
+        .map(|i| {
+            let value = u128::from(rng.below(1_000_000_000_000));
+            let (v, s) = if i % 6 == 0 {
+                (0, 0)
+            } else {
+                let s = u128::from(rng.below(10_000_000_000_000) + 1);
+                (s * u128::from(rng.below(200) + 1) / 100, s)
+            };
+            json!({
+                "value": value.to_string(),
+                "v": v.to_string(),
+                "s": s.to_string(),
+                "down": math::shares_for(value, v, s, math::Rounding::Down).to_string(),
+                "up": math::shares_for(value, v, s, math::Rounding::Up).to_string(),
+                "value_of": math::value_of(value, v, s).to_string(),
+            })
+        })
+        .collect();
+
+    let can_open: Vec<Value> = (0..40)
+        .map(|_| {
+            let collateral = random_collateral(&mut rng, &[5_000, 6_000, 7_000, 7_500, 8_000]);
+            let debt_price = random_debt_price(&mut rng);
+            json!({
+                "collateral": collateral_json(&collateral),
+                "debt_price": price_json(&debt_price),
+                "max_debt": max_debt(&collateral, &debt_price).to_string(),
+            })
+        })
+        .collect();
+
+    let seize: Vec<Value> = (0..40)
+        .map(|_| {
+            let collateral = random_collateral(&mut rng, &[0, 500, 750, 1_000, 1_500]);
+            let debt_price = random_debt_price(&mut rng);
+            let full = math::repay_for(&collateral, &debt_price);
+            let repay = match rng.below(5) {
+                0 => full,
+                1 => full - 1,
+                2 => 1,
+                3 => full + 1 + u128::from(rng.below(1_000_000_000)),
+                _ => 1 + u128::from(rng.next()) % full,
+            };
+            let (seized, repaid) = math::seize(&collateral, repay, &debt_price);
+            json!({
+                "collateral": collateral_json(&collateral),
+                "debt_price": price_json(&debt_price),
+                "repay": repay.to_string(),
+                "seized": seized.iter().map(u128::to_string).collect::<Vec<_>>(),
+                "repaid": repaid.to_string(),
+                "repay_for": full.to_string(),
+            })
+        })
+        .collect();
+
+    json!({ "face": face, "shares": shares, "can_open": can_open, "seize": seize })
+}
+
 fn golden() -> Value {
     let strings = |map: BTreeMap<&str, String>| {
         Value::Object(
@@ -417,6 +605,7 @@ fn golden() -> Value {
         "views": strings(views()),
         "oracle_response": oracle_response_json(),
         "events": event_logs(),
+        "math": math_vectors(),
     })
 }
 
