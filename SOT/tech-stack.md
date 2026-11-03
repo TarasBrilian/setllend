@@ -10,9 +10,9 @@ Versions checked 2026-10-31 on crates.io / npm. Rows for D28 and D29 checked 202
 | Backend (matcher, relayer, keeper, mm-agent) | TypeScript on Node 24, one process in `backend/`. Node runs the `.ts` files directly (type stripping), so there is no build step. Tests with `vitest` 5 | Same language as the frontend. Only erasable TypeScript syntax (no `enum`, no parameter properties), relative imports end in `.ts` |
 | TypeScript | 6.0 in both `backend/` and `frontend/` | 6.0 builds, type-checks, and lints cleanly ✅ 2026-11-02. 7.0 (the native compiler) not tried: Next.js type checking and `typescript-eslint` use the JavaScript compiler API, which 7.0 may not provide ⚠️ |
 | API + realtime | Hono 4.13 on `@hono/node-server` 2.1, WebSocket via the server's built-in `upgradeWebSocket` with `ws` 8 (D28) | Live order book to the UI. Runtime Node 24. `@hono/node-ws` is not used: it only supports `@hono/node-server` 1.x |
-| Database | SQLite via `better-sqlite3` 13.0, file on a Railway volume (D28) | Active orders, fill history, mirror of contract state. Rebuildable from the contract |
+| Database | SQLite via `better-sqlite3` 13.0, file on a Railway volume (D28) | Event log (trade and account history), follower cursors, submitted transactions (D46). The book and positions are read from the contract, never stored |
 | Chain client | `near-api-js` 7.4 (D28) | Relayer calls `intents.near` and our contract |
-| Contract events | FastNear neardata (`mainnet.neardata.xyz`), one JSON per finalized block (D40, proposed) | Free up to 180 requests per minute per IP, an optional FastNear key raises it ✅ 2026-11-03. See [backend.md](backend.md#chain-access-d40) |
+| Contract events | FastNear neardata (`mainnet.neardata.xyz`), one JSON per finalized block (D40) | Free up to 180 requests per minute per IP, an optional FastNear key raises it ✅ 2026-11-03. See [backend.md](backend.md#chain-access-d40) |
 | Intents | `@defuse-protocol/intents-sdk` + `@defuse-protocol/one-click-sdk-typescript` 0.1.x | Build intents, 1Click quote/deposit/status, `processWithdrawal` |
 | Oracle | `aggregate-oracle.near` (`list_prices_no_older_than`) | See [oracle.md](oracle.md) |
 | Frontend | Next.js 16.4 (D29), `wagmi` 3 + `viem` 2, TanStack Query, Tailwind + shadcn/ui | EVM wallet login via EIP-6963 injected wallets + WalletConnect (D14). `viem` for `personal_sign` (ERC-191) |

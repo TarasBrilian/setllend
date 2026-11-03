@@ -15,7 +15,7 @@ setllend/
 │   └── tests/            # crate `setllend-tests`: helpers in src/, near-workspaces sandbox tests in tests/
 ├── backend/              # Node + TypeScript, one process
 │   └── src/              # index.ts starts the server, app.ts builds the Hono app, config.ts, db.ts
-│       ├── chain/        # NEAR RPC client, block follower for contract events (proposed, D40 in backend.md)
+│       ├── chain/        # NEAR RPC client, block follower for contract events (D40 in backend.md)
 │       ├── matcher/      # in-memory order book + REST/WS
 │       ├── relayer/      # execute_intents, match_orders
 │       ├── keeper/       # liquidation + maturity settlement

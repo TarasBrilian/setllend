@@ -1,6 +1,6 @@
 # Backend: matcher, relayer, keeper
 
-> **Status: DRAFT v0.1 (2026-11-03), awaiting approval.** New decisions D40 to D46 are proposed in [decisions.md](decisions.md). No code depends on them yet. The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
+> **Status: APPROVED v0.2 (2026-11-03).** D40 to D46 in [decisions.md](decisions.md). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
 One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, a block follower, and three components that share them. The market-maker agent and the 1Click wrapper are out of scope here (scheduled 2026-11-11 and 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what they will use.
 
@@ -24,7 +24,7 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 |---|---|---|
 | Views, oracle prices, `current_salt`, transaction submission | NEAR JSON-RPC via `near-api-js` 7.4 (`NEAR_RPC_URL`) | Views can be pinned to a block height (`blockQuery`), which the book snapshot needs. The default free endpoint worked for every call on 2026-11-03; its rate limit is not documented ⚠️, so `NEAR_RPC_URL` can point to a paid one |
 | Contract events | FastNear neardata (`NEARDATA_URL`, default `https://mainnet.neardata.xyz`): one JSON per finalized block with every shard's receipt outcomes and logs | ✅ 2026-11-03: `/v0/last_block/final` redirects to `/v0/block/<height>`, about 85 KB per block (about 22 KB gzipped), outcomes carry `executor_id`, `status`, `logs`, and `tx_hash`. NEAR RPC has no "logs by account" query, so a block source is needed. Free tier: 180 requests per minute per IP (its README; a burst got 429 on 2026-11-03). An optional FastNear key (`NEARDATA_API_KEY`, sent as `?apiKey=`) raises it |
-| Results of our own transactions | The `send_tx` result (all receipt outcomes) | Used only to answer the caller (relayer response, matcher skips). The book and the keeper take events from the follower alone, in chain order: `order_filled` carries absolute remaining amounts, so an older event applied after a newer one would roll an order back |
+| Results of our own transactions | The `send_tx` result (all receipt outcomes) | Used only to answer the caller (relayer response, matcher skips). The book changes only through reloads the follower triggers, in chain order, so an outcome seen early can't be overwritten by an older state |
 
 **Follower rules:**
 
@@ -33,27 +33,18 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 - Reads only outcomes with `executor_id` = the Setllend contract and a success status (`SuccessValue` or `SuccessReceiptId`). A failed receipt can keep the logs it wrote before panicking ⚠️ ([intents-primitives.md](intents-primitives.md#payload-format)), so those are ignored.
 - Parses logs with `parseEventLog` (`shared/events.ts`). An unknown Setllend event or version stops the follower with an error rather than dropping it.
 - Each event gets a position `(block_height, receipt_id, log_index)`, stored in SQLite with the event. The cursor is the last fully processed height.
-- Keeps the hashes of recently processed blocks in memory, so a caller can wait until the blocks of its transaction's receipts are processed (the matcher does, before its next batch). After a restart the book is rebuilt anyway, so nothing waits on hashes from before it.
+- Keeps the hashes of recently processed blocks in memory, so a caller can wait until the blocks of its transaction's receipts are processed and the book reloaded (the matcher does, before its next batch). After a restart the book is loaded anew, so nothing waits on hashes from before it.
 - Lag (latest final height minus the live cursor) and the blocks left to backfill are reported on `/health`.
 
 ## Book
 
-**In memory, one book per maturity.** Built from views, then kept current by events.
+**In memory, one book per maturity.** Always a copy of the contract's state at some block height, read with views. Events only say when and which maturity to read again; the book never applies their amounts.
 
-1. **Snapshot** at one final block height `H`: `get_maturities`, then per maturity `get_order_count` and `get_orders(maturity, from_index, limit)` in pages of 100, all with `blockQuery = H` (D38: results are in index order, so the book sorts them). Past maturities are loaded too (their orders can still be cancelled), but never matched.
-2. **Follow events from `H + 1` on**, in chain order. A view at block `H` already includes every receipt executed in block `H` ✅ (2026-11-03 on mainnet: an access key's nonce has the value of the block's transaction at `H`, not at `H + 1`, in 4 of 4 samples), so applying block `H`'s events again would move `borrow` collateral twice. The book ignores events at or below `H`; the follower may still be catching up on them for SQLite history and the keeper.
-
-   | Event | Book update |
-   |---|---|
-   | `order_placed` | Add the order, unless it is already there |
-   | `order_filled` | Set `bid_remaining` and `ask_remaining` (absolute values); remove an order at 0. For a `borrow` ask, lower `collateral_remaining` pro rata as the contract does ([`borrow`](contract-interface.md#borrow)): this is a delta, so each event must apply exactly once |
-   | `order_cancelled` | Remove the order |
-   | `maturity_added` | Add an empty book |
-   | others | No book change; forwarded to the keeper and WebSocket |
-
-3. **Consistency check** every 60 s: `get_order_count` per maturity at the live cursor's height, compared with the book. A mismatch logs an error and rebuilds from a new snapshot.
-4. **Rebuild** also on startup and when the live cursor is more than 1,000 blocks behind (about 10 minutes): a new snapshot at the latest final height, which becomes the new `H`. Since the book is always rebuilt at startup, it never replays events it has already applied.
-5. **Two cursors.** After a snapshot at `H`, the *live* cursor runs from `H + 1` and feeds the book, the matcher, the keeper, and WebSocket. Blocks between the old cursor and `H` are *backfilled* with the spare request budget, into SQLite and the keeper's position keys only. So a gap never stalls matching, which waits only for the live cursor.
+1. **Load** at one final block height `H`: `get_maturities`, then per maturity `get_order_count`, `get_orders(maturity, from_index, limit)` in pages of 100, and `get_pool`, all with `blockQuery = H` (D38: results are in index order, so the book sorts them). Past maturities are loaded too (their orders can still be cancelled), but never matched.
+2. **Reload on events.** The live cursor runs from `H + 1`. A processed block with a Setllend event that names a maturity marks that maturity; `order_cancelled` names none, so it marks the maturity of the cancelled order in the book (all maturities if the order is unknown), and `withdrawn` and `payout_failed` mark nothing. After each poll round, every marked maturity is reloaded as in step 1 at the round's last processed height. A view at block `h` already includes every receipt executed in block `h` ✅ (2026-11-03 on mainnet: an access key's nonce has the value of the block's transaction at `h`, not at `h + 1`, in 4 of 4 samples), so the reload contains the events that triggered it.
+3. **Why reload instead of applying events:** `order_filled` gives absolute remaining amounts but no `collateral_remaining`, so a book built from events would have to repeat the contract's pro-rata collateral rounding ([`borrow`](contract-interface.md#borrow)) and apply every event exactly once. A reload reads the exact state, so a missed, repeated, or misordered event can't leave the book wrong, and no consistency check is needed. It costs about three view calls per maturity per block with activity.
+4. **Jump** at startup and when the live cursor is more than 1,000 blocks behind (about 10 minutes): load at the latest final height, which becomes the new `H`.
+5. **Two cursors.** After a load at `H`, the *live* cursor runs from `H + 1` and feeds the book reloads, the matcher, and WebSocket. Blocks between the old cursor and `H` are *backfilled* with the spare request budget, into SQLite only (trade and account history). So a gap never stalls matching, which waits only for the live cursor.
 
 `sell_note` orders show `remaining_value` from the pool (`get_pool`), since value per share moves after bad debt.
 
@@ -102,21 +93,21 @@ for each maturity m with m > now, in ascending order:
 |---|---|---|
 | Fills per `match_orders` | 10 | [risk-params.md](risk-params.md). `borrow` and `sell_note` fills may share a batch, and a batch may span maturities |
 | Gas attached | 300 Tgas | Sandbox 2026-11-03: 10 `borrow` fills burn 60.8 Tgas and need about 170 Tgas attached, 10 `sell_note` fills about 165 Tgas. Unused gas is refunded. The headroom covers the real `intents.near` and oracle costing more ⚠️ |
-| Batches in flight | 1 | The next batch is built only after the live cursor has processed every block of the previous batch's receipts, so no fill is computed from stale amounts |
+| Batches in flight | 1 | The next batch is built only after the live cursor has processed every block of the previous batch's receipts and the book is reloaded, so no fill is computed from stale amounts |
 
 Raise the fill count only after measuring on mainnet.
 
 ### Skips
 
-After each batch the matcher reads `fill_skipped` events from the transaction outcome and acts on the reason. The book itself changes only through the follower; "out of date" below means the follower has processed every block of the batch and the book still disagrees with the contract, which is a bug, so the book is rebuilt from a snapshot.
+After each batch the matcher reads `fill_skipped` events from the transaction outcome and acts on the reason. The book itself changes only through reloads ([Book](#book), step 2), so once the live cursor has processed the batch's blocks, the book is the contract's state.
 
 | Reason | Action |
 |---|---|
-| `bid_not_found`, `ask_not_found` | Order is gone (filled or cancelled in an earlier receipt). Park the pair; the follower removes the order. Still in the book once the follower has caught up → out of date |
+| `bid_not_found`, `ask_not_found` | Order is gone (filled or cancelled in an earlier receipt). Park the pair; the next reload removes the order |
 | `bid_expired`, `ask_expired` | Mark the order expired: shown, never matched again. The owner cancels it to get funds back |
 | `matured` | Stop matching that maturity |
 | `notes_wiped_out` | Stop matching that maturity while `V = 0` and `S > 0` |
-| `bid_oversize`, `ask_oversize` | Another fill landed first, or `V / S` moved for a `sell_note`. Park the pair until the follower has caught up and the pool is read again, then size it anew. Still oversize with the same inputs → out of date |
+| `bid_oversize`, `ask_oversize` | Another fill landed first, or `V / S` moved for a `sell_note`. Park the pair until the reload after the batch, then size it anew from the reloaded order and pool. Oversize again with those inputs means `shared/math.ts` disagrees with the contract: log an error and keep the pair parked |
 | `zero_shares` | Park the pair until the pool changes |
 | `no_price` | Leave `borrow` asks out until the matcher's own oracle read is usable again, then wait one more fresh price (about 20 s) |
 | `cannot_open` | Park the ask until prices, the order, or the position change |
@@ -161,23 +152,20 @@ The matcher hands a batch to the relayer, which calls `match_orders({fills})` (`
 
 `POST /api/intents` accepts at most 30 requests per minute per IP. Simulation (step 3) already makes invalid intents cost no gas; this protects the gas of valid but useless ones (for example `cancel` of a nonexistent order from a fresh key). It also slows dust-order storage spam through our relayer: every open order locks the contract's NEAR for storage, an accepted risk under D24 that the storage alert ([Keeper](#storage-alert)) watches. It limits our endpoint, not the protocol. The number is an internal setting.
 
+**Client IP:** behind Railway's proxy the socket address is the proxy's, so keying on it would turn the guard into one global limit for all users. The guard uses the last entry of `X-Forwarded-For`, the one the proxy appends; earlier entries come from the client and can be forged. Check the header Railway actually sets on the first deploy ⚠️.
+
 ## Keeper (D44)
 
 ### Finding positions
 
-The contract has no view that lists all positions. The keeper keeps the set of `(borrower, maturity, collateral_token)` keys in SQLite, added from events:
-
-- `order_filled` with `ask_kind = borrow`: the ask's owner and collateral token, from the book, else from that order's `order_placed` row in `events`.
-- `repaid`, `liquidated`, `collateral_withdrawn`, `bad_debt_realized`: the key is in the event.
-
-Keys are never removed, only skipped while their position is `null`. So the set is complete only if the follower has seen every block since the contract was deployed: start it at the deploy block (`SETLLEND_START_BLOCK`) and keep the SQLite file on the Railway volume. Rebuilding a lost database by replaying history is slow at the free neardata rate (about 32 hours per day of history, see [Chain access](#chain-access-d40)). A paged positions view in the contract would make the set rebuildable from state in seconds; that is proposed separately as D45.
+From the contract's state, on every scan: `get_position_count()`, then `get_positions(from_index, limit)` in pages of 100, all at one final block height (D45, [contract-interface.md](contract-interface.md#views)). The keeper keeps no position list of its own, so it doesn't depend on the follower, a database, or history since deploy, and anyone can run one from state alone.
 
 ### Scan
 
 Every 10 s (the oracle updates about every 20 s, [oracle.md](oracle.md)):
 
 1. **Prices:** one `list_prices_no_older_than` view call for the debt feed and every collateral feed, validated exactly like `validate_prices`: `price > 0`, `conf × 10^4 ≤ price × oracle_max_conf`, and `|now − publish_time| ≤ oracle_max_age`, with `now` the latest final block time in seconds. A feed that fails is unusable, and so is every position that needs it (the contract would panic with `No price`, even for overdue debt).
-2. **Positions:** `get_positions_by_account` once per known borrower.
+2. **Positions:** every position, read as in [Finding positions](#finding-positions).
 3. **Eligible** when `debt_face > 0` and, checked in this order as the contract does:
    1. overdue: `now ≥ maturity + grace`, or
    2. unhealthy: `can_open(collateral, decimals, debt_face, collateral_price, debt_price, liq_threshold)` is false, with conservative prices (`price − conf` for collateral, `price + conf` for debt).
@@ -187,9 +175,9 @@ Every 10 s (the oracle updates about every 20 s, [oracle.md](oracle.md)):
 ### Liquidating
 
 - One liquidation in flight at a time, so capital is never counted twice.
-- Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the backend account's key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 envelope differs from the ERC-191 payload of `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); it is built in `keeper/`, since only the backend signs that way. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
+- Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the keeper's signing key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 envelope differs from the ERC-191 payload of `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); it is built in `keeper/`, since only the backend signs that way. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
 - **Partial liquidation:** with less capital than the debt, the keeper liquidates what its capital covers. If the position is still eligible afterwards, a later scan picks it up once capital is back.
-- **Capital** = the backend account's USDC balance on `intents.near` (`mt_balance_of`), minus the amount of the liquidation in flight. With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible positions left. Seized ETH lands in the same Intents account and stays there; turning it back into USDC is left to the 1Click wrapper or a manual step.
+- **Capital** = the backend account's USDC balance on `intents.near` (`mt_balance_of`), minus the amount of the liquidation in flight. With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible positions left. Seized ETH lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized ETH is moved out by hand until the 1Click wrapper turns it back into USDC.
 - **Dust:** every eligible position is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
 - **Failure:** a panic refunds the keeper in full. The reason (`Position is not liquidatable`, `No price`, `Nothing to seize`) is logged and the position is checked again on the next scan.
 
@@ -199,27 +187,28 @@ Each scan also reads the contract's `view_account`: free NEAR = `amount − stor
 
 ## Account and keys (D43)
 
-- **A dedicated backend account** (name to be chosen by the user), not `setllend.near` and holding no key of it. It pays gas, and its `intents.near` balance holds the keeper's USDC and the seized collateral.
-- **Two function-call keys**, each limited to one contract:
+- **`backend.setllend.near`**, a subaccount created by `setllend.near`, so explorers show the link to the contract. It holds no key of `setllend.near`. It pays gas (about 0.5 NEAR to start), and its `intents.near` balance holds the keeper's USDC and the seized collateral.
+- **Three keys:**
 
-  | Env variable | Receiver | Methods | Used by |
+  | Env variable | Kind | Allows | Used by |
   |---|---|---|---|
-  | `NEAR_INTENTS_PRIVATE_KEY` | `intents.near` | `execute_intents` | Relayer (user intents) and keeper. The same key, registered on `intents.near` with `add_public_key`, signs the keeper's NEP-413 intents |
-  | `NEAR_MATCHER_PRIVATE_KEY` | Setllend contract | `match_orders` | Matcher |
+  | `NEAR_INTENTS_PRIVATE_KEY` | Function-call access key, receiver `intents.near` | `execute_intents` | Relayer: user intents and the keeper's signed intents |
+  | `NEAR_MATCHER_PRIVATE_KEY` | Function-call access key, receiver the Setllend contract | `match_orders` | Matcher |
+  | `NEAR_KEEPER_SIGNING_KEY` | ed25519 key registered on `intents.near` with `add_public_key`, **not** a NEAR access key | Signing intents for the account's Intents balance | Keeper (NEP-413 `liquidate` intents) |
 
-- Both keys are added without a gas allowance limit. A function-call key with an allowance stops working once it is spent, which would silently stop matching or relaying; the account itself only holds gas money and the keeper's Intents balance, which the keys can't move.
-- The account's full-access key stays with the user and is used once: create the account, add both keys, and call `intents.near::add_public_key` for the intents key (it needs 1 yoctoNEAR, which a function-call key can't attach).
+- **What a leaked key can do:** a function-call key can only spend gas on its one method. The signing key can move the whole Intents balance of the account (keeper USDC and seized collateral), like any key that signs intents. So that balance is a **hot wallet**: keeper capital stays small, seized collateral is moved out by hand, and the signing key can be rotated on `intents.near` (`remove_public_key`, then `add_public_key`) without touching the gas keys. All three live in the same Railway environment, so a compromised server exposes all of them; keeping them apart limits the damage of one leaked key.
+- The function-call keys are added without a gas allowance limit. A key with an allowance stops working once it is spent, which would silently stop matching or relaying.
+- The account's full-access key stays with the user and is used for setup only: create the account, add both function-call keys, and call `intents.near::add_public_key` for the signing key (it needs 1 yoctoNEAR, which a function-call key can't attach).
 - Without a key, the component that needs it runs read-only: the book and API work, nothing is submitted.
 
 ## Persistence
 
-SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the book itself is never stored.
+SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the book and positions are never stored (they come from views).
 
 | Table | Rows | Used for |
 |---|---|---|
 | `cursor` | Last processed height of the live cursor, and the range still to backfill | Follower restart |
 | `events` | Every Setllend event: `block_height`, `receipt_id`, `log_index`, `tx_hash`, `block_timestamp`, `event`, `data` (JSON). Primary key `(receipt_id, log_index)` | Trade history, rate chart, account history, the market-maker agent's fill feed (D35) |
-| `positions` | Known `(borrower, maturity, collateral_token)` keys | Keeper scan |
 | `submissions` | Every transaction we send: `tx_hash`, `kind` (`intent`, `match`, `liquidate`), signer, request JSON, status, error, timestamps | In-flight batch recovery, relayer audit, keeper history |
 
 Schema changes run as numbered migrations at startup.
@@ -234,10 +223,11 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `NEARDATA_URL` | `https://mainnet.neardata.xyz` | No |
 | `NEARDATA_API_KEY` | none (free tier, 180 requests per minute per IP) | **Yes** |
 | `SETLLEND_CONTRACT` | `setllend.near` | No |
-| `SETLLEND_START_BLOCK` | none: on a fresh database, nothing is backfilled. Set it to the contract's deploy block in production, so a fresh database backfills from there, or the keeper misses older positions ([Keeper](#finding-positions)) | No |
-| `NEAR_ACCOUNT_ID` | none (read-only) | No |
+| `SETLLEND_START_BLOCK` | none: on a fresh database, nothing is backfilled. Set it to the contract's deploy block in production, so a fresh database backfills trade and account history from there. The book and the keeper don't need it | No |
+| `NEAR_ACCOUNT_ID` | none (read-only); `backend.setllend.near` in production | No |
 | `NEAR_INTENTS_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
+| `NEAR_KEEPER_SIGNING_KEY` | none (keeper read-only) | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
 
@@ -274,6 +264,6 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 
 ## Tests
 
-- Unit tests with vitest and a mocked chain client (RPC and neardata behind one interface): book rebuild and event application (from `H + 1`, each event once, in chain order), fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing.
+- Unit tests with vitest and a mocked chain client (RPC and neardata behind one interface): book load and reload (which maturities each event marks, coalescing per poll round, the jump when far behind), fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing.
 - `shared/math.ts` runs the test vectors of `math.rs` (face rounding, `can_open`, `seize_for`, `repay_for`, price validation), so the backend's numbers match the contract's.
-- An end-to-end test against the near-workspaces sandbox (real wasm, mock `intents.near` and oracle) is proposed as an open question: it needs the `near-workspaces` npm package and a sandbox binary download.
+- **No sandbox end-to-end test.** neardata doesn't exist for a sandbox, so the follower, the riskiest part, couldn't be tested that way anyway, and the contract's flows are already covered by the Rust sandbox tests. Instead, a scripted **mainnet smoke test with small amounts** right after the deploy (AGENTS.md): place a `lend` and a `borrow`, see them matched, `repay`, `cancel` a leftover order, and check every step in the book, the events table, and the WebSocket feed.

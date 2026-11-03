@@ -1,6 +1,6 @@
 # Contract interface
 
-> **Status: APPROVED v0.4 (2026-11-03).** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. v0.3 adds clarifications found while implementing phase 1 of the contract (D37): the `collateral` field of `order_placed`, skip reasons, burn and dust rules, and view shapes; then from its verification pass (D38): netting on `sell_note` cancel, index paging for `get_orders`, and a private `new`. v0.4 adds clarifications from phase 2 (D39): the `no_price` skip reason, price validation in the contract, mid-price seizure, and when the price callbacks panic. This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
+> **Status: APPROVED v0.5 (2026-11-03).** v0.2 adds bad-debt handling (D26) and share-based note accounting on top of v0.1. v0.3 adds clarifications found while implementing phase 1 of the contract (D37): the `collateral` field of `order_placed`, skip reasons, burn and dust rules, and view shapes; then from its verification pass (D38): netting on `sell_note` cancel, index paging for `get_orders`, and a private `new`. v0.4 adds clarifications from phase 2 (D39): the `no_price` skip reason, price validation in the contract, mid-price seizure, and when the price callbacks panic. v0.5 adds a paged view of all positions for keepers (D45). This file is the contract between the frontend, matcher, relayer, keeper, and smart contract. Shared TypeScript types in `backend/src/shared/` must match it exactly. Changes follow the spec-first rule in [SOT/README.md](README.md).
 
 ## Design decisions this interface implements
 
@@ -22,6 +22,7 @@ From [decisions.md](decisions.md). The original proposal numbers P1 to P8 map to
 | D37 | **v0.3 clarifications from phase 1:** sync-path skips, `order_placed.collateral`, burn and dust rules, view shapes, skip reasons |
 | D38 | **v0.3 verification pass:** netting also on `sell_note` cancel, `get_orders` paged by index, `new` is private |
 | D39 | **v0.4 clarifications from phase 2:** `no_price` skips, price validation, mid-price seizure, callback panics |
+| D45 | **v0.5:** `get_positions` and `get_position_count`, so a keeper finds every position from state |
 
 ## Verified facts this design relies on
 
@@ -345,6 +346,8 @@ No cross-contract calls in views, so health is computed off-chain with the same 
 | `get_orders_by_account(account_id)` | Open orders of one account, ascending by `order_id` |
 | `get_position(account_id, maturity, collateral_token)` | `{collateral, debt_face}` or `null` |
 | `get_positions_by_account(account_id)` | All positions of one account: `[{maturity, collateral_token, collateral, debt_face}]`, by maturity then token ID |
+| `get_positions(from_index, limit)` | `limit` positions of all accounts, starting at position `from_index` (`u32`) of the position index: `[{account_id, maturity, collateral_token, collateral, debt_face}]`. Paged and ordered like `get_orders` (index order; a deleted position's slot takes the last one), so page at one block height. `from_index` (default 0) and `limit` (default: the rest) are optional (D45) |
+| `get_position_count()` | Number of positions (`u32`), for paging `get_positions` |
 | `get_notes(account_id)` | `{maturity: {free_shares, locked_shares, free_value, locked_value}}` |
 | `get_free_balances(account_id)` | `{token_id: amount}` |
 | `get_pool(maturity)` | `{redemption_pool, total_value (V), total_shares (S), bad_debt_total}`, or `null` for an unknown maturity |
@@ -368,12 +371,12 @@ NEP-297 log lines: `EVENT_JSON:{"standard": "setllend", "version": "0.1.0", "eve
 | `bad_debt_realized` | `borrower`, `maturity`, `collateral_token`, `amount`, `total_value_after` |
 | `withdrawn` / `payout_failed` | `account`, `token_id`, `amount` |
 
-The matcher rebuilds the book from `get_order_count` and `get_orders` pages at startup, all at one block height, then follows events.
+The matcher loads the book from `get_order_count` and `get_orders` pages at one block height, and reloads a maturity the same way at the height of every block with an event for it ([backend.md](backend.md#book)).
 
 ## Storage
 
 - Users never hold wNEAR, so the **contract pays storage** from its own NEAR balance. `AuthCall.attached_deposit` stays 0.
-- Not capped per account (D24). The contract keeps enough NEAR for storage and is topped up when needed. Orders are deleted when filled or cancelled, positions when both collateral and debt reach zero, note entries when both share balances reach zero. Deletion frees storage.
+- Not capped per account (D24). The contract keeps enough NEAR for storage and is topped up when needed. Orders are deleted when filled or cancelled, positions (with their index entry, D45) when both collateral and debt reach zero, note entries when both share balances reach zero. Deletion frees storage.
 - Expired orders (`expires_at` passed) are never filled. The owner cancels to get funds back.
 
 ## Example: relayer payload for a `lend` order ✅
