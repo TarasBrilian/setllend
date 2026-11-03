@@ -14,7 +14,7 @@ import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import type { Config, NoteView, OrderView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, bridgeOutStep, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
+import { CHAINS, type Chain, DecimalInput, decimalString, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, bridgeOutStep, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
 import { Modal } from "../modal";
 import { SellNoteForm } from "../order-form";
 import { TokenIcon } from "../token-icon";
@@ -160,7 +160,7 @@ const amountsOf = (loan: LoanView) => Object.fromEntries(Object.entries(loan.col
 
 function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: LoanView; onDone: () => void }) {
   const debt = usdcToNumber(loan.debt_face);
-  const [amount, setAmount] = useState(String(debt));
+  const [amount, setAmount] = useState(decimalString(debt));
   const [chain, setChain] = useChain("Arbitrum");
   const signPrefix = useSignPrefix();
   const addresses = useAddresses([chain]);
@@ -180,8 +180,8 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
       label="Repay"
       onDone={onDone}
     >
-      <Field label="Amount" suffix={<MaxSuffix unit="USDC" onMax={() => setAmount(String(debt))} />} hint={`Debt at maturity: ${formatUsd(debt)}`}>
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+      <Field label="Amount" suffix={<MaxSuffix unit="USDC" onMax={() => setAmount(decimalString(debt))} />} hint={`Debt at maturity: ${formatUsd(debt)}`}>
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
       <ChainRow label="Pay USDC from" value={chain} onChange={setChain} />
       {addresses.fields}
@@ -213,7 +213,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config
   const [maturity, setMaturity] = useState<U64 | undefined>(fixedLoan?.maturity ?? open[0]?.maturity);
   const loan = fixedLoan ?? open.find((l) => l.maturity === maturity);
   const deposited = account.deposits[token] ? tokenAmount(token, account.deposits[token]) : 0;
-  const [amount, setAmount] = useState(String(deposited));
+  const [amount, setAmount] = useState(decimalString(deposited));
   const value = Number(amount) || 0;
 
   const debt = loan ? usdcToNumber(loan.debt_face) : 0;
@@ -246,7 +246,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config
             value={token}
             onChange={(t) => {
               setToken(t);
-              setAmount(account.deposits[t] ? String(tokenAmount(t, account.deposits[t])) : "0");
+              setAmount(account.deposits[t] ? decimalString(tokenAmount(t, account.deposits[t])) : "0");
             }}
           />
         </div>
@@ -259,10 +259,10 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config
       )}
       <Field
         label="Amount"
-        suffix={<MaxSuffix unit={TOKENS[token].symbol} onMax={() => setAmount(String(deposited))} />}
+        suffix={<MaxSuffix unit={TOKENS[token].symbol} onMax={() => setAmount(decimalString(deposited))} />}
         hint={`Deposited and not collateral: ${formatTokenAmount(token, deposited)}`}
       >
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
       {loan && (
         <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
@@ -286,7 +286,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   const legs = legsOf(amounts, tokens, prices);
   const i = held.indexOf(token);
   const maxRounded = Math.floor(maxWithdrawOf(debt, legs, i) * 1e6) / 1e6;
-  const [amount, setAmount] = useState(String(maxRounded));
+  const [amount, setAmount] = useState(decimalString(maxRounded));
   const value = Number(amount) || 0;
   const afterLegs = legsOf({ ...amounts, [token]: Math.max(0, amounts[token] - value) }, tokens, prices);
   const overdue = debt > 0 && nowMs >= maturityToMs(loan.maturity) + Number(BigInt(config.grace) / 1_000_000n);
@@ -321,16 +321,16 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
           value={token}
           onChange={(t) => {
             setToken(t);
-            setAmount(String(Math.floor(maxWithdrawOf(debt, legs, held.indexOf(t)) * 1e6) / 1e6));
+            setAmount(decimalString(Math.floor(maxWithdrawOf(debt, legs, held.indexOf(t)) * 1e6) / 1e6));
           }}
         />
       )}
       <Field
         label="Amount"
-        suffix={<MaxSuffix unit={TOKENS[token].symbol} onMax={() => setAmount(String(maxRounded))} />}
+        suffix={<MaxSuffix unit={TOKENS[token].symbol} onMax={() => setAmount(decimalString(maxRounded))} />}
         hint={debt > 0 ? `Up to ${formatTokenAmount(token, maxRounded)} while the loan stays within its borrow limit` : "The loan is repaid: all of it is free"}
       >
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         <Row label="Health factor after" value={formatHealth(health(debt, afterLegs))} />
@@ -396,7 +396,7 @@ function CancelForm({ order, onDone }: { order: OrderView; onDone: () => void })
 function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amount: U128; source: "deposit" | "free"; onDone: () => void }) {
   const meta = TOKENS[token];
   const total = tokenAmount(token, amount);
-  const [value, setValue] = useState(String(total));
+  const [value, setValue] = useState(decimalString(total));
   // USDC and NEAR-native tokens can go to any chain the account uses; ETH and BTC return to their own
   // through the bridge (D10, D52).
   const pickChain = meta.chain === "NEAR";
@@ -424,8 +424,8 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
 
   return (
     <Flow steps={steps} error={error} label={`Withdraw ${meta.symbol}`} onDone={onDone}>
-      <Field label="Amount" suffix={<MaxSuffix unit={meta.symbol} onMax={() => setValue(String(total))} />} hint={`Balance: ${formatTokenAmount(token, total)}`}>
-        <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} className={amountInput} />
+      <Field label="Amount" suffix={<MaxSuffix unit={meta.symbol} onMax={() => setValue(decimalString(total))} />} hint={`Balance: ${formatTokenAmount(token, total)}`}>
+        <DecimalInput value={value} onChange={setValue} />
       </Field>
       {pickChain ? <ChainRow label="Send to" value={chain} onChange={setChain} /> : <p className="text-xs text-faint">Goes back to {chain}, the chain it came from.</p>}
       {addresses.fields}
@@ -541,7 +541,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
                 : "Add it to a loan as collateral whenever you like."
         }
       >
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
       {addresses.fields}
     </Flow>

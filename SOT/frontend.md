@@ -12,6 +12,7 @@ The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-
 | Type | Figtree (`next/font/google`). Numbers use tabular figures |
 | Logo | Orange SVG mark plus the word "Setllend" |
 | Target | Desktop first. Mobile layout is deferred |
+| Number fields | Amounts and rates accept only digits and one decimal point. A comma is read as the decimal point, and any other keystroke or paste is ignored. Prefilled values (Max, balances) are plain decimals, never exponent notation such as `1e-7` |
 
 ## Pages
 

@@ -85,6 +85,37 @@ export function useSignPrefix(): string[] {
 
 export const amountInput = "w-full min-w-0 bg-transparent text-xl font-semibold tabular-nums outline-none";
 
+const DECIMAL = /^\d*\.?\d*$/;
+
+/** A prefill (Max, a balance) for a `DecimalInput`: "0.0000001", never "1e-7", which the field couldn't edit. */
+export function decimalString(value: number): string {
+  return value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 20 });
+}
+
+/** An amount or rate field: digits and one decimal point only. A comma counts as the point; anything else is ignored. */
+export function DecimalInput({
+  value,
+  onChange,
+  className = amountInput,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  return (
+    <input
+      inputMode="decimal"
+      autoComplete="off"
+      value={value}
+      onChange={(e) => {
+        const next = e.target.value.replace(",", ".");
+        if (DECIMAL.test(next)) onChange(next);
+      }}
+      className={className}
+    />
+  );
+}
+
 export function Field({
   label,
   suffix,

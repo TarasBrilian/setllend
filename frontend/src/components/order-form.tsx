@@ -13,7 +13,7 @@ import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
 import type { NoteView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
+import { amountInput, DecimalInput, decimalString, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -115,7 +115,7 @@ export function OrderForm({
       // A NEAR account sends NEAR itself; an EVM account buys it with a 1Click swap.
       TOKENS[token].symbol === "NEAR" && active?.kind !== "near"
         ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap from USDC on ${chain === "NEAR" ? "Arbitrum" : chain}`
-        : payInStep(String(amount), TOKENS[token].symbol, TOKENS[token].chain),
+        : payInStep(decimalString(amount), TOKENS[token].symbol, TOKENS[token].chain),
     );
   const steps = isBorrow
     ? [
@@ -146,7 +146,7 @@ export function OrderForm({
       {withModes && <ModeSwitch mode={mode} onChange={setMode} />}
 
       <Field label={isBorrow ? "Borrow amount" : "Lend amount"} suffix="USDC">
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
 
       <Field
@@ -157,7 +157,7 @@ export function OrderForm({
         {mode === "Market" ? (
           <span className={`${amountInput} text-muted`}>{market.avgBps === undefined ? "–" : (market.avgBps / 100).toFixed(2)}</span>
         ) : (
-          <input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} className={amountInput} />
+          <DecimalInput value={rate} onChange={setRate} />
         )}
       </Field>
 
@@ -257,10 +257,9 @@ function CollateralLegs({
               <div className="flex items-center gap-2">
                 <TokenIcon token={leg.token} className="size-5 shrink-0" />
                 <span className="shrink-0 text-sm text-muted">{tokenLabel(leg.token)}</span>
-                <input
-                  inputMode="decimal"
+                <DecimalInput
                   value={leg.amount}
-                  onChange={(e) => set(i, { ...leg, amount: e.target.value })}
+                  onChange={(amount) => set(i, { ...leg, amount })}
                   className="w-full min-w-0 bg-transparent text-right text-lg font-semibold tabular-nums outline-none"
                 />
                 {legs.length > 1 && (
@@ -270,7 +269,7 @@ function CollateralLegs({
                 )}
               </div>
               {source === "Deposited" && (
-                <button type="button" className="mt-0.5 text-xs text-faint hover:text-muted" onClick={() => set(i, { ...leg, amount: String(available(leg.token)) })}>
+                <button type="button" className="mt-0.5 text-xs text-faint hover:text-muted" onClick={() => set(i, { ...leg, amount: decimalString(available(leg.token)) })}>
                   Deposited: {formatTokenAmount(leg.token, available(leg.token))} · Max
                 </button>
               )}
@@ -323,7 +322,7 @@ export function SellNoteForm({
   const freeValue = note ? usdcToNumber(note.free_value) : 0;
 
   const [mode, setMode] = useState<OrderMode>(initialMode);
-  const [amount, setAmount] = useState(freeValue > 0 ? String(Math.floor(freeValue)) : "");
+  const [amount, setAmount] = useState(freeValue > 0 ? decimalString(Math.floor(freeValue)) : "");
   const [rate, setRate] = useState(toPercent(initialRateBps ?? bestRate));
 
   const value = Number(amount) || 0;
@@ -359,7 +358,7 @@ export function SellNoteForm({
         label="Note value to sell"
         suffix={
           <span className="flex items-center gap-2">
-            <button type="button" className="rounded-md border border-line px-2 py-0.5 text-xs hover:text-white" onClick={() => setAmount(String(freeValue))}>
+            <button type="button" className="rounded-md border border-line px-2 py-0.5 text-xs hover:text-white" onClick={() => setAmount(decimalString(freeValue))}>
               Max
             </button>
             USDC
@@ -367,7 +366,7 @@ export function SellNoteForm({
         }
         hint={`Your free notes in this maturity: ${formatUsd(freeValue)} at maturity`}
       >
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
+        <DecimalInput value={amount} onChange={setAmount} />
       </Field>
 
       <Field
@@ -378,7 +377,7 @@ export function SellNoteForm({
         {mode === "Market" ? (
           <span className={`${amountInput} text-muted`}>{market.avgBps === undefined ? "–" : (market.avgBps / 100).toFixed(2)}</span>
         ) : (
-          <input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} className={amountInput} />
+          <DecimalInput value={rate} onChange={setRate} />
         )}
       </Field>
 
