@@ -14,7 +14,7 @@ Tested 2026-11-01 with `simulate_intents` on mainnet `intents.near` using a thro
 ## Details
 
 - **Signatures supported by the Verifier:** NEP-413 (NEAR wallets), ERC-191 (EVM EOA wallets: MetaMask, Rabby, …), TIP-191 (Tron), raw Ed25519 (Phantom), WebAuthn (passkeys), TonConnect, SEP-53 (Stellar). For ERC-191, normalize the recovery byte `v` to {0, 1}.
-- **Cross-chain identity:** an EVM wallet address becomes an *implicit Eth* account (`0x…`) on `intents.near` with no registration. Setllend positions are keyed to the same account ID.
+- **Cross-chain identity:** an EVM wallet address becomes an *implicit Eth* account (`0x…`) on `intents.near` with no registration. Setllend positions are keyed to the same account ID. A NEAR user is their own NEAR account and signs with NEP-413 after registering a key (D51).
 - **Nonce:** must use the *versioned* format (legacy will be banned): `5628f6c6` (magic) + `00` (version) + 4-byte salt + 8-byte LE deadline in nanoseconds + 15 random bytes. Salt was `252812b3` on 2026-11-01. Always fetch it from the `current_salt` view, since it can rotate.
 - **Protocol fee:** 1 pip (0.0001%) per transaction. The "Simulating Intents" page that says 100 pips is outdated.
 - **Ordering:** intents in one batch execute in order, but the cross-contract promises they spawn run concurrently. Don't rely on completion order.

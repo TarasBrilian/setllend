@@ -381,7 +381,7 @@ The matcher loads the book from `get_order_count` and `get_orders` pages at one 
 
 ## Example: relayer payload for a `lend` order ✅
 
-This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet. The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. Built by `buildIntentPayload` in `backend/src/shared/intents.ts`; formats are in [intents-primitives.md](intents-primitives.md#payload-format). Verified ✅ 2026-11-03 with `simulate_intents` on mainnet (view call, throwaway key): an `auth_call` payload built this way executes, and a `transfer` fails only on the empty balance.
+This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet; a NEAR user signs the same message with NEP-413 (D51, [intents-primitives.md](intents-primitives.md#payload-format)). The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. Built by `buildIntentPayload` in `backend/src/shared/intents.ts`; formats are in [intents-primitives.md](intents-primitives.md#payload-format). Verified ✅ 2026-11-03 with `simulate_intents` on mainnet (view call, throwaway key): an `auth_call` payload built this way executes, and a `transfer` fails only on the empty balance.
 
 ```json
 {

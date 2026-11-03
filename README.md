@@ -78,7 +78,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 |---|---|
 | `contracts/` | Rust smart contract, mocks, sandbox tests |
 | `backend/` | Matcher, relayer, keeper, market-maker agent, 1Click wrapper (TypeScript) |
-| `frontend/` | Next.js app with EVM wallet login |
+| `frontend/` | Next.js app with EVM or NEAR wallet login |
 | `SOT/` | Design specification and decision log |
 
 ## Run locally
@@ -94,7 +94,7 @@ cp .env.example .env              # fill in values as needed, all are optional f
 # Backend: API on http://localhost:8080 (GET /health returns {"ok":true})
 (cd backend && npm install && npm run dev)
 
-# Frontend: http://localhost:3000, connect any injected EVM wallet
+# Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet
 (cd frontend && npm install && npm run dev)
 ```
 

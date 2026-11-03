@@ -25,7 +25,7 @@
 1. **Funds never leave the `intents.near` ledger** until the user withdraws to Base or Arbitrum. The Setllend contract holds its own balance inside `intents.near`.
 2. **Orders are stored on-chain (escrow), matching is off-chain.** Anyone can read the orders and run their own matcher.
 3. **The contract does not verify signatures.** `intents.near` verifies signature, nonce, and deadline, then forwards the action to the contract.
-4. **Gasless for users.** A relayer submits NEAR transactions. Users only sign messages in their EVM wallet (D14).
+4. **Gasless for users.** A relayer submits NEAR transactions. Users only sign messages in their EVM wallet (D14) or NEAR wallet (D51).
 
 ## Components
 
@@ -37,7 +37,7 @@
 | Keeper | `backend/src/keeper/` | Liquidations and maturity settlement |
 | Market-maker agent | `backend/src/mm-agent/` | Quotes fixed lend/borrow rates at a per-maturity base rate ± a spread. The base starts from config and follows recent fills in Setllend's own book, with no external rate source (D35) |
 | 1Click wrapper | `backend/src/oneclick/` | Quotes, deposits, withdrawals, status (D11) |
-| Frontend | `frontend/` | EVM wallet login, order book, positions, history |
+| Frontend | `frontend/` | EVM and NEAR wallet login, order book, positions, history |
 
 ## Trust model: "nobody to switch it off"
 

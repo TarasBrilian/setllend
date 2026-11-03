@@ -13,7 +13,7 @@ import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
 import type { NoteView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, type Chain, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useChainOptions, useSignPrefix } from "./form-parts";
+import { amountInput, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useChain, useChainOptions, useEvmAddress, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -64,7 +64,7 @@ export function OrderForm({
   const [rate, setRate] = useState(toPercent(initialRateBps ?? bestRate));
   const [source, setSource] = useState<Source>("New deposit");
   const [legs, setLegs] = useState<Leg[]>([{ token: ASSETS.ethArb, amount: "0.75" }]);
-  const [chain, setChain] = useState<Chain>(chains[0] === "NEAR" ? "NEAR" : isBorrow ? "Arbitrum" : "Base");
+  const [chain, setChain] = useChain(isBorrow ? "Arbitrum" : "Base");
 
   const principal = Number(amount) || 0;
   const market = marketFill(book, side, principal);
@@ -81,6 +81,10 @@ export function OrderForm({
   const existingDebt = loan ? usdcToNumber(loan.debt_face) : 0;
   const totalDebt = existingDebt + face;
   const available = (token: TokenId) => (deposits[token] ? tokenAmount(token, deposits[token]) : 0);
+  // An EVM leg: the USDC payment or payout chain, or a new collateral deposit from Arbitrum or Base.
+  const evmCollateral = isBorrow && source === "New deposit" ? legs.find((l) => TOKENS[l.token].chain !== "NEAR" && Number(l.amount) > 0) : undefined;
+  const evmLegChain = chain !== "NEAR" ? chain : evmCollateral ? TOKENS[evmCollateral.token].chain : "NEAR";
+  const evmAddress = useEvmAddress(evmLegChain !== "NEAR", evmLegChain);
 
   let error: string | undefined;
   if (principal <= 0) error = "Enter an amount";
@@ -89,6 +93,7 @@ export function OrderForm({
   else if (isBorrow && source !== "Existing loan" && Object.values(added).every((a) => a <= 0)) error = "Enter collateral";
   else if (isBorrow && source === "Deposited" && legs.some((l) => (Number(l.amount) || 0) > available(l.token))) error = "More than your deposit";
   else if (isBorrow && totalDebt > limit) error = "Above your borrow limit";
+  else if (evmAddress.error) error = evmAddress.error;
 
   let rateHint: React.ReactNode;
   if (mode === "Market") {
@@ -184,6 +189,8 @@ export function OrderForm({
         <span className="text-muted">{isBorrow ? "Receive USDC on" : "Pay USDC from"}</span>
         <Segmented options={chains} value={chain} onChange={setChain} />
       </div>
+
+      {evmAddress.field}
 
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         {isBorrow ? (

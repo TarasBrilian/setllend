@@ -24,6 +24,6 @@ Instructions for AI coding agents working in this repo.
 |---|---|---|
 | `contracts/` | Rust, `near-sdk`, `cargo-near`, `near-workspaces` | Smart contract, mocks, sandbox tests |
 | `backend/` | TypeScript, Node, one process | Matcher, relayer, keeper, market-maker agent, 1Click wrapper |
-| `frontend/` | Next.js, `wagmi`, `viem` | UI with EVM wallet login (any EOA wallet) |
+| `frontend/` | Next.js, `wagmi`, `viem`, NEAR Wallet Selector | UI with EVM wallet login (any EOA wallet) and NEAR wallet login (D51) |
 
 Each folder is self-contained (own `Cargo.toml` / `package.json`, no workspace spanning folders). `contracts/` is one Cargo workspace (D36).

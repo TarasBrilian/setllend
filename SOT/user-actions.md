@@ -18,6 +18,17 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Bad debt (automatic) | Realized inside `liquidate` when collateral runs out with debt left. Note value in that maturity drops pro rata | – | **Yes** |
 | Exit before maturity | `auth_call` → `sell_note{maturity, value, max_rate_bps}`: sell notes on the same book, quoted in APR | 1 signature | No |
 
+## Proposed actions (not in the contract yet)
+
+| Action | Mechanism | Decision |
+|---|---|---|
+| Deposit from Arbitrum or Base | 1Click into the user's Intents balance; not collateral until added | D48, D49 |
+| Deposit from NEAR | `ft_transfer_call` to `intents.near`, `msg` = the receiving account; NEAR is wrapped through `wrap.near` in the same transaction. A NEAR transaction, so the user pays its gas | D51 |
+| Add collateral | `transfer` collateral tokens, `msg = add_collateral{maturity}`, while the loan has debt. No oracle | D48 |
+| Borrow against a loan's collateral | `auth_call` borrow order without escrow, checked with `can_open` at fill | D50 |
+| Register a NEAR account's key | `add_public_key` on `intents.near`, once before the first signed intent. A NEAR transaction the user pays for | D51 |
+| Freeze, unfreeze, or update a collateral token | Owner methods; updates apply at once to open loans | D48, D50 |
+
 ## End-to-end flow (demo)
 
 1. **Borrower (Arbitrum):** deposits ETH via 1Click into their Intents balance (`recipientType: INTENTS`), then signs a `transfer` of ETH to Setllend with `msg = borrow` "borrow 1,000 USDC, 30 days, max 8% APR".

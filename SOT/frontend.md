@@ -2,7 +2,7 @@
 
 > **Status: APPROVED v0.2 (2026-11-03), D47 and D48.** The UI is built first against mock data, before the backend API exists. Nothing in it sends a transaction yet. The collateral model follows the proposed D48 ([contract-interface.md](contract-interface.md#proposed-deposits-and-multi-token-collateral-d48)), which the contract does not implement yet.
 
-The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-stack.md)). It reads only the backend API ([backend.md](backend.md#api)) and signs intents with the user's EVM wallet. This file owns what the user sees.
+The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-stack.md)). It reads only the backend API ([backend.md](backend.md#api)), except wallet balances, which it reads from chain, and signs intents with the user's EVM or NEAR wallet (D51). This file owns what the user sees.
 
 ## Look
 
@@ -19,7 +19,7 @@ The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-
 
 - Logo on the left. Navigation in the middle: **Market** (`/`) and **Portfolio** (`/portfolio`).
 - No Deposit button in the header: deposits start from Portfolio's My Assets, and order forms can also deposit inline through 1Click.
-- **Connect** on the right opens one menu with two parts (D51): EVM wallets found through EIP-6963 (D14), and NEAR wallets through NEAR Wallet Selector. Once connected it shows the account and its network: the short address and the chain (Base or Arbitrum) for EVM, the account ID for NEAR. Its menu: copy the account, switch chain (EVM), switch between a connected EVM and NEAR account, disconnect. The last account connected is the active one.
+- **Connect** on the right opens one menu with two parts (D51): EVM wallets found through EIP-6963 (D14), and NEAR wallets through NEAR Wallet Selector (Meteor, MyNearWallet, Intear). Once connected it shows the account and its network: the short address and the chain (Base or Arbitrum) for EVM, the account ID for NEAR. Its menu: copy the account, switch chain (EVM), switch between a connected EVM and NEAR account, disconnect. The last account connected is the active one.
 
 ### Market (`/`)
 
@@ -72,7 +72,7 @@ Before connecting: one card with a Connect prompt. After connecting, top to bott
   - Free balances in Setllend (failed payouts, redemptions), with Withdraw.
 - **History:** every maturity, with a filter by action.
 
-Every action opens a modal on the page: amount, a preview (for example the health factor after a collateral withdrawal), then the simulated steps. For a NEAR account, the first action that signs an intent adds a "Register your key on NEAR Intents" step (`add_public_key`, once). Chain pickers for payouts, withdrawals, and USDC payments also offer NEAR to a NEAR account, and default to it (D51). Repay takes a partial amount or Max and notes that, before maturity, buying notes through a lend order in the same maturity is cheaper because they net against the debt (D20).
+Every action opens a modal on the page: amount, a preview (for example the health factor after a collateral withdrawal), then the simulated steps. For a NEAR account, the first action that signs an intent adds a "Register your key on NEAR Intents" step (`add_public_key`, once). Chain pickers for payouts, withdrawals, and USDC payments also offer NEAR to a NEAR account, and default to it (D51). A NEAR account has no address on Arbitrum or Base, so any 1Click leg there (a payout, a withdrawal, or a deposit and its refund) asks for one, checked as a `0x` address. Repay takes a partial amount or Max and notes that, before maturity, buying notes through a lend order in the same maturity is cheaper because they net against the debt (D20).
 
 Add collateral and multi-token loans are D48 and exist only in the mock until the contract implements them. Collateral tokens, their risk parameters, and frozen tokens come from one list ([risk-params.md](risk-params.md#per-token-parameters-d48-proposed)); a frozen token shows as such and can't be picked for a new borrow or a top-up.
 
@@ -80,5 +80,5 @@ Add collateral and multi-token loans are D48 and exist only in the mock until th
 
 - Components read data only through `src/lib/api/`, whose functions mirror the REST endpoints in [backend.md](backend.md#api) and return the shared view types (`src/shared/`). Amounts stay decimal strings until display.
 - Until the backend API exists, `src/lib/api/` serves mock data only, and the UI shows a "Demo data" badge. Actions that would sign or send something only run a simulated stepper and say so. The HTTP client replaces the mocks once the backend is up.
-- **Not in the backend API yet**, specified in D49 ([backend.md](backend.md#api)): protocol totals for the hero, per-maturity totals for the detail page (total supplied, active loans), rate history beyond the recent-trades limit, the user's event history, the user's Intents balance (`mt_balance_of` on `intents.near`), the collateral token list with its parameters (D48), and the user's fill totals per maturity (principal and face, for average rates and interest: positions and notes store neither). The mocks serve them now; the backend spec needs endpoints for them before the switch.
+- **Not in the backend API yet**, specified in D49 ([backend.md](backend.md#api)): protocol totals for the hero, per-maturity totals for the detail page (total supplied, active loans), rate history beyond the recent-trades limit, the user's event history, the user's Intents balance (`mt_batch_balance_of` on `intents.near`), the collateral token list with its parameters (D48), and the user's fill totals per maturity (principal and face, for average rates and interest: positions and notes store neither). The mocks serve them now; the backend spec needs endpoints for them before the switch.
 - Rate math (debt face, LTV, liquidation price) follows [contract-interface.md](contract-interface.md): simple interest on a 365-day year (D16), LTV on debt face.

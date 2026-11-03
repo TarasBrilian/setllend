@@ -2,6 +2,7 @@
 
 // Building blocks shared by the order modal, the order panel, and the deposit modal.
 
+import { useState } from "react";
 import { useAccount } from "@/lib/account";
 
 export type Chain = "Arbitrum" | "Base" | "NEAR";
@@ -10,6 +11,34 @@ export const CHAINS: Chain[] = ["Arbitrum", "Base"];
 /** Chains a payment or payout can use: NEAR first for a NEAR account (D51), then Arbitrum and Base. */
 export function useChainOptions(): Chain[] {
   return useAccount().active?.kind === "near" ? ["NEAR", ...CHAINS] : CHAINS;
+}
+
+/**
+ * A chain choice that stays valid for the active account: NEAR by default for a NEAR account, else
+ * `evmDefault`. A choice the account can't use (after switching accounts) falls back the same way.
+ */
+export function useChain(evmDefault: Chain): [Chain, (chain: Chain) => void] {
+  const options = useChainOptions();
+  const [chosen, setChosen] = useState<Chain | null>(null);
+  const chain = chosen !== null && options.includes(chosen) ? chosen : options[0] === "NEAR" ? "NEAR" : evmDefault;
+  return [chain, setChosen];
+}
+
+/**
+ * A NEAR account has no address on Arbitrum or Base, so a 1Click leg there needs one: the recipient
+ * of a payout or the refund address of a deposit (D51). EVM accounts use their own address.
+ */
+export function useEvmAddress(needed: boolean, chain: Chain) {
+  const nearAccount = useAccount().active?.kind === "near";
+  const [value, setValue] = useState("");
+  const shown = needed && nearAccount && chain !== "NEAR";
+  const error = shown && !/^0x[0-9a-fA-F]{40}$/.test(value.trim()) ? `Enter your address on ${chain}` : undefined;
+  const field = shown ? (
+    <Field label={`Your address on ${chain}`} suffix={null} hint="1Click pays out or refunds here; a NEAR account has no address on EVM chains.">
+      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="0x…" className="w-full min-w-0 bg-transparent font-mono text-sm outline-none" />
+    </Field>
+  ) : null;
+  return { field, error };
 }
 
 /** Paying into the Intents balance: one NEAR transaction from NEAR (D51), 1Click otherwise. */
