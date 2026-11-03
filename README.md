@@ -93,7 +93,8 @@ cp .env.example .env              # fill in values as needed, all are optional f
 # Contract: unit tests, then sandbox tests (deploy, and order, multi-token loan, liquidation, and bad-debt flows through mock intents.near and oracle contracts)
 (cd contracts && cargo test)
 
-# Backend: API on http://localhost:8080 (GET /health returns {"ok":true})
+# Backend: API on http://localhost:8080. Until setllend.near is deployed, GET /health returns
+# {"ok":true,"contract":"not_deployed",...} and the data endpoints answer 503
 (cd backend && npm install && npm run dev)
 
 # Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet
