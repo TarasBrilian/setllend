@@ -13,7 +13,8 @@ import { useStepper } from "@/lib/use-stepper";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import type { Config, NoteView, OrderView } from "@/shared/views";
-import { amountInput, CHAINS, type Chain, Field, Row, Segmented, Stepper, SubmitButton } from "../form-parts";
+import { useAccount } from "@/lib/account";
+import { amountInput, CHAINS, type Chain, Field, payInStep, payOutStep, Row, Segmented, Stepper, SubmitButton, useChain, useChainOptions, useEvmAddress, useSignPrefix } from "../form-parts";
 import { Modal } from "../modal";
 import { SellNoteForm } from "../order-form";
 import { TokenIcon } from "../token-icon";
@@ -123,11 +124,12 @@ function MaxSuffix({ unit, onMax }: { unit: string; onMax: () => void }) {
   );
 }
 
-function ChainRow({ label, value, onChange }: { label: string; value: Chain; onChange: (chain: Chain) => void }) {
+function ChainRow({ label, value, onChange, options }: { label: string; value: Chain; onChange: (chain: Chain) => void; options?: Chain[] }) {
+  const accountChains = useChainOptions();
   return (
     <div className="flex items-center justify-between text-sm">
       <span className="text-muted">{label}</span>
-      <Segmented options={CHAINS} value={value} onChange={onChange} />
+      <Segmented options={options ?? accountChains} value={value} onChange={onChange} />
     </div>
   );
 }
@@ -159,7 +161,9 @@ const amountsOf = (loan: LoanView) => Object.fromEntries(Object.entries(loan.col
 function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: LoanView; onDone: () => void }) {
   const debt = usdcToNumber(loan.debt_face);
   const [amount, setAmount] = useState(String(debt));
-  const [chain, setChain] = useState<Chain>("Arbitrum");
+  const [chain, setChain] = useChain("Arbitrum");
+  const signPrefix = useSignPrefix();
+  const evmAddress = useEvmAddress(true, chain);
   const value = Number(amount) || 0;
   const after = Math.max(0, debt - value);
   const beforeMaturity = nowMs < maturityToMs(loan.maturity);
@@ -167,10 +171,11 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
   let error: string | undefined;
   if (value <= 0) error = "Enter an amount";
   else if (value > debt) error = "More than your debt";
+  else if (evmAddress.error) error = evmAddress.error;
 
   return (
     <Flow
-      steps={[`Deposit ${value.toLocaleString("en-US")} USDC from ${chain} via 1Click`, "Sign the repay transfer with your wallet", "Debt reduced. Your collateral stays until you withdraw it"]}
+      steps={[payInStep(value.toLocaleString("en-US"), "USDC", chain), ...signPrefix, "Sign the repay transfer with your wallet", "Debt reduced. Your collateral stays until you withdraw it"]}
       error={error}
       label="Repay"
       onDone={onDone}
@@ -179,6 +184,7 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
         <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
       </Field>
       <ChainRow label="Pay USDC from" value={chain} onChange={setChain} />
+      {evmAddress.field}
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         <Row label="Debt after" value={formatUsd(after)} />
         <Row label="Health factor after" value={formatHealth(health(after, legsOfRaw(loan.collateral, tokens, prices)))} />
@@ -210,6 +216,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, tokens
   const before = loan ? amountsOf(loan) : {};
   const after = { ...before, [token]: (before[token] ?? 0) + value };
   const info = tokens?.find((t) => t.token_id === token);
+  const signPrefix = useSignPrefix();
 
   let error: string | undefined;
   if (!loan) error = "You have no loan to add to";
@@ -220,7 +227,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, tokens
 
   return (
     <Flow
-      steps={[`Sign the add-collateral transfer of ${formatTokenAmount(token, value)}`, `Collateral added to the ${loan ? formatMaturity(loan.maturity) : ""} loan`]}
+      steps={[...signPrefix, `Sign the add-collateral transfer of ${formatTokenAmount(token, value)}`, `Collateral added to the ${loan ? formatMaturity(loan.maturity) : ""} loan`]}
       error={error}
       label="Add to collateral"
       onDone={onDone}
@@ -278,15 +285,19 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   const afterLegs = legsOf({ ...amounts, [token]: Math.max(0, amounts[token] - value) }, tokens, prices);
   const overdue = debt > 0 && nowMs >= maturityToMs(loan.maturity) + Number(BigInt(config.grace) / 1_000_000n);
   const chain = TOKENS[token].chain;
+  const signPrefix = useSignPrefix();
+  const evmAddress = useEvmAddress(chain !== "NEAR", chain);
 
   let error: string | undefined;
   if (overdue) error = "Overdue: repay first";
   else if (value <= 0) error = "Enter an amount";
   else if (value > maxRounded) error = debt > 0 ? "Above the borrow limit after withdrawal" : "More than this collateral";
+  else if (evmAddress.error) error = evmAddress.error;
 
   return (
     <Flow
       steps={[
+        ...signPrefix,
         "Sign the withdrawal with your wallet",
         ...(debt > 0 ? ["Setllend checks oracle prices and your borrow limit"] : []),
         `${TOKENS[token].symbol} reaches your Intents balance`,
@@ -317,6 +328,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
         <Row label="Health factor after" value={formatHealth(health(debt, afterLegs))} />
         {debt > 0 && <Row label={`Liquidation price (${TOKENS[token].symbol})`} value={formatUsd(liquidationPriceOf(debt, afterLegs, i))} />}
       </dl>
+      {evmAddress.field}
     </Flow>
   );
 }
@@ -329,12 +341,14 @@ function SellForm({ maturity, note, nowMs, onDone }: { maturity: U64; note: Note
 
 function RedeemForm({ note, onDone }: { note: NoteView; onDone: () => void }) {
   const free = usdcToNumber(note.free_value);
-  const [chain, setChain] = useState<Chain>("Base");
+  const [chain, setChain] = useChain("Base");
+  const signPrefix = useSignPrefix();
+  const evmAddress = useEvmAddress(true, chain);
   const locked = BigInt(note.locked_value) > 0n;
   return (
     <Flow
-      steps={["Sign the redemption with your wallet", "USDC reaches your Intents balance", `1Click sends it to your wallet on ${chain}`]}
-      error={free === 0 ? "No free notes to redeem" : undefined}
+      steps={[...signPrefix, "Sign the redemption with your wallet", "USDC reaches your Intents balance", payOutStep("USDC", chain)]}
+      error={free === 0 ? "No free notes to redeem" : evmAddress.error}
       label={`Redeem ${formatUsd(free)}`}
       onDone={onDone}
     >
@@ -343,6 +357,7 @@ function RedeemForm({ note, onDone }: { note: NoteView; onDone: () => void }) {
       </dl>
       {locked && <p className="text-xs text-faint">Notes listed for sale stay locked. Cancel the sell order to redeem them too.</p>}
       <ChainRow label="Receive USDC on" value={chain} onChange={setChain} />
+      {evmAddress.field}
     </Flow>
   );
 }
@@ -354,8 +369,9 @@ function CancelForm({ order, onDone }: { order: OrderView; onDone: () => void })
       : order.kind === "borrow"
         ? `${formatToken(order.collateral_token!, order.collateral_remaining!)} collateral returns to your Intents balance`
         : `${formatToken(ASSETS.usdcNear, order.remaining_value!)} of notes unlock and stay in your portfolio`;
+  const signPrefix = useSignPrefix();
   return (
-    <Flow steps={["Sign the cancel with your wallet", refund]} error={undefined} label="Cancel order" onDone={onDone}>
+    <Flow steps={[...signPrefix, "Sign the cancel with your wallet", refund]} error={undefined} label="Cancel order" onDone={onDone}>
       <p className="text-sm text-muted">{refund}.</p>
     </Flow>
   );
@@ -366,19 +382,24 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   const meta = TOKENS[token];
   const total = tokenAmount(token, amount);
   const [value, setValue] = useState(String(total));
-  // USDC and NEAR-native tokens leave through 1Click to a chosen chain; bridged tokens return to their own chain.
+  // USDC and NEAR-native tokens can go to any chain the account uses; bridged tokens return to their own.
   const pickChain = meta.chain === "NEAR";
-  const [chain, setChain] = useState<Chain>(pickChain ? "Base" : (meta.chain as Chain));
+  const [pickedChain, setChain] = useChain("Base");
+  const chain: Chain = pickChain ? pickedChain : (meta.chain as Chain);
+  const signPrefix = useSignPrefix();
+  const evmAddress = useEvmAddress(true, chain);
   const n = Number(value) || 0;
 
   let error: string | undefined;
   if (n <= 0) error = "Enter an amount";
   else if (n > total) error = "More than your balance";
+  else if (evmAddress.error) error = evmAddress.error;
 
   const steps = [
+    ...signPrefix,
     ...(source === "free" ? ["Sign the Setllend withdrawal with your wallet", `${meta.symbol} reaches your Intents balance`] : []),
-    `Sign the 1Click withdrawal to ${chain}`,
-    meta.symbol === "NEAR" ? `1Click swaps it to USDC on ${chain}` : `${meta.symbol} arrives in your wallet on ${chain}`,
+    chain === "NEAR" ? "Sign the withdrawal from NEAR Intents" : `Sign the 1Click withdrawal to ${chain}`,
+    meta.symbol === "NEAR" && chain !== "NEAR" ? `1Click swaps it to USDC on ${chain}` : payOutStep(meta.symbol, chain),
   ];
 
   return (
@@ -387,50 +408,114 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
         <input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} className={amountInput} />
       </Field>
       {pickChain ? <ChainRow label="Send to" value={chain} onChange={setChain} /> : <p className="text-xs text-faint">Goes back to {chain}, the chain it came from.</p>}
+      {evmAddress.field}
     </Flow>
   );
 }
 
 type DepositAsset = "USDC" | "ETH" | "WBTC" | "NEAR";
-const DEPOSIT_ASSETS: DepositAsset[] = ["USDC", "ETH", "WBTC", "NEAR"];
+const EVM_ASSETS: DepositAsset[] = ["USDC", "ETH", "WBTC", "NEAR"];
+const NEAR_ASSETS: DepositAsset[] = ["NEAR", "USDC"];
+const DEPOSIT_FROM: Chain[] = [...CHAINS, "NEAR"];
 const PAY_WITH = ["USDC", "ETH"] as const;
 
-/** 1Click into the Intents balance. NEAR has no EVM source, so it is bought with a 1Click swap. */
+/**
+ * Into the active account's Intents balance. From Arbitrum or Base through 1Click, with NEAR bought
+ * by a swap; from NEAR in one NEAR transaction, no 1Click (D51).
+ */
 function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDone: () => void }) {
-  const [asset, setAsset] = useState<DepositAsset>("ETH");
-  const [chain, setChain] = useState<Chain>("Arbitrum");
+  const { active, near, nearWallets, connectNear } = useAccount();
+  const [from, setFrom] = useState<Chain>(active?.kind === "near" ? "NEAR" : "Arbitrum");
+  const [asset, setAsset] = useState<DepositAsset>(active?.kind === "near" ? "NEAR" : "ETH");
   const [payWith, setPayWith] = useState<(typeof PAY_WITH)[number]>("USDC");
   const [amount, setAmount] = useState("0.5");
+  const [connectError, setConnectError] = useState<string>();
   const n = Number(amount) || 0;
-  const isSwap = asset === "NEAR";
+  const fromNear = from === "NEAR";
+  const assets = fromNear ? NEAR_ASSETS : EVM_ASSETS;
+  const isSwap = !fromNear && asset === "NEAR";
   const payUsd = payWith === "USDC" ? n : n * (prices?.[ASSETS.ethArb]?.usd ?? 0);
   const nearOut = payUsd / (prices?.[MOCK_ASSETS.near]?.usd ?? Infinity);
   const unit = isSwap ? payWith : asset;
+  const receiver = active?.accountId ?? "your account";
+  const evmAddress = useEvmAddress(true, from);
 
-  const steps = isSwap
-    ? [`Get a 1Click swap quote: ${amount} ${payWith} on ${chain} to NEAR`, `Send ${amount} ${payWith} to the 1Click deposit address`, `≈ ${nearOut.toFixed(2)} NEAR reaches your Intents balance`]
-    : [`Get a 1Click quote: ${amount} ${asset} on ${chain} to NEAR Intents`, `Send ${amount} ${asset} to the 1Click deposit address`, `${asset} reaches your Intents balance, not as collateral`];
+  let steps: string[];
+  if (fromNear) {
+    steps =
+      asset === "NEAR"
+        ? [`Sign one NEAR transaction: wrap ${amount} NEAR and deposit it to NEAR Intents for ${receiver}`, "NEAR reaches your Intents balance in seconds"]
+        : [`Sign one NEAR transaction: deposit ${amount} USDC to NEAR Intents for ${receiver}`, "USDC reaches your Intents balance in seconds"];
+  } else if (isSwap) {
+    steps = [`Get a 1Click swap quote: ${amount} ${payWith} on ${from} to NEAR`, `Send ${amount} ${payWith} to the 1Click deposit address`, `≈ ${nearOut.toFixed(2)} NEAR reaches your Intents balance`];
+  } else {
+    steps = [`Get a 1Click quote: ${amount} ${asset} on ${from} to NEAR Intents`, `Send ${amount} ${asset} to the 1Click deposit address`, `${asset} reaches your Intents balance, not as collateral`];
+  }
+
+  let error: string | undefined;
+  if (!active) error = "Connect an account first";
+  else if (fromNear && !near) error = "Connect a NEAR wallet to send from NEAR";
+  else if (n <= 0) error = "Enter an amount";
+  else if (evmAddress.error) error = evmAddress.error;
 
   return (
-    <Flow steps={steps} error={n <= 0 ? "Enter an amount" : undefined} label={isSwap ? "Buy NEAR" : `Deposit ${asset}`} onDone={onDone}>
+    <Flow steps={steps} error={error} label={isSwap ? "Buy NEAR" : `Deposit ${asset}`} onDone={onDone}>
+      <ChainRow
+        label="From"
+        value={from}
+        options={DEPOSIT_FROM}
+        onChange={(c) => {
+          setFrom(c);
+          if (c === "NEAR" && !NEAR_ASSETS.includes(asset)) setAsset("NEAR");
+        }}
+      />
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted">Asset</span>
-        <Segmented options={DEPOSIT_ASSETS} value={asset} onChange={setAsset} />
+        <Segmented options={assets} value={asset} onChange={setAsset} />
       </div>
-      <ChainRow label="From" value={chain} onChange={setChain} />
       {isSwap && (
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted">Pay with</span>
           <Segmented options={PAY_WITH} value={payWith} onChange={setPayWith} />
         </div>
       )}
+      {fromNear && !near && (
+        <div className="rounded-xl border border-line bg-background/40 p-3">
+          <p className="mb-2 text-xs text-muted">Sending from NEAR needs a NEAR wallet. It only signs this deposit; {receiver} receives it.</p>
+          <div className="flex flex-wrap gap-1.5">
+            {nearWallets.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-sm hover:bg-surface-raised"
+                onClick={() => connectNear(w.id, { activate: false }).catch((e: Error) => setConnectError(e.message))}
+              >
+                {/* Wallet icons are remote or data URLs, which next/image does not optimize. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={w.metadata.iconUrl} alt="" className="size-4" />
+                {w.metadata.name}
+              </button>
+            ))}
+          </div>
+          {connectError && <p className="mt-2 text-xs text-red-400">{connectError}</p>}
+        </div>
+      )}
       <Field
         label={isSwap ? "You pay" : "Amount"}
         suffix={unit}
-        hint={isSwap ? `≈ ${nearOut.toFixed(2)} NEAR, swapped by 1Click` : asset === "USDC" ? "For lend orders and repayments." : "Add it to a loan as collateral whenever you like."}
+        hint={
+          isSwap
+            ? `≈ ${nearOut.toFixed(2)} NEAR, swapped by 1Click`
+            : fromNear
+              ? "No 1Click: straight from your NEAR account to NEAR Intents."
+              : asset === "USDC"
+                ? "For lend orders and repayments."
+                : "Add it to a loan as collateral whenever you like."
+        }
       >
         <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className={amountInput} />
       </Field>
+      {evmAddress.field}
     </Flow>
   );
 }

@@ -50,7 +50,7 @@ Checked against [near/intents](https://github.com/near/intents) `main` on 2026-1
 | `order_id` | `u64` | decimal string | Sequential, never reused |
 | Note shares | `u128` | decimal string | Internal unit of note ownership per maturity. See [Note accounting](#note-accounting) |
 | Token IDs | `String` | string | Intents asset ID, e.g. `nep141:arb.omft.near` |
-| Accounts | `AccountId` | string | MetaMask/Rabby users are implicit Eth accounts like `0xabc…` (lowercase) |
+| Accounts | `AccountId` | string | MetaMask/Rabby users are implicit Eth accounts like `0xabc…` (lowercase); NEAR users are their NEAR account (D51). The contract treats both alike |
 
 `msg` payloads are JSON objects serialized **into a string**, tagged like the official `escrow-swap` contract: `{"action": "<snake_case>", "data": {…}}`. In Rust: `#[serde(tag = "action", content = "data", rename_all = "snake_case")]`.
 
@@ -381,7 +381,7 @@ The matcher loads the book from `get_order_count` and `get_orders` pages at one 
 
 ## Example: relayer payload for a `lend` order ✅
 
-This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet. The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. Built by `buildIntentPayload` in `backend/src/shared/intents.ts`; formats are in [intents-primitives.md](intents-primitives.md#payload-format). Verified ✅ 2026-11-03 with `simulate_intents` on mainnet (view call, throwaway key): an `auth_call` payload built this way executes, and a `transfer` fails only on the empty balance.
+This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet; a NEAR user signs the same message with NEP-413 (D51, [intents-primitives.md](intents-primitives.md#payload-format)). The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. Built by `buildIntentPayload` in `backend/src/shared/intents.ts`; formats are in [intents-primitives.md](intents-primitives.md#payload-format). Verified ✅ 2026-11-03 with `simulate_intents` on mainnet (view call, throwaway key): an `auth_call` payload built this way executes, and a `transfer` fails only on the empty balance.
 
 ```json
 {
@@ -412,10 +412,12 @@ This is the message the user signs with ERC-191 (`personal_sign`) in their EVM w
 > **Status: PROPOSED, not implemented.** The UI shows it on mock data first (D47); the contract follows after the UI. Everything above still describes the contract as built (v0.5). Details here get settled when the contract work starts.
 
 - **Deposits** stay in the user's Intents balance on `intents.near` (1Click deposit, no contract change). They are not collateral until added.
-- **Collateral tokens** become an owner-managed list instead of the init-time `collateral_tokens` (D22): `add_collateral_token(token_id, decimals, feed_id, max_ltv, liq_threshold, liq_bonus)` and `freeze_collateral_token(token_id)`. A frozen token takes no new borrows or top-ups; open loans keep it until repaid, withdrawn, or liquidated. Each token keeps the init-time checks (for example `liq_threshold × (1 + liq_bonus) < 100%`).
+- **Collateral tokens** become an owner-managed list instead of the init-time `collateral_tokens` (D22): `add_collateral_token(token_id, decimals, feed_id, max_ltv, liq_threshold, liq_bonus)`, `freeze_collateral_token(token_id)` and `unfreeze_collateral_token(token_id)`, and `update_collateral_token(token_id, max_ltv, liq_threshold, liq_bonus)`. A frozen token takes no new borrows or top-ups; open loans keep it until repaid, withdrawn, or liquidated. Each token keeps the init-time checks (for example `liq_threshold × (1 + liq_bonus) < 100%`), on add and on update. **An update applies at once, to open loans too** (D50): lowering a threshold can make a loan liquidatable immediately. This is disclosed in the README.
 - **Loans** are keyed by `(account, maturity)` and hold a map `token_id → amount`, replacing `(account, maturity, collateral_token)` positions. Health: `Σ value_i × liq_threshold_i ≥ debt_face`; `can_open`: `Σ value_i × max_ltv_i ≥ debt_face`, each with the conservative price as today (D39).
 - **`add_collateral`** (`transfer` + `msg = {"action": "add_collateral", "data": {"maturity": "…"}}`): any non-frozen collateral token, any time the loan has debt. Needs no price, since it only raises health. Rejected without debt (the deposit would just sit there).
+- **Borrowing against a loan's collateral** (D50): an `auth_call` `borrow` order (`{maturity, max_rate_bps, principal, expires_at}`, no escrow) borrows more against collateral the loan already holds. The fill checks `can_open` on the loan as it stands. A `transfer` `borrow` still escrows tokens, and both kinds sit in the same book.
 - **`withdraw_collateral`** keeps its shape, one token per call, with the oracle check when debt remains.
 - **Borrow orders** escrow one or more tokens. A single `transfer` intent can carry several tokens; `mt_on_transfer` then receives all of them in one call. The relayer's one-token rule for transfers (D42) changes accordingly.
-- **Liquidation** seizes every collateral token of the loan pro rata to its value, each with its own bonus. Overdue settlement (D19) and bad debt (D26) keep their rules over the summed value.
-- **Open points:** WBTC has 8 decimals, so the dust case above (`Nothing to seize`) becomes reachable; seizure rounding per token and gas for several tokens per liquidation need a decision and a measurement.
+- **Liquidation** seizes every collateral token of the loan pro rata to its value, each with its own bonus. Each token's share rounds down, against the liquidator; a token whose share rounds to 0 is skipped, and the call panics only when the total seized is 0 (D50). Dust stays in the loan until a repayment or a later liquidation. Overdue settlement (D19) and bad debt (D26) keep their rules over the summed value.
+- **Views and events:** `get_collateral_tokens()`, `get_loan(account_id, maturity)`, `get_loans_by_account(account_id)`, and D45's paged view as `get_loans(from_index, limit)` with `get_loan_count()`; D45 is implemented together with D48. New events `collateral_added`, `collateral_token_added`, `collateral_token_updated`, `collateral_token_frozen`, `collateral_token_unfrozen`; `liquidated` and `collateral_withdrawn` carry per-token amounts.
+- **Open points:** gas for several tokens per liquidation and per `borrow` fill needs a measurement in sandbox; WBTC and NEAR parameters and feeds ([open-questions.md](open-questions.md) #8).

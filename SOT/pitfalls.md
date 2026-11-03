@@ -16,6 +16,7 @@
 - **Note share math rounds against the acting account** (mint and move round down, burn rounds up), so other holders are never diluted. See [contract-interface.md](contract-interface.md#note-accounting).
 - **Simple liquidation:** the liquidator pays the debt in USDC and receives collateral plus a bonus. No DEX swap inside the contract.
 - **Oracle callbacks re-validate state.** See [oracle.md](oracle.md#integration-pattern-in-the-contract).
+- **Owner parameter updates hit open loans (D50, once D48 is implemented):** `update_collateral_token` applies at once, so lowering a token's liquidation threshold can make loans liquidatable in the same block. The README must disclose it, and the keeper picks such loans up on its next scan.
 
 ## Off-chain
 
