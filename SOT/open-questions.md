@@ -9,6 +9,7 @@ Move an item to [decisions.md](decisions.md) once resolved.
 5. *Moved to Resolved (2026-11-03).*
 6. *Moved to Resolved (2026-11-03).*
 7. **NEP-413 intents from a named account** ⚠️: the keeper's signing path needs `add_public_key` on `intents.near` and a `nep413` payload. Not tested yet. The envelope format can be checked now, before the account exists: sign with a throwaway ed25519 key as its implicit account (64 hex characters), which should need no `add_public_key` (unverified ⚠️), and call `simulate_intents`. The `add_public_key` step itself is checked once `backend.setllend.near` exists.
+8. **D48 collateral tokens** ⚠️: are WBTC on Arbitrum and on Base listed by 1Click `/v0/tokens` (and with which Intents asset IDs), or should Base use cbBTC? Does a 1Click swap from Arbitrum/Base USDC or ETH to NEAR in an Intents balance quote? Which oracle feeds price WBTC and NEAR on `aggregate-oracle.near`? And the WBTC and NEAR risk parameters ([risk-params.md](risk-params.md#per-token-parameters-d48-proposed)).
 
 ## Resolved
 

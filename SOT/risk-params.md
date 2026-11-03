@@ -31,6 +31,16 @@ Maturity timestamps (nanoseconds) for `add_maturity`:
 | 2026-11-27 08:00 UTC | `1795766400000000000` |
 | 2026-12-25 08:00 UTC | `1798185600000000000` |
 
+## Per-token parameters (D48, proposed)
+
+Not implemented: today one set of values above applies to all collateral. With D48 each collateral token carries its own. The UI mock uses these; **TBD** values are placeholders the user sets before the contract work, not proposals.
+
+| Token | Max LTV | Liquidation threshold | Bonus | Status |
+|---|---|---|---|---|
+| ETH (Arbitrum, Base) | 70% | 80% | 5% | Approved (the values above) |
+| WBTC (Arbitrum, Base) | 70% | 80% | 5% | **TBD**, placeholder in the mock |
+| NEAR | 50% | 65% | 10% | **TBD**, placeholder in the mock |
+
 ## Worked example
 
 Borrow 1,000 USDC for 21 days at 8% APR, ETH at $2,260:

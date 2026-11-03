@@ -10,6 +10,8 @@
 | ETH | Arbitrum | 18 | `nep141:arb.omft.near` | Collateral |
 | ETH | Base | 18 | `nep141:base.omft.near` | Collateral |
 
+Proposed collateral for D48 (UI mock only) ⚠️: WBTC on Arbitrum and Base, deposited through 1Click, and NEAR (`nep141:wrap.near`) bought with a 1Click swap from USDC or ETH on Arbitrum or Base, since users sign in with an EVM wallet. Their Intents asset IDs and 1Click support are not checked yet. On Base, cbBTC is more common than WBTC. See [open-questions.md](open-questions.md) #8.
+
 `mt_on_transfer` receives these IDs as-is in `token_ids` (e.g. `nep141:arb.omft.near`) 📄. Seen from outside Intents, the same balance is the NEP-245 token `<asset_id>` on `intents.near` (sometimes written `nep245:intents.near:<asset_id>`), but our contract only deals with the bare asset ID. Fetch the latest IDs from `/v0/tokens` before deploying. Don't hardcode from memory.
 
 ## Demo money paths (dry quotes, $20, no API key, 2026-11-01) ✅
