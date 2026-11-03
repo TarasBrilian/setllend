@@ -406,3 +406,16 @@ This is the message the user signs with ERC-191 (`personal_sign`) in their EVM w
 - `on_auth` actions that pay out (`cancel`, `withdraw`, `withdraw_collateral`, `redeem`) reserve 15 Tgas for the payout, and `withdraw_collateral` with debt reserves about 30 Tgas more for the oracle round trip (10 Tgas oracle call, 20 Tgas callback). That is more than the 10 Tgas `auth_call` default guarantees, so the relayer always sets `min_gas` itself (see [pitfalls.md](pitfalls.md#off-chain)). The sandbox mock splits remaining gas like `intents.near`, so its tests pass with the default too and don't prove the default is enough.
 - A future collateral token with few decimals (e.g. BTC with 8) would let a dust debt seize 0 units, so `liquidate` panics (`Nothing to seize`) and only a repayment clears it. Not reachable with the configured ETH tokens (18 decimals); revisit before adding such a token, which needs a redeploy anyway (D22).
 - Gas of `match_orders`, `liquidate`, and `withdraw_collateral` with debt against the real `intents.near` and `aggregate-oracle.near`. Measured in sandbox only, see [Matching](#matching) and [`liquidate`](#liquidate).
+
+## Proposed: deposits and multi-token collateral (D48)
+
+> **Status: PROPOSED, not implemented.** The UI shows it on mock data first (D47); the contract follows after the UI. Everything above still describes the contract as built (v0.5). Details here get settled when the contract work starts.
+
+- **Deposits** stay in the user's Intents balance on `intents.near` (1Click deposit, no contract change). They are not collateral until added.
+- **Collateral tokens** become an owner-managed list instead of the init-time `collateral_tokens` (D22): `add_collateral_token(token_id, decimals, feed_id, max_ltv, liq_threshold, liq_bonus)` and `freeze_collateral_token(token_id)`. A frozen token takes no new borrows or top-ups; open loans keep it until repaid, withdrawn, or liquidated. Each token keeps the init-time checks (for example `liq_threshold × (1 + liq_bonus) < 100%`).
+- **Loans** are keyed by `(account, maturity)` and hold a map `token_id → amount`, replacing `(account, maturity, collateral_token)` positions. Health: `Σ value_i × liq_threshold_i ≥ debt_face`; `can_open`: `Σ value_i × max_ltv_i ≥ debt_face`, each with the conservative price as today (D39).
+- **`add_collateral`** (`transfer` + `msg = {"action": "add_collateral", "data": {"maturity": "…"}}`): any non-frozen collateral token, any time the loan has debt. Needs no price, since it only raises health. Rejected without debt (the deposit would just sit there).
+- **`withdraw_collateral`** keeps its shape, one token per call, with the oracle check when debt remains.
+- **Borrow orders** escrow one or more tokens. A single `transfer` intent can carry several tokens; `mt_on_transfer` then receives all of them in one call. The relayer's one-token rule for transfers (D42) changes accordingly.
+- **Liquidation** seizes every collateral token of the loan pro rata to its value, each with its own bonus. Overdue settlement (D19) and bad debt (D26) keep their rules over the summed value.
+- **Open points:** WBTC has 8 decimals, so the dust case above (`Nothing to seize`) becomes reachable; seizure rounding per token and gas for several tokens per liquidation need a decision and a measurement.

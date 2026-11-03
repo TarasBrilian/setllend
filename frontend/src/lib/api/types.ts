@@ -2,7 +2,7 @@
 
 import type { AccountId, TokenId, U128, U64 } from "@/shared/encoding";
 import type { OrderFilled } from "@/shared/events";
-import type { AccountPositionView, FreeBalancesView, NotesView, OrderKind, OrderView } from "@/shared/views";
+import type { FreeBalancesView, NotesView, OrderKind, OrderView } from "@/shared/views";
 
 /** `GET /api/maturities`. */
 export type MaturityInfo = { maturity: U64; open: boolean };
@@ -16,16 +16,36 @@ export type BookLevel = { rate_bps: number; size: U128; orders: OrderView[] };
  */
 export type Book = { maturity: U64; bids: BookLevel[]; asks: BookLevel[] };
 
-/** A position from `GET /api/accounts/:account`, with its health factor (null without debt). */
-export type AccountPosition = AccountPositionView & { health_factor: number | null };
+/**
+ * A loan in one maturity, backed by one or more collateral tokens (proposed D48; the contract keeps
+ * one token per position today). `health_factor` is null without debt.
+ */
+export type LoanView = { maturity: U64; debt_face: U128; collateral: Record<TokenId, U128>; health_factor: number | null };
 
-/** `GET /api/accounts/:account`. */
+/** `GET /api/accounts/:account`, in the shape of the proposed D48. */
 export type AccountView = {
   account: AccountId;
   orders: OrderView[];
-  positions: AccountPosition[];
+  loans: LoanView[];
   notes: NotesView;
+  /** Free balances held by Setllend (failed payouts, redemptions). */
   free_balances: FreeBalancesView;
+  /** The user's Intents balance on `intents.near`: deposits, not collateral. Not in the backend API yet. */
+  deposits: Record<TokenId, U128>;
+};
+
+/** A collateral token and its own risk parameters (proposed D48). Not in the backend API yet. */
+export type CollateralTokenInfo = {
+  token_id: TokenId;
+  decimals: number;
+  /** bps */
+  max_ltv: number;
+  /** bps */
+  liq_threshold: number;
+  /** bps */
+  liq_bonus: number;
+  /** Frozen: no new borrows or top-ups, open loans run on. */
+  frozen: boolean;
 };
 
 /** `GET /api/prices`: validated USD prices by token ID, with their age in seconds. */
@@ -51,6 +71,13 @@ export type MaturityStats = {
   active_loans: U128;
 };
 
+/**
+ * The account's fills in one maturity and side: USDC principal, note value at maturity (face), and
+ * the principal-weighted fill rate. Not in the backend API yet: positions and notes store neither
+ * principal nor rate, so this comes from `order_filled` events. See SOT/frontend.md#data.
+ */
+export type FillTotals = { maturity: U64; side: "lend" | "borrow"; principal: U128; face: U128; avg_rate_bps: number };
+
 export type HistoryKind = "deposit" | "placed" | "filled" | "cancelled" | "repaid" | "redeemed" | "liquidated";
 
 /** One entry of the user's history. Not in the backend API yet, see SOT/frontend.md#data. */
@@ -58,7 +85,7 @@ export type HistoryEntry = {
   kind: HistoryKind;
   order_kind: OrderKind | null;
   maturity: U64 | null;
-  /** USDC, or ETH for collateral deposits (see `token_id`). */
+  /** In units of `token_id`. */
   amount: U128;
   token_id: TokenId;
   rate_bps: number | null;

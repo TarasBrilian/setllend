@@ -2,13 +2,16 @@
 // the real API, so swapping in the HTTP client changes only this folder. All numbers are made up.
 
 import { ACCOUNTS, ASSETS, DECIMALS } from "@/shared/assets";
-import type { AccountId, U128, U64 } from "@/shared/encoding";
+import type { AccountId, TokenId, U128, U64 } from "@/shared/encoding";
+import { MOCK_ASSETS, TOKENS, toRaw } from "@/lib/tokens";
 import type { Config, OrderKind, OrderView } from "@/shared/views";
 import type {
   AccountView,
   Book,
+  CollateralTokenInfo,
   BookLevel,
   HistoryEntry,
+  FillTotals,
   HistoryKind,
   MaturityInfo,
   MaturityStats,
@@ -22,6 +25,10 @@ const ETH = 10n ** BigInt(DECIMALS.eth);
 
 // Launch maturities from SOT/risk-params.md, Fridays 08:00 UTC, in nanoseconds.
 const MATURITIES: U64[] = ["1794556800000000000", "1795766400000000000", "1798185600000000000"];
+
+// An extra demo maturity that has already passed (SOT/risk-params.md), so matured notes show up.
+// Its book is empty: a passed maturity takes no new orders.
+const DEMO_MATURITY: U64 = "1793606400000000000"; // 2026-11-02 08:00 UTC
 
 const CONFIG: Config = {
   owner_id: ACCOUNTS.setllend,
@@ -105,26 +112,68 @@ export function getConfig(): Promise<Config> {
 
 export function getMaturities(): Promise<MaturityInfo[]> {
   const now = BigInt(Date.now()) * 1_000_000n;
-  return delay(MATURITIES.map((maturity) => ({ maturity, open: BigInt(maturity) > now })));
+  return delay([DEMO_MATURITY, ...MATURITIES].map((maturity) => ({ maturity, open: BigInt(maturity) > now })));
 }
 
 export function getBook(maturity: U64): Promise<Book> {
+  if (maturity === DEMO_MATURITY) return delay({ maturity, bids: [], asks: [] });
   const book = BOOKS[maturity];
   if (!book) return Promise.reject(new Error(`Unknown maturity ${maturity}`));
   return delay(book);
 }
 
+// Mock prices. WBTC and NEAR are mock collateral for the proposed D48.
+const USD: Record<TokenId, number> = {
+  [ASSETS.usdcNear]: 0.9998,
+  [ASSETS.usdcBase]: 0.9998,
+  [ASSETS.usdcArb]: 0.9998,
+  [ASSETS.ethArb]: 2260.42,
+  [ASSETS.ethBase]: 2260.42,
+  [MOCK_ASSETS.wbtcArb]: 68_450.12,
+  [MOCK_ASSETS.wbtcBase]: 68_450.12,
+  [MOCK_ASSETS.near]: 3.12,
+};
+
 export function getPrices(): Promise<PricesView> {
-  const eth = { usd: 2260.42, age_s: 14 };
-  return delay({ [ASSETS.usdcNear]: { usd: 0.9998, age_s: 14 }, [ASSETS.ethArb]: eth, [ASSETS.ethBase]: eth });
+  return delay(Object.fromEntries(Object.entries(USD).map(([token, usd]) => [token, { usd, age_s: 14 }])));
+}
+
+// Per-token parameters from SOT/risk-params.md#per-token-parameters-d48-proposed. WBTC and NEAR are
+// TBD placeholders.
+const COLLATERAL_TOKENS: CollateralTokenInfo[] = [
+  ...[ASSETS.ethArb, ASSETS.ethBase, MOCK_ASSETS.wbtcArb, MOCK_ASSETS.wbtcBase].map((token_id) => ({
+    token_id,
+    decimals: TOKENS[token_id].decimals,
+    max_ltv: 7000,
+    liq_threshold: 8000,
+    liq_bonus: 500,
+    frozen: false,
+  })),
+  { token_id: MOCK_ASSETS.near, decimals: 24, max_ltv: 5000, liq_threshold: 6500, liq_bonus: 1000, frozen: false },
+];
+
+/** The owner-managed collateral list (proposed D48). Not in the backend API yet. */
+export function getCollateralTokens(): Promise<CollateralTokenInfo[]> {
+  return delay(COLLATERAL_TOKENS);
 }
 
 export function getStats(): Promise<ProtocolStats> {
   return delay({ total_supplied: String(2_340_340n * USDC), active_loans: String(840_340n * USDC) });
 }
 
-// The connected user gets one of each kind of holding, spread over the maturities: a loan in the
-// first, notes with a partial sale in the second, an open lend order in the third.
+// The connected user holds one of each kind of thing, spread over the maturities: multi-token loans
+// in the first and third, notes with a partial sale in the second, an open lend order in the third,
+// notes ready to redeem in the passed demo maturity, deposits that are not collateral, and a free
+// balance left by a failed payout.
+const LOANS: { maturity: U64; collateral: Record<TokenId, number>; principal: number; face: number; rate_bps: number }[] = [
+  { maturity: MATURITIES[0], collateral: { [ASSETS.ethArb]: 0.9, [MOCK_ASSETS.near]: 150 }, principal: 1_000, face: 1_002, rate_bps: 715 },
+  { maturity: MATURITIES[2], collateral: { [ASSETS.ethBase]: 0.35, [MOCK_ASSETS.wbtcBase]: 0.005 }, principal: 640, face: 650, rate_bps: 790 },
+];
+const NOTES = [
+  { maturity: DEMO_MATURITY, free: 300, locked: 0, principal: 297, rate_bps: 690 },
+  { maturity: MATURITIES[1], free: 2_010, locked: 502, principal: 2_474, rate_bps: 745 },
+];
+
 export function getAccount(account: AccountId): Promise<AccountView> {
   const sellNote: OrderView = {
     ...order("sell_note", MATURITIES[1], 760, 500, account),
@@ -133,20 +182,39 @@ export function getAccount(account: AccountId): Promise<AccountView> {
   return delay({
     account,
     orders: [order("lend", MATURITIES[2], 840, 1_500, account), sellNote],
-    positions: [
-      {
-        maturity: MATURITIES[0],
-        collateral_token: ASSETS.ethArb,
-        collateral: String((9n * ETH) / 10n),
-        debt_face: usdc(1_002),
-        health_factor: 1.62,
-      },
-    ],
-    notes: {
-      [MATURITIES[1]]: { free_shares: usdc(2_000), locked_shares: usdc(500), free_value: usdc(2_010), locked_value: usdc(502) },
+    loans: LOANS.map((loan) => {
+      const threshold = (token: TokenId) => COLLATERAL_TOKENS.find((t) => t.token_id === token)!.liq_threshold / 10_000;
+      const weighted = Object.entries(loan.collateral).reduce((sum, [token, amount]) => sum + amount * USD[token] * threshold(token), 0);
+      return {
+        maturity: loan.maturity,
+        debt_face: usdc(loan.face),
+        collateral: Object.fromEntries(Object.entries(loan.collateral).map(([token, amount]) => [token, toRaw(token, amount)])),
+        health_factor: weighted / loan.face,
+      };
+    }),
+    notes: Object.fromEntries(
+      NOTES.map((n) => [
+        n.maturity,
+        { free_shares: usdc(n.free), locked_shares: usdc(n.locked), free_value: usdc(n.free), locked_value: usdc(n.locked) },
+      ]),
+    ),
+    free_balances: { [ASSETS.usdcNear]: String(120_500_000n) },
+    deposits: {
+      [ASSETS.usdcNear]: usdc(250),
+      [ASSETS.ethArb]: toRaw(ASSETS.ethArb, 0.4),
+      [MOCK_ASSETS.wbtcArb]: toRaw(MOCK_ASSETS.wbtcArb, 0.01),
+      [MOCK_ASSETS.near]: toRaw(MOCK_ASSETS.near, 80),
     },
-    free_balances: {},
   });
+}
+
+/** Principal, face, and average fill rate per maturity and side, from the account's fills. */
+export function getAccountFills(account: AccountId): Promise<FillTotals[]> {
+  void account;
+  return delay([
+    ...LOANS.map((l) => ({ maturity: l.maturity, side: "borrow" as const, principal: usdc(l.principal), face: usdc(l.face), avg_rate_bps: l.rate_bps })),
+    ...NOTES.map((n) => ({ maturity: n.maturity, side: "lend" as const, principal: usdc(n.principal), face: usdc(n.free + n.locked), avg_rate_bps: n.rate_bps })),
+  ]);
 }
 
 export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
@@ -173,13 +241,21 @@ export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
   return delay([
     entry(2, "placed", MATURITIES[2], usdc(1_500), { order_kind: "lend", rate_bps: 840 }),
     entry(3, "deposit", null, usdc(1_500)),
+    entry(8, "filled", MATURITIES[2], usdc(640), { order_kind: "borrow", rate_bps: 790 }),
+    entry(9, "placed", MATURITIES[2], usdc(640), { order_kind: "borrow", rate_bps: 800 }),
+    entry(10, "deposit", null, toRaw(ASSETS.ethBase, 0.35), { token_id: ASSETS.ethBase }),
+    entry(11, "deposit", null, toRaw(MOCK_ASSETS.wbtcBase, 0.005), { token_id: MOCK_ASSETS.wbtcBase }),
     entry(20, "placed", MATURITIES[1], usdc(502), { order_kind: "sell_note", rate_bps: 760 }),
-    entry(47, "filled", MATURITIES[1], usdc(2_500), { order_kind: "lend", rate_bps: 745 }),
-    entry(48, "placed", MATURITIES[1], usdc(2_500), { order_kind: "lend", rate_bps: 745 }),
+    entry(47, "filled", MATURITIES[1], usdc(2_474), { order_kind: "lend", rate_bps: 745 }),
+    entry(48, "placed", MATURITIES[1], usdc(2_474), { order_kind: "lend", rate_bps: 745 }),
     entry(49, "deposit", null, usdc(2_500)),
     entry(70, "filled", MATURITIES[0], usdc(1_000), { order_kind: "borrow", rate_bps: 715 }),
     entry(71, "placed", MATURITIES[0], usdc(1_000), { order_kind: "borrow", rate_bps: 720 }),
     entry(72, "deposit", null, String((9n * ETH) / 10n), { token_id: ASSETS.ethArb }),
+    entry(73, "deposit", null, toRaw(MOCK_ASSETS.near, 150), { token_id: MOCK_ASSETS.near }),
+    entry(90, "filled", DEMO_MATURITY, usdc(297), { order_kind: "lend", rate_bps: 690 }),
+    entry(91, "placed", DEMO_MATURITY, usdc(297), { order_kind: "lend", rate_bps: 690 }),
+    entry(92, "deposit", null, usdc(300)),
   ]);
 }
 

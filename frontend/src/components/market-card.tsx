@@ -1,18 +1,20 @@
 import Link from "next/link";
-import type { Book } from "@/lib/api";
+import type { Book, CollateralTokenInfo } from "@/lib/api";
 import { daysUntil, formatCompact, formatMaturity, formatRate, usdcToNumber } from "@/lib/format";
 import type { OrderSide } from "@/lib/orders";
-import { UsdcIcon } from "./token-icon";
+import { tokenLabel } from "@/lib/tokens";
+import { TokenIcon, UsdcIcon } from "./token-icon";
 
 /** Card fields from SOT/frontend.md#market-. A side with no orders shows "–". */
 export function MarketCard({
   book,
-  maxLtvBps,
+  collateralTokens,
   nowMs,
   onOrder,
 }: {
   book: Book;
-  maxLtvBps: number;
+  /** Active collateral tokens with their own max LTV (proposed D48). */
+  collateralTokens: CollateralTokenInfo[];
   nowMs: number;
   onOrder: (side: OrderSide) => void;
 }) {
@@ -20,11 +22,12 @@ export function MarketCard({
   const lendRate = book.asks[0]?.rate_bps;
   const liquidity = book.bids.reduce((sum, level) => sum + usdcToNumber(level.size), 0);
   const days = daysUntil(book.maturity, nowMs);
+  const maxLtvBps = Math.max(0, ...collateralTokens.map((t) => t.max_ltv));
 
   const rows: [string, string, string][] = [
     ["Borrow Rate", borrowRate === undefined ? "–" : formatRate(borrowRate), "Fixed APR you pay to borrow now, from the cheapest lend order"],
     ["Lend Rate", lendRate === undefined ? "–" : formatRate(lendRate), "Fixed APR you earn to lend now, from the best borrow order"],
-    ["Max LTV", `${maxLtvBps / 100}%`, "Most you can borrow against your collateral, counting interest to maturity"],
+    ["Max LTV", `up to ${maxLtvBps / 100}%`, "Each collateral token has its own max LTV; this is the highest. Interest to maturity counts"],
     ["Liquidity", `${formatCompact(liquidity)} USDC`, "USDC in open lend orders, available to borrow now"],
   ];
 
@@ -52,7 +55,18 @@ export function MarketCard({
         ))}
       </dl>
 
-      <div className="mt-4 grid w-full grid-cols-2 gap-3">
+      <div className="mt-3 flex w-full items-center justify-between px-1 text-sm">
+        <span className="text-muted">Collateral</span>
+        <span className="flex -space-x-1.5">
+          {collateralTokens.map((t) => (
+            <span key={t.token_id} title={tokenLabel(t.token_id)} className="rounded-full ring-2 ring-surface">
+              <TokenIcon token={t.token_id} className="size-5" />
+            </span>
+          ))}
+        </span>
+      </div>
+
+      <div className="mt-3 grid w-full grid-cols-2 gap-3">
         <button className="rounded-xl py-3 font-medium hover:bg-surface-raised" onClick={() => onOrder("borrow")}>
           Borrow
         </button>

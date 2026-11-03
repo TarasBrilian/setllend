@@ -2,7 +2,7 @@
 
 import type { Book, PricesView } from "@/lib/api";
 import { OrderForm, SellNoteForm } from "@/components/order-form";
-import type { Config, NoteView } from "@/shared/views";
+import type { NoteView } from "@/shared/views";
 
 export type PanelTab = "Lend" | "Borrow" | "Sell note";
 const TABS: PanelTab[] = ["Lend", "Borrow", "Sell note"];
@@ -14,7 +14,6 @@ export function OrderPanel({
   state,
   onState,
   book,
-  config,
   prices,
   note,
   nowMs,
@@ -22,7 +21,6 @@ export function OrderPanel({
   state: PanelState;
   onState: (state: PanelState) => void;
   book: Book;
-  config: Config;
   prices: PricesView | undefined;
   note: NoteView | undefined;
   nowMs: number;
@@ -55,7 +53,7 @@ export function OrderPanel({
         {state.tab === "Sell note" ? (
           <SellNoteForm key={key} {...common} note={note} />
         ) : (
-          <OrderForm key={key} {...common} side={state.tab === "Borrow" ? "borrow" : "lend"} config={config} prices={prices} />
+          <OrderForm key={key} {...common} side={state.tab === "Borrow" ? "borrow" : "lend"} prices={prices} />
         )}
       </div>
     </section>

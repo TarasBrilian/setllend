@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useConnect, useConnection, useConnectors, useDisconnect, useSwitchChain } from "wagmi";
 import { shortAddress } from "@/lib/format";
+import { useHydrated } from "@/lib/use-now";
 
 const menuItem = "w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-raised disabled:opacity-50";
 
@@ -25,7 +26,9 @@ export function ConnectButton() {
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
-  const connected = status === "connected";
+  // Render the disconnected button until hydration, as the server does.
+  const hydrated = useHydrated();
+  const connected = hydrated && status === "connected";
 
   return (
     <div ref={ref} className="relative">

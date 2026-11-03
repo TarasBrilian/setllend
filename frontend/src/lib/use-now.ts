@@ -9,3 +9,11 @@ const subscribe = () => () => {};
 export function useNowMs(): number | null {
   return useSyncExternalStore(subscribe, getNow, () => null);
 }
+
+/**
+ * False on the server and during hydration, true after. Wallet state restored from storage is known
+ * on the client before hydration, so views that depend on it render the server's version first.
+ */
+export function useHydrated(): boolean {
+  return useSyncExternalStore(subscribe, () => true, () => false);
+}

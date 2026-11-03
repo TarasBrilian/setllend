@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useConnection } from "wagmi";
 import { getAccount, getBook, getConfig, getMaturities, getMaturityStats, getPrices, getTrades } from "@/lib/api";
 import { daysUntil, formatMaturity, usdcToNumber, usdParts } from "@/lib/format";
@@ -32,12 +32,6 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: account !== undefined });
 
   const [panel, setPanel] = useState<PanelState>({ tab: "Lend", nonce: 0 });
-  const [toast, setToast] = useState<string | null>(null);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   if (known === false) {
     return (
@@ -90,7 +84,7 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
       {book.data && trades.data && config.data && nowMs !== null ? (
         // Fixed widths for the book and the order panel give the chart the rest. One fixed height for
         // all three; a taller form scrolls inside its panel.
-        <div className="grid h-[42rem] grid-cols-[minmax(0,1fr)_17.5rem_19rem] gap-5">
+        <div className="grid h-[36rem] grid-cols-[minmax(0,1fr)_17.5rem_19rem] grid-rows-[minmax(0,1fr)] gap-5">
           <ChartPanel book={book.data} trades={trades.data} nowMs={nowMs} />
           <BookPanel
             book={book.data}
@@ -101,7 +95,6 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
             state={panel}
             onState={setPanel}
             book={book.data}
-            config={config.data}
             prices={prices.data}
             note={mine.data?.notes[maturity]}
             nowMs={nowMs}
@@ -110,23 +103,20 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)_17.5rem_19rem] gap-5">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="h-[42rem] animate-pulse rounded-3xl border border-line bg-surface/60" />
+            <div key={i} className="h-[36rem] animate-pulse rounded-3xl border border-line bg-surface/60" />
           ))}
         </div>
       )}
 
-      {config.data && (
+      {config.data && nowMs !== null && (
         <AccountTables
           maturity={maturity}
           account={account}
           config={config.data}
+          prices={prices.data}
+          nowMs={nowMs}
           onSell={() => setPanel({ tab: "Sell note", nonce: panel.nonce + 1 })}
-          onSimulated={(action) => setToast(`${action} is simulated in demo mode. Nothing was sent.`)}
         />
-      )}
-
-      {toast && (
-        <div className="fixed right-8 bottom-8 z-30 rounded-xl border border-accent/30 bg-surface-raised px-4 py-3 text-sm text-accent-soft shadow-2xl">{toast}</div>
       )}
     </>
   );

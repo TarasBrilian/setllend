@@ -9,10 +9,6 @@ export function usdcToNumber(amount: U128): number {
   return Number(BigInt(amount)) / 10 ** DECIMALS.usdc;
 }
 
-export function ethToNumber(amount: U128): number {
-  return Number(BigInt(amount)) / 10 ** DECIMALS.eth;
-}
-
 /** "$2,340,340" and ".00", so the cents can be shown fainter. */
 export function usdParts(value: number): { whole: string; cents: string } {
   const [whole, cents] = value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split(".");

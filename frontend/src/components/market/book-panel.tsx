@@ -73,7 +73,7 @@ function Level({ level, largest, tone, onClick }: { level: BookLevel; largest: n
     <button
       onClick={onClick}
       title={`${takeAs} at ${formatRate(level.rate_bps)}`}
-      className="relative flex justify-between rounded-md px-2 py-1.5 tabular-nums hover:bg-surface-raised"
+      className="relative flex justify-between rounded-md px-2 py-1 tabular-nums hover:bg-surface-raised"
     >
       <span
         className={`absolute inset-y-0.5 right-0 rounded-md ${tone === "offer" ? "bg-accent/15" : "bg-emerald-400/12"}`}
@@ -103,7 +103,7 @@ function RecentTrades({ trades }: { trades: Trade[] }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {trades.slice(0, 30).map((trade) => (
-          <div key={`${trade.bid}-${trade.ask}`} className="grid grid-cols-[1fr_auto_auto] gap-x-4 rounded-md px-2 py-1.5 tabular-nums hover:bg-surface-raised">
+          <div key={`${trade.bid}-${trade.ask}`} className="grid grid-cols-[1fr_auto_auto] gap-x-4 rounded-md px-2 py-1 tabular-nums hover:bg-surface-raised">
             <span className="text-muted">
               {new Date(Number(BigInt(trade.timestamp) / 1_000_000n)).toLocaleString("en-GB", {
                 day: "numeric",

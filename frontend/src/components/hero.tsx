@@ -5,6 +5,7 @@ import { useConnection } from "wagmi";
 import { getAccount, getStats } from "@/lib/api";
 import type { AccountView } from "@/lib/api";
 import { usdcToNumber, usdParts } from "@/lib/format";
+import { useHydrated } from "@/lib/use-now";
 
 /** The user's own figures: supplied = note value plus open `lend` orders, borrowed = debt face. */
 function accountTotals(account: AccountView) {
@@ -15,14 +16,15 @@ function accountTotals(account: AccountView) {
   const lendOrders = account.orders
     .filter((o) => o.kind === "lend")
     .reduce((sum, o) => sum + usdcToNumber(o.remaining), 0);
-  const borrowed = account.positions.reduce((sum, p) => sum + usdcToNumber(p.debt_face), 0);
+  const borrowed = account.loans.reduce((sum, l) => sum + usdcToNumber(l.debt_face), 0);
   return { supplied: notes + lendOrders, borrowed };
 }
 
 export function Hero() {
   const { address } = useConnection();
+  const hydrated = useHydrated();
   // An EVM address is used as a NEAR implicit account in lowercase.
-  const account = address?.toLowerCase();
+  const account = hydrated ? address?.toLowerCase() : undefined;
   const stats = useQuery({ queryKey: ["stats"], queryFn: getStats });
   const mine = useQuery({
     queryKey: ["account", account],
