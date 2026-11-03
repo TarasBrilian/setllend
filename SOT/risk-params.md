@@ -33,13 +33,13 @@ Maturity timestamps (nanoseconds) for `add_maturity`:
 
 ## Per-token parameters (D48, proposed)
 
-Not implemented: today one set of values above applies to all collateral. With D48 each collateral token carries its own. The UI mock uses these; **TBD** values are placeholders the user sets before the contract work, not proposals.
+Not implemented: today one set of values above applies to all collateral. With D48 each collateral token carries its own. Values agreed 2026-11-03 (D52), by the same method as ETH: Rhea's effective borrow limit against USDC (its collateral ratio × USDC's 95%), max LTV just below it, threshold 10 points higher, 5% bonus.
 
 | Token | Max LTV | Liquidation threshold | Bonus | Status |
 |---|---|---|---|---|
-| ETH (Arbitrum, Base) | 70% | 80% | 5% | Approved (the values above) |
-| WBTC (Arbitrum, Base) | 70% | 80% | 5% | **TBD**, placeholder in the mock |
-| NEAR | 50% | 65% | 10% | **TBD**, placeholder in the mock |
+| ETH (Arbitrum, Base) | 70% | 80% | 5% | Approved (the values above). Rhea `eth.bridge.near` 75% → 71% effective |
+| BTC (`btc.omft.near`) | 70% | 80% | 5% | Agreed (D52). Rhea WBTC 75% → 71%, nBTC 80% → 76%; the lower one, since Rhea doesn't rate this token ✅ 2026-11-03 |
+| NEAR (`wrap.near`) | 70% | 80% | 5% | Agreed (D52). Rhea `wrap.near` 75% → 71% ✅ 2026-11-03 |
 
 ## Worked example
 

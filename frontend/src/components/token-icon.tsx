@@ -54,7 +54,7 @@ export function TokenIcon({ token, className = "size-5" }: { token: TokenId; cla
   switch (TOKENS[token]?.symbol) {
     case "USDC":
       return <UsdcIcon className={className} />;
-    case "WBTC":
+    case "BTC":
       return <BtcIcon className={className} />;
     case "NEAR":
       return <NearIcon className={className} />;

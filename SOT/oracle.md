@@ -27,6 +27,9 @@ Public Hermes (`hermes.pyth.network`) now returns `401 unauthorized` without an 
 - **Feeds:**
   - ETH/USD: `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` (for both ETH(arb) and ETH(base))
   - USDC/USD: `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a`
+  - BTC/USD: `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` (for `btc.omft.near`, D52; Rhea uses it for nBTC). ✅ 2026-11-03: conf/price 0.13%, 30 s old
+  - NEAR/USD: `c415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750` (for `wrap.near`, D52; Rhea uses it too). ✅ 2026-11-03: conf/price 0.06%, 30 s old
+  - Also live: WBTC/USD `c9d8b075a5c69303365ae23633d4e085199bf5c520a3b90fed1322a0342ffc33` (Rhea's feed for bridged WBTC on NEAR). No cbBTC feed was found (D52).
 - **Data source:** report payloads use the Pyth Pro/Lazer format (magic `75d3c793`, 64-byte ed25519 signature, 32-byte signer public key). Events show aggregation from `pyth_pro`, `outlayer`, `atlas`, and `generic` sources.
 
 ## Risks (disclose in the submission README)

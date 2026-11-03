@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { useAccount } from "@/lib/account";
 
-export type Chain = "Arbitrum" | "Base" | "NEAR";
+export type Chain = "Arbitrum" | "Base" | "NEAR" | "Bitcoin";
 export const CHAINS: Chain[] = ["Arbitrum", "Base"];
 
 /** Chains a payment or payout can use: NEAR first for a NEAR account (D51), then Arbitrum and Base. */
@@ -24,33 +24,58 @@ export function useChain(evmDefault: Chain): [Chain, (chain: Chain) => void] {
   return [chain, setChosen];
 }
 
+const ADDRESS_FORMAT: Partial<Record<Chain, RegExp>> = {
+  Arbitrum: /^0x[0-9a-fA-F]{40}$/,
+  Base: /^0x[0-9a-fA-F]{40}$/,
+  // Legacy, P2SH, and bech32 / bech32m mainnet addresses.
+  Bitcoin: /^(1[1-9A-HJ-NP-Za-km-z]{25,34}|3[1-9A-HJ-NP-Za-km-z]{25,34}|bc1[02-9ac-hj-np-z]{11,71})$/,
+};
+
 /**
- * A NEAR account has no address on Arbitrum or Base, so a 1Click leg there needs one: the recipient
- * of a payout or the refund address of a deposit (D51). EVM accounts use their own address.
+ * Addresses a form needs for its 1Click legs: the recipient of a payout or the refund address of a
+ * deposit. Every account enters a Bitcoin address for a Bitcoin leg (D52); a NEAR account also
+ * enters one for Arbitrum or Base, where it has none (D51). EVM accounts use their own there.
  */
-export function useEvmAddress(needed: boolean, chain: Chain) {
+export function useAddresses(chains: Chain[]) {
   const nearAccount = useAccount().active?.kind === "near";
-  const [value, setValue] = useState("");
-  const shown = needed && nearAccount && chain !== "NEAR";
-  const error = shown && !/^0x[0-9a-fA-F]{40}$/.test(value.trim()) ? `Enter your address on ${chain}` : undefined;
-  const field = shown ? (
-    <Field label={`Your address on ${chain}`} suffix={null} hint="1Click pays out or refunds here; a NEAR account has no address on EVM chains.">
-      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="0x…" className="w-full min-w-0 bg-transparent font-mono text-sm outline-none" />
+  const [values, setValues] = useState<Partial<Record<Chain, string>>>({});
+  const needed = [...new Set(chains)].filter((c) => c === "Bitcoin" || (nearAccount && (c === "Arbitrum" || c === "Base")));
+  const missing = needed.find((c) => !ADDRESS_FORMAT[c]!.test((values[c] ?? "").trim()));
+  const fields = needed.map((chain) => (
+    <Field
+      key={chain}
+      label={`Your address on ${chain}`}
+      suffix={null}
+      hint={chain === "Bitcoin" ? "1Click refunds or pays out BTC here." : "1Click pays out or refunds here; a NEAR account has no address on EVM chains."}
+    >
+      <input
+        value={values[chain] ?? ""}
+        onChange={(e) => setValues({ ...values, [chain]: e.target.value })}
+        placeholder={chain === "Bitcoin" ? "bc1…" : "0x…"}
+        className="w-full min-w-0 bg-transparent font-mono text-sm outline-none"
+      />
     </Field>
-  ) : null;
-  return { field, error };
+  ));
+  return { fields, error: missing ? `Enter your address on ${missing}` : undefined };
 }
 
-/** Paying into the Intents balance: one NEAR transaction from NEAR (D51), 1Click otherwise. */
+/** Paying into the Intents balance: one NEAR transaction from NEAR (D51), 1Click otherwise (Bitcoin too, D52). */
 export function payInStep(amount: string, symbol: string, chain: Chain): string {
-  return chain === "NEAR"
-    ? `Send ${amount} ${symbol} from your NEAR account to NEAR Intents (one NEAR transaction)`
-    : `Deposit ${amount} ${symbol} from ${chain} via 1Click`;
+  if (chain === "NEAR") return `Send ${amount} ${symbol} from your NEAR account to NEAR Intents (one NEAR transaction)`;
+  if (chain === "Bitcoin") return `Send ${amount} ${symbol} from any Bitcoin wallet to the 1Click deposit address (about 15 minutes)`;
+  return `Deposit ${amount} ${symbol} from ${chain} via 1Click`;
 }
 
 /** Leaving the Intents balance: straight to the NEAR account, or 1Click to Arbitrum or Base. */
 export function payOutStep(symbol: string, chain: Chain): string {
-  return chain === "NEAR" ? `${symbol} is sent to your NEAR account` : `1Click sends ${symbol} to your wallet on ${chain}`;
+  if (chain === "NEAR") return `${symbol} is sent to your NEAR account`;
+  if (chain === "Bitcoin") return `1Click sends ${symbol} to your Bitcoin address`;
+  return `1Click sends ${symbol} to your wallet on ${chain}`;
+}
+
+/** ETH and BTC leave through the bridge to their own chain (`processWithdrawal`, D10, D52), not 1Click. */
+export function bridgeOutStep(symbol: string, chain: Chain): string {
+  return chain === "Bitcoin" ? `The bridge sends ${symbol} to your Bitcoin address` : `The bridge sends ${symbol} to your wallet on ${chain}`;
 }
 
 /** Before its first signed intent, a NEAR account registers its key on `intents.near` (D51). */

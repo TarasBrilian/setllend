@@ -1,6 +1,6 @@
 # Product
 
-**One-liner:** Borrow and lend at a fixed rate from Base or Arbitrum with just an EVM wallet (MetaMask, Rabby, …), without being locked until maturity, because a lender's note can be sold any time on an order book settled by NEAR Intents.
+**One-liner:** Borrow and lend at a fixed rate from Base, Arbitrum, or NEAR with just an EVM wallet (MetaMask, Rabby, …) or a NEAR wallet (D51), without being locked until maturity, because a lender's note can be sold any time on an order book settled by NEAR Intents.
 
 ## Problem
 
