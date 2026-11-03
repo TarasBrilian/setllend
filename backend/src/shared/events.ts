@@ -135,7 +135,7 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<EventName>([
 /**
  * Setllend events in one receipt log line. Returns `[]` for other logs (other standards, plain
  * text). Throws on a Setllend line with an unknown version or event, since a silently dropped
- * event would leave the matcher's book wrong.
+ * event would leave the history incomplete and could skip a book reload.
  */
 export function parseEventLog(line: string): SetllendEvent[] {
   if (!line.startsWith(PREFIX)) return [];
