@@ -18,7 +18,7 @@ The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-
 ### Header (every page)
 
 - Logo on the left. Navigation in the middle: **Market** (`/`) and **Portfolio** (`/portfolio`).
-- **Deposit** on the right opens a modal: asset (USDC or ETH), source chain (Base or Arbitrum), amount, then the 1Click steps into the user's Intents balance. Order forms can still deposit inline.
+- No separate Deposit button: every order form deposits inline through 1Click (source chain picked in the form). Free balances are withdrawn from Portfolio.
 - **Connect** on the right lists the EIP-6963 wallets found (D14). Once connected it shows the short address and the chain (Base or Arbitrum). Its menu: copy address, switch chain, disconnect.
 
 ### Market (`/`)

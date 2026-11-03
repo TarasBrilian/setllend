@@ -1,5 +1,4 @@
 import { ConnectButton } from "./connect-button";
-import { DepositButton } from "./deposit-button";
 import { Logo } from "./logo";
 import { Nav } from "./nav";
 
@@ -14,8 +13,7 @@ export function Header() {
         </span>
       </div>
       <Nav />
-      <div className="flex justify-end gap-3">
-        <DepositButton />
+      <div className="flex justify-end">
         <ConnectButton />
       </div>
     </header>

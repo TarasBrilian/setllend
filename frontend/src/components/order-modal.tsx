@@ -40,7 +40,7 @@ export function OrderModal({
   );
 }
 
-export function Modal({
+function Modal({
   dialog,
   onClose,
   title,
