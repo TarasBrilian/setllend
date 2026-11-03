@@ -23,6 +23,8 @@ workspace = true
 
 [dependencies]
 near-sdk = { workspace = true }
+# 512-bit intermediates for collateral value math: 24-decimal amounts overflow u128.
+uint = { version = "0.10.2", default-features = false }
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

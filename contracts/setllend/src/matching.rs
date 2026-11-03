@@ -8,8 +8,8 @@ use near_sdk::{Gas, PromiseError, PromiseOrValue, env, near, require};
 
 use crate::events::{self, Filled};
 use crate::math::{self, Rounding};
-use crate::oracle::{OracleResponse, Prices};
-use crate::state::{Order, OrderKind, checked_add};
+use crate::oracle::{OracleResponse, Prices, Ratio};
+use crate::state::{Order, OrderKind, checked_add, take_amount};
 use crate::{Setllend, SetllendExt};
 
 /// Static gas for `on_match_prices`, on top of its share of the unused gas.
@@ -132,7 +132,8 @@ impl Setllend {
     }
 
     /// `lend` × `borrow`: mints notes for the lender and debt for the borrower, moves pro-rata
-    /// collateral into the position, and pays the bid's USDC to the borrower.
+    /// escrow into the borrower's loan, and pays the bid's USDC to the borrower. The loan as a
+    /// whole must pass `can_open` afterwards (D48).
     pub(crate) fn fill_borrow(&mut self, fill: &Fill, prices: &Prices) -> Result<(), Skip> {
         let Checked {
             mut bid,
@@ -140,11 +141,7 @@ impl Setllend {
             rate_bps,
             dt,
         } = self.check_fill(fill)?;
-        let OrderKind::Borrow {
-            collateral_token,
-            collateral_remaining,
-        } = ask.kind.clone()
-        else {
+        let OrderKind::Borrow { mut collateral } = ask.kind.clone() else {
             env::panic_str("Wrong ask kind");
         };
         let principal = fill.principal.0;
@@ -158,50 +155,45 @@ impl Setllend {
         if shares == 0 {
             return Err("zero_shares");
         }
-        let Some((collateral_price, debt_price)) = self.prices_for(prices, &collateral_token)
+        let key = (ask.owner.clone(), maturity);
+        let mut loan = self.loans.get(&key).cloned().unwrap_or_default();
+        // Pro rata of what is left per token, so the fill that completes the order moves the
+        // rest.
+        let completes = principal == ask.remaining;
+        let moved: Vec<(String, u128)> = collateral
+            .iter()
+            .map(|(token_id, left)| {
+                let amount = if completes {
+                    *left
+                } else {
+                    math::mul_div(*left, principal, ask.remaining, Rounding::Down)
+                };
+                (token_id.clone(), amount)
+            })
+            .collect();
+        for (token_id, amount) in &moved {
+            loan.add(token_id, *amount);
+        }
+        loan.debt_face = checked_add(loan.debt_face, debt_face);
+        let Some((tokens, debt_price)) = self.valuation(&loan.collateral, prices, Ratio::MaxLtv)
         else {
             return Err("no_price");
         };
-        // Pro rata of what is left, so the fill that completes the order moves the rest.
-        let moved = if principal == ask.remaining {
-            collateral_remaining
-        } else {
-            math::mul_div(
-                collateral_remaining,
-                principal,
-                ask.remaining,
-                Rounding::Down,
-            )
-        };
-        let key = (ask.owner.clone(), maturity, collateral_token.clone());
-        let mut position = self.positions.get(&key).cloned().unwrap_or_default();
-        position.collateral = checked_add(position.collateral, moved);
-        position.debt_face = checked_add(position.debt_face, debt_face);
-        let decimals = self
-            .config
-            .collateral(&collateral_token)
-            .unwrap_or_else(|| env::panic_str("Unknown collateral token"))
-            .decimals;
-        if !math::can_open(
-            position.collateral,
-            decimals,
-            position.debt_face,
-            &collateral_price,
-            &debt_price,
-            self.config.max_ltv,
-        ) {
+        if !math::can_open(&tokens, loan.debt_face, &debt_price) {
             return Err("cannot_open");
         }
 
         self.pool_mut(maturity).mint(note_face, shares);
         self.credit_free_shares(&bid.owner, maturity, shares);
-        self.positions.insert(key, position);
+        self.loans.insert(key, loan);
+        for (token_id, amount) in &moved {
+            if *amount > 0 {
+                take_amount(&mut collateral, token_id, *amount);
+            }
+        }
         bid.remaining -= principal;
         ask.remaining -= principal;
-        ask.kind = OrderKind::Borrow {
-            collateral_token,
-            collateral_remaining: collateral_remaining - moved,
-        };
+        ask.kind = OrderKind::Borrow { collateral };
         self.settle_fill(fill, bid, ask, rate_bps, note_face);
         Ok(())
     }

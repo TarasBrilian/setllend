@@ -1,4 +1,4 @@
-// Table cells for a multi-token loan (proposed D48), shared by the Portfolio and market detail tables.
+// Table cells for a multi-token loan (D48), shared by the Portfolio and market detail tables.
 
 import type { CollateralTokenInfo, LoanView, PricesView } from "@/lib/api";
 import { legsOfRaw, liquidationPriceOf } from "@/lib/collateral";

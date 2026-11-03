@@ -17,12 +17,11 @@ export type BookLevel = { rate_bps: number; size: U128; orders: OrderView[] };
 export type Book = { maturity: U64; bids: BookLevel[]; asks: BookLevel[] };
 
 /**
- * A loan in one maturity, backed by one or more collateral tokens (proposed D48; the contract keeps
- * one token per position today). `health_factor` is null without debt.
+ * A loan in one maturity, backed by one or more collateral tokens (D48). `health_factor` is null without debt.
  */
 export type LoanView = { maturity: U64; debt_face: U128; collateral: Record<TokenId, U128>; health_factor: number | null };
 
-/** `GET /api/accounts/:account`, in the shape of the proposed D48. */
+/** `GET /api/accounts/:account`, in the shape of D48. */
 export type AccountView = {
   account: AccountId;
   orders: OrderView[];
@@ -34,7 +33,7 @@ export type AccountView = {
   deposits: Record<TokenId, U128>;
 };
 
-/** A collateral token and its own risk parameters (proposed D48). Not in the backend API yet. */
+/** A collateral token and its own risk parameters (D48), as `get_collateral_tokens` returns it without `feed_id`. Not in the backend API yet. */
 export type CollateralTokenInfo = {
   token_id: TokenId;
   decimals: number;

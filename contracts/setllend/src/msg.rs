@@ -11,7 +11,10 @@ use near_sdk::{AccountId, near};
 #[derive(Clone, Debug, PartialEq)]
 pub enum TransferMsg {
     Lend(LendMsg),
+    /// One or more collateral tokens escrowed.
     Borrow(BorrowMsg),
+    /// One or more collateral tokens added to a loan with debt.
+    AddCollateral(AddCollateralMsg),
     Repay(RepayMsg),
     Liquidate(LiquidateMsg),
 }
@@ -36,9 +39,14 @@ pub struct BorrowMsg {
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
+pub struct AddCollateralMsg {
+    pub maturity: U64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RepayMsg {
     pub maturity: U64,
-    pub collateral_token: String,
     /// Defaults to `sender_id`. Anyone may repay for someone else.
     pub borrower: Option<AccountId>,
 }
@@ -48,7 +56,6 @@ pub struct RepayMsg {
 pub struct LiquidateMsg {
     pub borrower: AccountId,
     pub maturity: U64,
-    pub collateral_token: String,
 }
 
 /// `msg` of an `auth_call` intent, delivered to `on_auth`.
@@ -56,6 +63,8 @@ pub struct LiquidateMsg {
 #[serde(tag = "action", content = "data", rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthMsg {
+    /// A borrow order without escrow, against the collateral the loan already holds (D50).
+    Borrow(BorrowMsg),
     Cancel(CancelMsg),
     SellNote(SellNoteMsg),
     WithdrawCollateral(WithdrawCollateralMsg),

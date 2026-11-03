@@ -1,11 +1,14 @@
 //! NEP-297 events. Field names follow the Events table in `SOT/contract-interface.md`. The
 //! matcher rebuilds its book from these, so a renamed field breaks it.
 
+use std::collections::BTreeMap;
+
 use near_sdk::json_types::{U64, U128};
 use near_sdk::serde_json::{Value, json};
 use near_sdk::{AccountId, env};
 
-use crate::state::{Order, OrderKind};
+use crate::config::CollateralToken;
+use crate::state::{Order, OrderKind, TokenAmounts};
 
 const STANDARD: &str = "setllend";
 const VERSION: &str = "0.1.0";
@@ -24,14 +27,19 @@ pub(crate) fn maturity_added(maturity: u64) {
     emit("maturity_added", json!({ "maturity": U64(maturity) }));
 }
 
-/// `token_id` is what the order escrows (`null` for `sell_note`), `collateral` the escrowed
-/// collateral of a `borrow` order. `size` is principal, or shares for `sell_note`.
-pub(crate) fn order_placed(order_id: u64, order: &Order, token_id: Option<&str>) {
+/// `{token_id: amount}` as JSON, amounts as decimal strings.
+pub(crate) fn amounts(amounts: &TokenAmounts) -> BTreeMap<&str, U128> {
+    amounts
+        .iter()
+        .map(|(token_id, amount)| (token_id.as_str(), U128(*amount)))
+        .collect()
+}
+
+/// `collateral` is the escrow of a `borrow` order (`{}` for a borrow against the loan's
+/// collateral), `null` for other kinds. `size` is principal, or shares for `sell_note`.
+pub(crate) fn order_placed(order_id: u64, order: &Order) {
     let collateral = match &order.kind {
-        OrderKind::Borrow {
-            collateral_remaining,
-            ..
-        } => Some(U128(*collateral_remaining)),
+        OrderKind::Borrow { collateral } => Some(amounts(collateral)),
         _ => None,
     };
     emit(
@@ -43,20 +51,27 @@ pub(crate) fn order_placed(order_id: u64, order: &Order, token_id: Option<&str>)
             "maturity": U64(order.maturity),
             "rate_bps": order.rate_bps,
             "size": U128(order.remaining),
-            "token_id": token_id,
             "collateral": collateral,
             "expires_at": order.expires_at.map(U64),
         }),
     );
 }
 
-pub(crate) fn order_cancelled(order_id: u64, owner: &AccountId, refunded: u128) {
+/// `refunded` is the escrow paid back (USDC for `lend`, collateral for `borrow`, `{}` for
+/// `sell_note`), `unlocked_shares` the shares a `sell_note` unlocked (`null` otherwise).
+pub(crate) fn order_cancelled(
+    order_id: u64,
+    owner: &AccountId,
+    refunded: &TokenAmounts,
+    unlocked_shares: Option<u128>,
+) {
     emit(
         "order_cancelled",
         json!({
             "order_id": U64(order_id),
             "owner": owner,
-            "refunded": U128(refunded),
+            "refunded": amounts(refunded),
+            "unlocked_shares": unlocked_shares.map(U128),
         }),
     );
 }
@@ -102,7 +117,6 @@ pub(crate) fn repaid(
     borrower: &AccountId,
     payer: &AccountId,
     maturity: u64,
-    collateral_token: &str,
     amount: u128,
     debt_remaining: u128,
 ) {
@@ -112,20 +126,19 @@ pub(crate) fn repaid(
             "borrower": borrower,
             "payer": payer,
             "maturity": U64(maturity),
-            "collateral_token": collateral_token,
             "amount": U128(amount),
             "debt_remaining": U128(debt_remaining),
         }),
     );
 }
 
+/// `seized` lists every token taken, without zero shares (D50).
 pub(crate) fn liquidated(
     borrower: &AccountId,
     liquidator: &AccountId,
     maturity: u64,
-    collateral_token: &str,
     repaid: u128,
-    seized: u128,
+    seized: &TokenAmounts,
 ) {
     emit(
         "liquidated",
@@ -133,9 +146,8 @@ pub(crate) fn liquidated(
             "borrower": borrower,
             "liquidator": liquidator,
             "maturity": U64(maturity),
-            "collateral_token": collateral_token,
             "repaid": U128(repaid),
-            "seized": U128(seized),
+            "seized": amounts(seized),
         }),
     );
 }
@@ -143,7 +155,6 @@ pub(crate) fn liquidated(
 pub(crate) fn bad_debt_realized(
     borrower: &AccountId,
     maturity: u64,
-    collateral_token: &str,
     amount: u128,
     total_value_after: u128,
 ) {
@@ -152,7 +163,6 @@ pub(crate) fn bad_debt_realized(
         json!({
             "borrower": borrower,
             "maturity": U64(maturity),
-            "collateral_token": collateral_token,
             "amount": U128(amount),
             "total_value_after": U128(total_value_after),
         }),
@@ -174,6 +184,48 @@ pub(crate) fn collateral_withdrawn(
             "amount": U128(amount),
         }),
     );
+}
+
+pub(crate) fn collateral_added(account: &AccountId, maturity: u64, collateral: &TokenAmounts) {
+    emit(
+        "collateral_added",
+        json!({
+            "account": account,
+            "maturity": U64(maturity),
+            "collateral": amounts(collateral),
+        }),
+    );
+}
+
+pub(crate) fn collateral_token_added(token: &CollateralToken) {
+    emit(
+        "collateral_token_added",
+        json!({
+            "token_id": token.token_id,
+            "decimals": token.decimals,
+            "feed_id": token.feed_id,
+            "max_ltv": token.max_ltv,
+            "liq_threshold": token.liq_threshold,
+            "liq_bonus": token.liq_bonus,
+        }),
+    );
+}
+
+pub(crate) fn collateral_token_updated(token: &CollateralToken) {
+    emit(
+        "collateral_token_updated",
+        json!({
+            "token_id": token.token_id,
+            "max_ltv": token.max_ltv,
+            "liq_threshold": token.liq_threshold,
+            "liq_bonus": token.liq_bonus,
+        }),
+    );
+}
+
+/// `collateral_token_frozen` and `collateral_token_unfrozen` share one shape.
+pub(crate) fn token_flag(event: &str, token_id: &str) {
+    emit(event, json!({ "token_id": token_id }));
 }
 
 /// `redeemed` and `netted` share one shape.

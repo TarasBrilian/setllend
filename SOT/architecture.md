@@ -10,7 +10,7 @@
        │ transfer + msg (order)  │ auth_call (cancel/withdraw) │ mt_transfer (payout)
        ▼                         ▼                             │
  ┌───────────────────────── setllend contract (Rust) ─────────────────────────┐
- │ order escrow per maturity · positions/notes · health factor · settlement · │◄── aggregate-oracle.near
+ │ order escrow per maturity · loans/notes · health factor · settlement ·     │◄── aggregate-oracle.near
  │ liquidation                                                                 │
  └──────────────────────────────▲──────────────────────────────────────────────┘
                                 │ match_orders(fills)  (permissionless)
@@ -31,7 +31,7 @@
 
 | Component | Folder | Role |
 |---|---|---|
-| Contract | `contracts/setllend/` | Escrow, positions/notes, matching rules, health factor, repay, liquidation, maturity settlement |
+| Contract | `contracts/setllend/` | Escrow, loans/notes, matching rules, health factor, repay, liquidation, maturity settlement, the collateral token list |
 | Matcher | `backend/src/matcher/` | In-memory CLOB per maturity, REST + WebSocket. Events come from a block follower in `backend/src/chain/` (D40 in [backend.md](backend.md)) |
 | Relayer | `backend/src/relayer/` | Submits `execute_intents` and `match_orders`, pays gas |
 | Keeper | `backend/src/keeper/` | Liquidations and maturity settlement |
@@ -46,4 +46,5 @@
 3. **Users can always exit without the operator.** Cancel and withdraw via `auth_call` can be submitted by any relayer, or directly by a user with a NEAR account. ETH collateral returns to Base/Arbitrum via `processWithdrawal`, which does not depend on 1Click; BTC collateral (D52) returns to a Bitcoin address the same way. Native NEAR USDC can always be withdrawn to a NEAR account. Moving USDC back to Base/Arbitrum needs a swap, normally 1Click (D10).
 4. **No admin pause.** If the oracle is stale, risky actions stop on their own. Exit actions keep working. Exact list: [oracle.md](oracle.md#integration-pattern-in-the-contract).
 5. **Matcher front-running.** MVP: continuous CLOB with a single public matcher (D9). Mitigations deferred: (a) batch auction every N seconds with one clearing rate per maturity (Term Finance model), (b) matcher inside a TEE (NEAR AI Cloud) with attestation.
-6. **Disclose honestly in the submission README:** bridges (Omni / PoA) for Base and Arbitrum assets, dependency on Rhea's `aggregate-oracle.near`, dependency on 1Click for swaps, matcher/relayer/keeper liveness, and that bad debt is shared pro rata by the note holders of the affected maturity (D26).
+6. **Disclose honestly in the submission README:** bridges (Omni / PoA) for Base and Arbitrum assets, dependency on Rhea's `aggregate-oracle.near`, dependency on 1Click for swaps, matcher/relayer/keeper liveness, that bad debt is shared pro rata by the note holders of the affected maturity (D26), and the owner's power over collateral parameters (item 7).
+7. **The owner manages the collateral list (D48, D50).** It adds tokens, freezes and unfreezes them, and updates their max LTV, liquidation threshold, and bonus, effective at once for open loans. That is a real power over borrowers: a lowered threshold can make loans liquidatable in the same block. It can't move funds or change a loan's debt, and tokens are never removed. The user chose immediate updates over a delay (D50).

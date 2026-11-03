@@ -37,7 +37,7 @@ const toPercent = (bps: number | undefined) => (bps === undefined ? "" : (bps / 
 type Source = "New deposit" | "Deposited" | "Existing loan";
 type Leg = { token: TokenId; amount: string };
 
-/** Lend or Borrow order form. Submitting only simulates (D47). Borrow collateral follows the proposed D48. */
+/** Lend or Borrow order form. Submitting only simulates (D47). Borrow collateral follows D48. */
 export function OrderForm({
   side,
   prices,

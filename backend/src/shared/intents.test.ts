@@ -6,6 +6,7 @@ import {
   erc191Signature,
   setllendAuthCall,
   setllendTransfer,
+  setllendTransferMany,
   signedErc191,
   versionedNonce,
 } from "./intents.ts";
@@ -75,7 +76,7 @@ describe("intents", () => {
   it("liquidate transfer sets 100 Tgas", () => {
     const intent = setllendTransfer(ASSETS.usdcNear, 5n, {
       action: "liquidate",
-      data: { borrower: SIGNER, maturity: MATURITY, collateral_token: ASSETS.ethArb },
+      data: { borrower: SIGNER, maturity: MATURITY },
     });
     expect(intent.min_gas).toBe("100000000000000");
     expect(MIN_GAS.liquidate).toBe(100n * 10n ** 12n);
@@ -94,8 +95,26 @@ describe("intents", () => {
     expect(() =>
       setllendTransfer(ASSETS.usdcNear, 0n, {
         action: "repay",
-        data: { maturity: MATURITY, collateral_token: ASSETS.ethArb, borrower: null },
+        data: { maturity: MATURITY, borrower: null },
       }),
+    ).toThrow();
+  });
+
+  it("borrow and add_collateral carry several tokens, other actions one", () => {
+    const intent = setllendTransferMany(
+      { [ASSETS.ethArb]: 10n ** 18n, [ASSETS.btc]: 2_000_000n },
+      { action: "add_collateral", data: { maturity: MATURITY } },
+    );
+    expect(intent.tokens).toEqual({ [ASSETS.ethArb]: "1000000000000000000", [ASSETS.btc]: "2000000" });
+    expect(intent.min_gas).toBeUndefined();
+    expect(() =>
+      setllendTransferMany(
+        { [ASSETS.usdcNear]: 1n, [ASSETS.ethArb]: 1n },
+        { action: "repay", data: { maturity: MATURITY, borrower: null } },
+      ),
+    ).toThrow();
+    expect(() =>
+      setllendTransferMany({}, { action: "add_collateral", data: { maturity: MATURITY } }),
     ).toThrow();
   });
 });

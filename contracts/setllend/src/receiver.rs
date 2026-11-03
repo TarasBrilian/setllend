@@ -7,6 +7,7 @@ use near_sdk::serde_json;
 use near_sdk::{AccountId, PromiseOrValue, env, near, require};
 
 use crate::msg::{AuthMsg, TransferMsg};
+use crate::state::{TokenAmounts, add_amount};
 use crate::{Setllend, SetllendExt};
 
 fn parse_msg<T: DeserializeOwned>(msg: &str) -> T {
@@ -20,6 +21,29 @@ impl Setllend {
             env::predecessor_account_id() == self.config.intents_contract,
             "Caller must be the intents contract"
         );
+    }
+
+    /// The single debt-token amount of a `lend`, `repay`, or `liquidate` transfer.
+    fn debt_amount(&self, token_ids: &[String], amounts: &[U128]) -> u128 {
+        require!(token_ids.len() == 1, "Expected exactly one token");
+        require!(token_ids[0] == self.config.debt_token, "Wrong token");
+        amounts[0].0
+    }
+
+    /// The tokens of a `borrow` or `add_collateral` transfer: one or more listed, non-frozen
+    /// collateral tokens, each once.
+    fn collateral_amounts(&self, token_ids: Vec<String>, amounts: &[U128]) -> TokenAmounts {
+        require!(!token_ids.is_empty(), "No tokens");
+        let mut collateral = TokenAmounts::new();
+        for (token_id, amount) in token_ids.into_iter().zip(amounts) {
+            let token = self
+                .collateral_token(&token_id)
+                .unwrap_or_else(|| env::panic_str("Wrong token"));
+            require!(!token.frozen, "Collateral token is frozen");
+            require!(!collateral.contains_key(&token_id), "Duplicate token");
+            add_amount(&mut collateral, &token_id, amount.0);
+        }
+        collateral
     }
 }
 
@@ -38,35 +62,35 @@ impl Setllend {
         self.assert_intents();
         // The fund owner is `sender_id`, the signer of the `transfer` intent.
         let _ = previous_owner_ids;
+        require!(token_ids.len() == amounts.len(), "Length mismatch");
         require!(
-            token_ids.len() == 1 && amounts.len() == 1,
-            "Expected exactly one token"
+            amounts.iter().all(|amount| amount.0 > 0),
+            "Amount must be positive"
         );
-        let token_id = token_ids.into_iter().next().unwrap();
-        let amount = amounts[0].0;
-        require!(amount > 0, "Amount must be positive");
-        let is_debt_token = token_id == self.config.debt_token;
-        let refund = match parse_msg::<TransferMsg>(&msg) {
+        let accepted = vec![U128(0); token_ids.len()];
+        match parse_msg::<TransferMsg>(&msg) {
             TransferMsg::Lend(data) => {
-                require!(is_debt_token, "Wrong token");
+                let amount = self.debt_amount(&token_ids, &amounts);
                 self.place_lend(sender_id, amount, data);
-                0
             }
             TransferMsg::Borrow(data) => {
-                require!(self.config.collateral(&token_id).is_some(), "Wrong token");
-                self.place_borrow(sender_id, token_id, amount, data);
-                0
+                let collateral = self.collateral_amounts(token_ids, &amounts);
+                self.place_borrow(sender_id, collateral, data);
+            }
+            TransferMsg::AddCollateral(data) => {
+                let collateral = self.collateral_amounts(token_ids, &amounts);
+                self.add_collateral(sender_id, collateral, data);
             }
             TransferMsg::Repay(data) => {
-                require!(is_debt_token, "Wrong token");
-                self.repay(sender_id, amount, data)
+                let amount = self.debt_amount(&token_ids, &amounts);
+                return PromiseOrValue::Value(vec![U128(self.repay(sender_id, amount, data))]);
             }
             TransferMsg::Liquidate(data) => {
-                require!(is_debt_token, "Wrong token");
+                let amount = self.debt_amount(&token_ids, &amounts);
                 return PromiseOrValue::Promise(self.liquidate(sender_id, amount, data));
             }
-        };
-        PromiseOrValue::Value(vec![U128(refund)])
+        }
+        PromiseOrValue::Value(accepted)
     }
 
     /// `auth_call` runs detached, so a panic here doesn't revert the user's intent. The
@@ -74,6 +98,10 @@ impl Setllend {
     pub fn on_auth(&mut self, signer_id: AccountId, msg: String) -> PromiseOrValue<()> {
         self.assert_intents();
         match parse_msg::<AuthMsg>(&msg) {
+            AuthMsg::Borrow(data) => {
+                self.place_loan_borrow(signer_id, data);
+                PromiseOrValue::Value(())
+            }
             AuthMsg::Cancel(data) => self.cancel(signer_id, data.order_id.0),
             AuthMsg::SellNote(data) => {
                 self.place_sell_note(signer_id, data);

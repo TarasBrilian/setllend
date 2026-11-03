@@ -1,5 +1,5 @@
 // Display metadata for every token the UI shows. IDs come from the shared assets; BTC and NEAR are
-// the D52 collateral for the proposed D48.
+// the D52 collateral for D48.
 
 import { ASSETS, DECIMALS } from "@/shared/assets";
 import type { TokenId, U128 } from "@/shared/encoding";

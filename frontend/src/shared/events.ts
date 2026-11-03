@@ -39,17 +39,17 @@ export type OrderPlaced = {
   rate_bps: number;
   /** Principal, or locked shares for `sell_note`. */
   size: U128;
-  /** What the order escrows, `null` for `sell_note`. */
-  token_id: TokenId | null;
-  /** `borrow` only: escrowed collateral. */
-  collateral: U128 | null;
+  /** `borrow` only: escrowed collateral by token, `{}` for a borrow against the loan. */
+  collateral: Record<TokenId, U128> | null;
   expires_at: U64 | null;
 };
 export type OrderCancelled = {
   order_id: U64;
   owner: AccountId;
-  /** USDC for `lend`, collateral for `borrow`, unlocked shares for `sell_note`. */
-  refunded: U128;
+  /** Escrow paid back by token: USDC for `lend`, collateral for `borrow`, `{}` for `sell_note`. */
+  refunded: Record<TokenId, U128>;
+  /** `sell_note` only: the shares unlocked. */
+  unlocked_shares: U128 | null;
 };
 export type OrderFilled = {
   bid: U64;
@@ -69,7 +69,6 @@ export type Repaid = {
   borrower: AccountId;
   payer: AccountId;
   maturity: U64;
-  collateral_token: TokenId;
   amount: U128;
   debt_remaining: U128;
 };
@@ -77,14 +76,13 @@ export type Liquidated = {
   borrower: AccountId;
   liquidator: AccountId;
   maturity: U64;
-  collateral_token: TokenId;
   repaid: U128;
-  seized: U128;
+  /** Every token taken, the same fraction of each; zero shares are left out (D50, D53). */
+  seized: Record<TokenId, U128>;
 };
 export type BadDebtRealized = {
   borrower: AccountId;
   maturity: U64;
-  collateral_token: TokenId;
   amount: U128;
   total_value_after: U128;
 };
@@ -94,6 +92,24 @@ export type CollateralWithdrawn = {
   collateral_token: TokenId;
   amount: U128;
 };
+export type CollateralAdded = { account: AccountId; maturity: U64; collateral: Record<TokenId, U128> };
+export type CollateralTokenAdded = {
+  token_id: TokenId;
+  decimals: number;
+  feed_id: string;
+  max_ltv: number;
+  liq_threshold: number;
+  liq_bonus: number;
+};
+/** Applies at once, to open loans too (D50). */
+export type CollateralTokenUpdated = {
+  token_id: TokenId;
+  max_ltv: number;
+  liq_threshold: number;
+  liq_bonus: number;
+};
+/** `collateral_token_frozen` and `collateral_token_unfrozen`. */
+export type CollateralTokenFlag = { token_id: TokenId };
 /** `redeemed` and `netted`. */
 export type NotesBurned = { account: AccountId; maturity: U64; value: U128; shares: U128 };
 /** `withdrawn` and `payout_failed`. */
@@ -109,6 +125,11 @@ export type SetllendEvent =
   | { event: "liquidated"; data: Liquidated }
   | { event: "bad_debt_realized"; data: BadDebtRealized }
   | { event: "collateral_withdrawn"; data: CollateralWithdrawn }
+  | { event: "collateral_added"; data: CollateralAdded }
+  | { event: "collateral_token_added"; data: CollateralTokenAdded }
+  | { event: "collateral_token_updated"; data: CollateralTokenUpdated }
+  | { event: "collateral_token_frozen"; data: CollateralTokenFlag }
+  | { event: "collateral_token_unfrozen"; data: CollateralTokenFlag }
   | { event: "redeemed"; data: NotesBurned }
   | { event: "netted"; data: NotesBurned }
   | { event: "withdrawn"; data: BalanceMoved }
@@ -126,6 +147,11 @@ const EVENT_NAMES: ReadonlySet<string> = new Set<EventName>([
   "liquidated",
   "bad_debt_realized",
   "collateral_withdrawn",
+  "collateral_added",
+  "collateral_token_added",
+  "collateral_token_updated",
+  "collateral_token_frozen",
+  "collateral_token_unfrozen",
   "redeemed",
   "netted",
   "withdrawn",

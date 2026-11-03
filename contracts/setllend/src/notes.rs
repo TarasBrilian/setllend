@@ -115,21 +115,12 @@ impl Setllend {
         if note.free_shares == 0 {
             return;
         }
-        let token_ids: Vec<String> = self
-            .config
-            .sorted_collateral_ids()
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let total_debt = token_ids.iter().fold(0u128, |sum, token_id| {
-            let debt = self
-                .positions
-                .get(&(account_id.clone(), maturity, token_id.clone()))
-                .map_or(0, |position| position.debt_face);
-            checked_add(sum, debt)
-        });
+        let key = (account_id.clone(), maturity);
+        let Some(mut loan) = self.loans.get(&key).cloned() else {
+            return;
+        };
         let pool = self.pool(maturity);
-        let value = pool.value_of(note.free_shares).min(total_debt);
+        let value = pool.value_of(note.free_shares).min(loan.debt_face);
         if value == 0 {
             return;
         }
@@ -137,22 +128,8 @@ impl Setllend {
         self.pool_mut(maturity).burn(value, shares);
         note.free_shares -= shares;
         self.save_note(account_id, maturity, note);
-
-        // Reduce positions in token-ID order.
-        let mut left = value;
-        for token_id in token_ids {
-            if left == 0 {
-                break;
-            }
-            let key = (account_id.clone(), maturity, token_id);
-            let Some(mut position) = self.positions.get(&key).cloned() else {
-                continue;
-            };
-            let netted = left.min(position.debt_face);
-            position.debt_face -= netted;
-            left -= netted;
-            self.save_position(key, position);
-        }
+        loan.debt_face -= value;
+        self.save_loan(key, loan);
         events::notes_burned("netted", account_id, maturity, value, shares);
     }
 }

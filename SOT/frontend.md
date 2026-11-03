@@ -1,6 +1,6 @@
 # Frontend: pages, look, and data
 
-> **Status: APPROVED v0.2 (2026-11-03), D47 and D48.** The UI is built first against mock data, before the backend API exists. Nothing in it sends a transaction yet. The collateral model follows the proposed D48 ([contract-interface.md](contract-interface.md#proposed-deposits-and-multi-token-collateral-d48)), which the contract does not implement yet.
+> **Status: APPROVED v0.2 (2026-11-03), D47 and D48.** The UI is built first against mock data, before the backend API exists. Nothing in it sends a transaction yet. The collateral model is D48, which the contract implements since contract-interface v0.6 (2026-11-03, [contract-interface.md](contract-interface.md#math)); the UI still shows it on mock data.
 
 The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-stack.md)). It reads only the backend API ([backend.md](backend.md#api)), except wallet balances, which it reads from chain, and signs intents with the user's EVM or NEAR wallet (D51). This file owns what the user sees.
 
@@ -74,7 +74,7 @@ Before connecting: one card with a Connect prompt. After connecting, top to bott
 
 Every action opens a modal on the page: amount, a preview (for example the health factor after a collateral withdrawal), then the simulated steps. For a NEAR account, the first action that signs an intent adds a "Register your key on NEAR Intents" step (`add_public_key`, once). Chain pickers for payouts, withdrawals, and USDC payments also offer NEAR to a NEAR account, and default to it (D51). A NEAR account has no address on Arbitrum or Base, so any 1Click leg there (a payout, a withdrawal, or a deposit and its refund) asks for one, checked as a `0x` address. A Bitcoin leg (a BTC deposit's refund, or BTC sent out) asks every account for a Bitcoin address. ETH and BTC leave through the bridge (`processWithdrawal`, D10, D52) to their own chain; USDC and NEAR leave through 1Click or to the NEAR account. Repay takes a partial amount or Max and notes that, before maturity, buying notes through a lend order in the same maturity is cheaper because they net against the debt (D20).
 
-Add collateral and multi-token loans are D48 and exist only in the mock until the contract implements them. Collateral tokens, their risk parameters, and frozen tokens come from one list ([risk-params.md](risk-params.md#per-token-parameters-d48-proposed)); a frozen token shows as such and can't be picked for a new borrow or a top-up.
+Add collateral and multi-token loans are D48. The contract has them (v0.6); the UI shows them on mock data until the backend serves them. Collateral tokens, their risk parameters, and frozen tokens come from one list ([risk-params.md](risk-params.md#per-token-parameters-d48)); a frozen token shows as such, can't be picked for a new borrow or a top-up, and gives no borrowing power in the loan math (D53). Add collateral offers only loans with debt that are not past maturity plus grace, as the contract requires (D53).
 
 ## Data
 

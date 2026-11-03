@@ -3,16 +3,29 @@
 use near_workspaces::types::Gas;
 use near_workspaces::{Account, AccountId};
 use serde_json::{Value, json};
-use setllend_tests::{ETH_ARB, ETH_FEED, Env, ONE_ETH, ONE_USDC, USDC, events};
+use std::collections::BTreeMap;
+
+use setllend_tests::{
+    BTC, BTC_FEED, COLLATERAL_TOKENS, ETH_ARB, ETH_FEED, Env, ONE_BTC, ONE_ETH, ONE_USDC, USDC,
+    events,
+};
 
 fn as_u128(value: &Value) -> u128 {
     value.as_str().unwrap().parse().unwrap()
 }
 
+/// Adds every `{token_id: amount}` entry of `amounts` to `owed`.
+fn add_amounts(owed: &mut BTreeMap<String, u128>, amounts: &Value) {
+    for (token_id, amount) in amounts.as_object().unwrap() {
+        *owed.entry(token_id.clone()).or_default() += as_u128(amount);
+    }
+}
+
 /// `redemption_pool + Σ debt_face ≥ V`, and the shares of `accounts` add up to `S`. Also
 /// that Setllend's Intents balance of each token is exactly what it owes: open lend escrow,
-/// the redemption pool, and free balances in USDC; borrow escrow, position collateral, and
-/// free balances in collateral. `accounts` must list every account involved.
+/// the redemption pool, and free balances in USDC; borrow escrow, loan collateral, and free
+/// balances in each collateral token. And that the loan index (D45) lists exactly the loans
+/// of `accounts`. `accounts` must list every account involved.
 async fn assert_invariants(env: &Env, accounts: &[&AccountId]) -> anyhow::Result<()> {
     let maturity = env.maturity.to_string();
     let pool = env
@@ -20,16 +33,16 @@ async fn assert_invariants(env: &Env, accounts: &[&AccountId]) -> anyhow::Result
         .await?;
     let mut debt = 0;
     let mut shares = 0;
-    let mut owed_usdc = as_u128(&pool["redemption_pool"]);
-    let mut owed_eth = 0;
+    let mut loans = 0;
+    let mut owed = BTreeMap::from([(USDC.to_string(), as_u128(&pool["redemption_pool"]))]);
     for account in accounts {
-        let positions = env
-            .view("get_positions_by_account", json!({ "account_id": account }))
+        let account_loans = env
+            .view("get_loans_by_account", json!({ "account_id": account }))
             .await?;
-        for position in positions.as_array().unwrap() {
-            debt += as_u128(&position["debt_face"]);
-            assert_eq!(position["collateral_token"], ETH_ARB);
-            owed_eth += as_u128(&position["collateral"]);
+        for loan in account_loans.as_array().unwrap() {
+            debt += as_u128(&loan["debt_face"]);
+            add_amounts(&mut owed, &loan["collateral"]);
+            loans += 1;
         }
         let notes = env
             .view("get_notes", json!({ "account_id": account }))
@@ -40,23 +53,28 @@ async fn assert_invariants(env: &Env, accounts: &[&AccountId]) -> anyhow::Result
         let free = env
             .view("get_free_balances", json!({ "account_id": account }))
             .await?;
-        owed_usdc += free.get(USDC).map_or(0, as_u128);
-        owed_eth += free.get(ETH_ARB).map_or(0, as_u128);
+        add_amounts(&mut owed, &free);
     }
     let orders = env
         .view("get_orders", json!({ "maturity": maturity }))
         .await?;
     for order in orders.as_array().unwrap() {
         match order["kind"].as_str().unwrap() {
-            "lend" => owed_usdc += as_u128(&order["remaining"]),
-            "borrow" => owed_eth += as_u128(&order["collateral_remaining"]),
+            "lend" => *owed.get_mut(USDC).unwrap() += as_u128(&order["remaining"]),
+            "borrow" => add_amounts(&mut owed, &order["collateral"]),
             _ => {}
         }
     }
     assert!(as_u128(&pool["redemption_pool"]) + debt >= as_u128(&pool["total_value"]));
     assert_eq!(shares, as_u128(&pool["total_shares"]));
-    assert_eq!(env.balance(env.setllend.id(), USDC).await?, owed_usdc);
-    assert_eq!(env.balance(env.setllend.id(), ETH_ARB).await?, owed_eth);
+    let tokens = std::iter::once(USDC).chain(COLLATERAL_TOKENS.iter().map(|(id, _, _)| *id));
+    for token_id in tokens {
+        let held = env.balance(env.setllend.id(), token_id).await?;
+        assert_eq!(held, owed.get(token_id).copied().unwrap_or(0), "{token_id}");
+    }
+    assert_eq!(env.view("get_loan_count", json!({})).await?, loans);
+    let page = env.view("get_loans", json!({})).await?;
+    assert_eq!(page.as_array().unwrap().len(), loans);
     Ok(())
 }
 
@@ -66,7 +84,7 @@ async fn lend_buys_notes_from_sell_note() -> anyhow::Result<()> {
     let alice = env.user(0).await?;
     let bob = env.user(0).await?;
     let carol = env.user(1_000 * ONE_USDC).await?;
-    env.patch_loan(&alice, &bob, 1_000 * ONE_USDC).await?;
+    env.zero_rate_loan(&alice, &bob, 1_000 * ONE_USDC).await?;
 
     let ask = env.sell_note(&alice, 500 * ONE_USDC, 900).await?;
     let bid = env.lend(&carol, 300 * ONE_USDC, 800).await?;
@@ -130,9 +148,8 @@ async fn cancel_refunds_escrow() -> anyhow::Result<()> {
     );
     assert_eq!(
         events(&result, "order_cancelled"),
-        vec![
-            json!({"order_id": bid.to_string(), "owner": carol.id(), "refunded": (300 * ONE_USDC).to_string()})
-        ]
+        vec![json!({"order_id": bid.to_string(), "owner": carol.id(),
+            "refunded": {USDC: (300 * ONE_USDC).to_string()}, "unlocked_shares": null})]
     );
     assert_eq!(env.balance(carol.id(), USDC).await?, 1_000 * ONE_USDC);
     assert!(
@@ -225,7 +242,7 @@ async fn failed_payout_lands_in_free_balance_and_withdraw_recovers_it() -> anyho
 async fn transfers_refund_invalid_orders_and_overpayment() -> anyhow::Result<()> {
     let env = Env::new().await?;
     let alice = env.user(0).await?;
-    let bob = env.user(150 * ONE_USDC).await?;
+    let bob = env.user(50 * ONE_USDC).await?;
 
     // Collateral sent with a `lend` msg: Setllend panics, so the mock refunds in full.
     env.deposit(bob.id().as_str(), ETH_ARB, 1_000).await?;
@@ -237,10 +254,11 @@ async fn transfers_refund_invalid_orders_and_overpayment() -> anyhow::Result<()>
     assert!(failure.contains("Wrong token"), "{failure}");
     assert_eq!(env.balance(bob.id(), ETH_ARB).await?, 1_000);
 
-    // Repay 150 USDC on 100 USDC of debt: 50 comes back through the return value.
-    env.patch_loan(&alice, &bob, 100 * ONE_USDC).await?;
+    // Repay 150 USDC on 100 USDC of debt: 50 comes back through the return value. Bob holds
+    // his 50 plus the 100 he borrowed.
+    env.zero_rate_loan(&alice, &bob, 100 * ONE_USDC).await?;
     let repay = json!({"action": "repay", "data": {
-        "maturity": env.maturity.to_string(), "collateral_token": ETH_ARB, "borrower": null
+        "maturity": env.maturity.to_string(), "borrower": null
     }});
     let result = env.transfer(&bob, USDC, 150 * ONE_USDC, repay).await?;
     assert!(result.is_success(), "{:?}", result.failures());
@@ -280,7 +298,7 @@ async fn match_orders_gas_per_sell_note_fill() -> anyhow::Result<()> {
     let alice = env.user(0).await?;
     let bob = env.user(1_000 * ONE_USDC).await?;
     let carol = env.user(1_000 * ONE_USDC).await?;
-    env.patch_loan(&alice, &bob, 10_000 * ONE_USDC).await?;
+    env.zero_rate_loan(&alice, &bob, 10_000 * ONE_USDC).await?;
     let ask = env.sell_note(&alice, 5_000 * ONE_USDC, 900).await?;
     let plain_bid = env.lend(&carol, 1_000 * ONE_USDC, 800).await?;
     // Bob has debt in this maturity, so every fill he buys also nets (D20).
@@ -336,21 +354,17 @@ async fn open_loan(
     ))
 }
 
-async fn bob_position(env: &Env, bob: &Account) -> anyhow::Result<Value> {
+async fn bob_loan(env: &Env, bob: &Account) -> anyhow::Result<Value> {
     env.view(
-        "get_position",
-        json!({
-            "account_id": bob.id(), "maturity": env.maturity.to_string(),
-            "collateral_token": ETH_ARB
-        }),
+        "get_loan",
+        json!({ "account_id": bob.id(), "maturity": env.maturity.to_string() }),
     )
     .await
 }
 
 fn liquidate_msg(env: &Env, borrower: &Account) -> Value {
     json!({"action": "liquidate", "data": {
-        "borrower": borrower.id(), "maturity": env.maturity.to_string(),
-        "collateral_token": ETH_ARB
+        "borrower": borrower.id(), "maturity": env.maturity.to_string()
     }})
 }
 
@@ -364,9 +378,9 @@ async fn borrow_fill_prices_through_the_oracle() -> anyhow::Result<()> {
 
     // The borrower got the principal in their Intents balance.
     assert_eq!(env.balance(bob.id(), USDC).await?, 1_000 * ONE_USDC);
-    let position = bob_position(&env, &bob).await?;
-    assert_eq!(as_u128(&position["collateral"]), ONE_ETH);
-    assert!(as_u128(&position["debt_face"]) > 1_000 * ONE_USDC);
+    let loan = bob_loan(&env, &bob).await?;
+    assert_eq!(loan["collateral"], json!({ ETH_ARB: ONE_ETH.to_string() }));
+    assert!(as_u128(&loan["debt_face"]) > 1_000 * ONE_USDC);
     println!("match_orders borrow x1: call {call:.2} Tgas, total {total:.2} Tgas");
     assert_invariants(&env, &[alice.id(), bob.id()]).await
 }
@@ -401,13 +415,13 @@ async fn stale_price_skips_borrow_fills() -> anyhow::Result<()> {
 
 /// Gas of `liquidate`, oracle round trip included. Run with `--nocapture`.
 #[tokio::test]
-async fn keeper_liquidates_an_unhealthy_position() -> anyhow::Result<()> {
+async fn keeper_liquidates_an_unhealthy_loan() -> anyhow::Result<()> {
     let env = Env::new().await?;
     let alice = env.user(1_000 * ONE_USDC).await?;
     let bob = env.user(0).await?;
     let keeper = env.user(2_000 * ONE_USDC).await?;
     open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
-    let debt = as_u128(&bob_position(&env, &bob).await?["debt_face"]);
+    let debt = as_u128(&bob_loan(&env, &bob).await?["debt_face"]);
 
     // Healthy at $2,000: the callback panics and the keeper is refunded in full.
     let msg = liquidate_msg(&env, &bob);
@@ -421,10 +435,7 @@ async fn keeper_liquidates_an_unhealthy_position() -> anyhow::Result<()> {
         )
         .await?;
     let failure = format!("{:?}", result.receipt_failures());
-    assert!(
-        failure.contains("Position is not liquidatable"),
-        "{failure}"
-    );
+    assert!(failure.contains("Loan is not liquidatable"), "{failure}");
     assert_eq!(env.balance(keeper.id(), USDC).await?, 2_000 * ONE_USDC);
 
     env.set_eth_price(1_200).await?;
@@ -438,7 +449,7 @@ async fn keeper_liquidates_an_unhealthy_position() -> anyhow::Result<()> {
     );
     let liquidated = &events(&result, "liquidated")[0];
     assert_eq!(as_u128(&liquidated["repaid"]), debt);
-    let seized = as_u128(&liquidated["seized"]);
+    let seized = as_u128(&liquidated["seized"][ETH_ARB]);
     // $1,008.22 × 1.05 / $1,200 ≈ 0.8822 ETH.
     assert!(seized > ONE_ETH * 88 / 100 && seized < ONE_ETH * 89 / 100);
     assert_eq!(
@@ -446,9 +457,9 @@ async fn keeper_liquidates_an_unhealthy_position() -> anyhow::Result<()> {
         2_000 * ONE_USDC - debt
     );
     assert_eq!(env.balance(keeper.id(), ETH_ARB).await?, seized);
-    let position = bob_position(&env, &bob).await?;
-    assert_eq!(as_u128(&position["debt_face"]), 0);
-    assert_eq!(as_u128(&position["collateral"]), ONE_ETH - seized);
+    let loan = bob_loan(&env, &bob).await?;
+    assert_eq!(as_u128(&loan["debt_face"]), 0);
+    assert_eq!(as_u128(&loan["collateral"][ETH_ARB]), ONE_ETH - seized);
     println!("liquidate: total {:.2} Tgas", tgas(result.total_gas_burnt));
     assert_invariants(&env, &[alice.id(), bob.id(), keeper.id()]).await
 }
@@ -460,7 +471,7 @@ async fn liquidation_realizes_bad_debt() -> anyhow::Result<()> {
     let bob = env.user(0).await?;
     let keeper = env.user(2_000 * ONE_USDC).await?;
     open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
-    let debt = as_u128(&bob_position(&env, &bob).await?["debt_face"]);
+    let debt = as_u128(&bob_loan(&env, &bob).await?["debt_face"]);
 
     env.set_eth_price(1_000).await?;
     let msg = liquidate_msg(&env, &bob);
@@ -476,7 +487,7 @@ async fn liquidation_realizes_bad_debt() -> anyhow::Result<()> {
     let bad_debt = &events(&result, "bad_debt_realized")[0];
     assert_eq!(as_u128(&bad_debt["amount"]), debt - repaid);
     assert_eq!(env.balance(keeper.id(), ETH_ARB).await?, ONE_ETH);
-    assert!(bob_position(&env, &bob).await?.is_null());
+    assert!(bob_loan(&env, &bob).await?.is_null());
     let pool = env
         .view("get_pool", json!({ "maturity": env.maturity.to_string() }))
         .await?;
@@ -545,4 +556,148 @@ async fn match_orders_gas_for_ten_borrow_fills() -> anyhow::Result<()> {
     let total = tgas(result.total_gas_burnt);
     println!("match_orders borrow x10: call {call:.2} Tgas, total {total:.2} Tgas");
     assert_invariants(&env, &[alice.id(), bob.id()]).await
+}
+
+/// Bob escrows ETH and BTC in one `transfer`, tops the loan up with more BTC, borrows more
+/// against it with an `auth_call` `borrow`, and a keeper liquidates both tokens pro rata. Gas
+/// of the two-token liquidation. Run with `--nocapture`.
+#[tokio::test]
+async fn multi_token_loan_from_escrow_to_liquidation() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_500 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let keeper = env.user(2_000 * ONE_USDC).await?;
+
+    // $1,000 of ETH and $1,000 of BTC carry up to $1,400 of face.
+    let ask = env
+        .borrow_many(
+            &bob,
+            &[(ETH_ARB, ONE_ETH / 2), (BTC, ONE_BTC / 50)],
+            1_000 * ONE_USDC,
+            1_000,
+        )
+        .await?;
+    let bid = env.lend(&alice, 1_500 * ONE_USDC, 1_000).await?;
+    let result = env
+        .match_orders(&alice, &[(bid, ask, 1_000 * ONE_USDC)])
+        .await?;
+    assert_eq!(
+        events(&result, "order_filled").len(),
+        1,
+        "{:?}",
+        result.logs()
+    );
+    println!(
+        "match_orders borrow with two tokens x1: total {:.2} Tgas",
+        tgas(result.total_gas_burnt)
+    );
+    assert_eq!(
+        bob_loan(&env, &bob).await?["collateral"],
+        json!({ ETH_ARB: (ONE_ETH / 2).to_string(), BTC: (ONE_BTC / 50).to_string() })
+    );
+
+    // Top-up: 0.01 BTC more, no price needed.
+    env.deposit(bob.id().as_str(), BTC, ONE_BTC / 100).await?;
+    let add = json!({"action": "add_collateral", "data": {"maturity": env.maturity.to_string()}});
+    let result = env.transfer(&bob, BTC, ONE_BTC / 100, add).await?;
+    assert!(result.is_success(), "{:?}", result.failures());
+    assert_eq!(events(&result, "collateral_added").len(), 1);
+
+    // 500 USDC more against the loan alone: $1,000 + $1,500 at 70% = $1,750 of power.
+    let more = json!({"action": "borrow", "data": {
+        "maturity": env.maturity.to_string(), "max_rate_bps": 1_000,
+        "principal": (500 * ONE_USDC).to_string(), "expires_at": null
+    }});
+    let result = env.auth_call(&bob, more).await?;
+    assert!(
+        result.receipt_failures().is_empty(),
+        "{:?}",
+        result.failures()
+    );
+    let placed = &events(&result, "order_placed")[0];
+    assert_eq!(placed["collateral"], json!({}));
+    let more_ask: u64 = placed["order_id"].as_str().unwrap().parse()?;
+    let result = env
+        .match_orders(&alice, &[(bid, more_ask, 500 * ONE_USDC)])
+        .await?;
+    assert_eq!(
+        events(&result, "order_filled").len(),
+        1,
+        "{:?}",
+        result.logs()
+    );
+    assert_eq!(env.balance(bob.id(), USDC).await?, 1_500 * ONE_USDC);
+    let debt = as_u128(&bob_loan(&env, &bob).await?["debt_face"]);
+
+    // Both prices fall: $500 of ETH + $900 of BTC at 80% = $1,120, below about $1,512 of face.
+    env.set_eth_price(1_000).await?;
+    env.set_price(BTC_FEED, 30_000 * 100_000_000, None).await?;
+    let result = env
+        .transfer_with_gas(
+            &keeper,
+            USDC,
+            500 * ONE_USDC,
+            liquidate_msg(&env, &bob),
+            Some(ORACLE_MIN_GAS),
+        )
+        .await?;
+    assert!(
+        result.receipt_failures().is_empty(),
+        "{:?}",
+        result.failures()
+    );
+    let seized = &events(&result, "liquidated")[0]["seized"];
+    let (eth, btc) = (as_u128(&seized[ETH_ARB]), as_u128(&seized[BTC]));
+    // $500 × 1.05 / $1,400 = 37.5% of each token.
+    assert_eq!(eth, ONE_ETH / 2 * 375 / 1_000);
+    assert_eq!(btc, ONE_BTC * 3 / 100 * 375 / 1_000);
+    assert_eq!(env.balance(keeper.id(), ETH_ARB).await?, eth);
+    assert_eq!(env.balance(keeper.id(), BTC).await?, btc);
+    let loan = bob_loan(&env, &bob).await?;
+    assert_eq!(as_u128(&loan["debt_face"]), debt - 500 * ONE_USDC);
+    println!(
+        "liquidate two tokens: total {:.2} Tgas",
+        tgas(result.total_gas_burnt)
+    );
+    assert_invariants(&env, &[alice.id(), bob.id(), keeper.id()]).await
+}
+
+#[tokio::test]
+async fn owner_manages_collateral_tokens() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let mallory = env.user(0).await?;
+    let tokens = env.view("get_collateral_tokens", json!({})).await?;
+    assert_eq!(tokens.as_array().unwrap().len(), 3);
+
+    let freeze = json!({ "token_id": BTC });
+    let result = mallory
+        .call(env.setllend.id(), "freeze_collateral_token")
+        .args_json(freeze.clone())
+        .transact()
+        .await?;
+    assert!(format!("{:?}", result.failures()).contains("Owner only"));
+
+    let result = env
+        .setllend
+        .call("freeze_collateral_token")
+        .args_json(freeze)
+        .transact()
+        .await?;
+    assert!(result.is_success(), "{:?}", result.failures());
+    let tokens = env.view("get_collateral_tokens", json!({})).await?;
+    assert_eq!(tokens[2]["token_id"], BTC);
+    assert_eq!(tokens[2]["frozen"], true);
+
+    // A frozen token can't be escrowed: the transfer is refunded in full.
+    let bob = env.user(0).await?;
+    env.deposit(bob.id().as_str(), BTC, ONE_BTC).await?;
+    let borrow = json!({"action": "borrow", "data": {
+        "maturity": env.maturity.to_string(), "max_rate_bps": 1_000,
+        "principal": ONE_USDC.to_string(), "expires_at": null
+    }});
+    let result = env.transfer(&bob, BTC, ONE_BTC, borrow).await?;
+    let failure = format!("{:?}", result.receipt_failures());
+    assert!(failure.contains("Collateral token is frozen"), "{failure}");
+    assert_eq!(env.balance(bob.id(), BTC).await?, ONE_BTC);
+    assert_invariants(&env, &[mallory.id(), bob.id()]).await
 }

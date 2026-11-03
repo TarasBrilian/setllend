@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use near_sdk::json_types::{I64, U64};
 use near_sdk::{Gas, Promise, PromiseError, env, ext_contract, near};
 
-use crate::math::Price;
+use crate::math::{Collateral, Price};
+use crate::state::TokenAmounts;
 use crate::{BPS, Setllend};
 
 /// Static gas for `list_prices_no_older_than`. The callback gets the rest of the call's gas.
@@ -48,11 +49,12 @@ impl Prices {
 }
 
 impl Setllend {
-    /// One oracle call for the debt feed and every collateral feed. Fewer feeds than a batch
-    /// could touch would save little: the config lists two tokens on one ETH feed.
+    /// One oracle call for the debt feed and every collateral feed, frozen tokens included
+    /// (their loans still need prices). Fewer feeds than a batch could touch would save
+    /// little: the list is short, and two ETH tokens share one feed.
     pub(crate) fn fetch_prices(&self) -> Promise {
         let mut feed_ids = vec![self.config.debt_feed_id.clone()];
-        for token in &self.config.collateral_tokens {
+        for token in &self.collateral_tokens {
             if !feed_ids.contains(&token.feed_id) {
                 feed_ids.push(token.feed_id.clone());
             }
@@ -95,15 +97,45 @@ impl Setllend {
         Prices(valid)
     }
 
-    /// Collateral and debt prices for `collateral_token`, if both are usable.
-    pub(crate) fn prices_for(
+    /// `collateral` as the valuation in `math` takes it, with each token's `ratio`, and the
+    /// debt price. `None` if a needed price is missing.
+    ///
+    /// For `Ratio::MaxLtv` frozen tokens are left out: they give no borrowing power (D53), so
+    /// they need no price either. The other ratios keep every token, in `collateral`'s order.
+    pub(crate) fn valuation(
         &self,
+        collateral: &TokenAmounts,
         prices: &Prices,
-        collateral_token: &str,
-    ) -> Option<(Price, Price)> {
-        let token = self.config.collateral(collateral_token)?;
-        let collateral = prices.get(&token.feed_id)?;
-        let debt = prices.get(&self.config.debt_feed_id)?;
-        Some((*collateral, *debt))
+        ratio: Ratio,
+    ) -> Option<(Vec<Collateral>, Price)> {
+        let debt_price = *prices.get(&self.config.debt_feed_id)?;
+        let mut tokens = Vec::with_capacity(collateral.len());
+        for (token_id, amount) in collateral {
+            let token = self.listed_token(token_id);
+            let ratio = match ratio {
+                Ratio::MaxLtv if token.frozen => continue,
+                Ratio::MaxLtv => token.max_ltv,
+                Ratio::LiqThreshold => token.liq_threshold,
+                Ratio::LiqBonus => token.liq_bonus,
+            };
+            tokens.push(Collateral {
+                amount: *amount,
+                decimals: token.decimals,
+                price: *prices.get(&token.feed_id)?,
+                ratio,
+            });
+        }
+        Some((tokens, debt_price))
     }
+}
+
+/// Which of a token's parameters a valuation uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ratio {
+    /// `can_open`: fills and withdrawals with debt.
+    MaxLtv,
+    /// Health: liquidation.
+    LiqThreshold,
+    /// Seizure.
+    LiqBonus,
 }

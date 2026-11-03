@@ -1,6 +1,6 @@
 # Backend: matcher, relayer, keeper
 
-> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
+> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
 One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, a block follower, and three components that share them. The market-maker agent and the 1Click wrapper are out of scope here (scheduled 2026-11-11 and 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what they will use.
 
@@ -42,7 +42,7 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 
 1. **Load** at one final block height `H`: `get_maturities`, then per maturity `get_order_count`, `get_orders(maturity, from_index, limit)` in pages of 100, and `get_pool`, all with `blockQuery = H` (D38: results are in index order, so the book sorts them). Past maturities are loaded too (their orders can still be cancelled), but never matched.
 2. **Reload on events.** The live cursor runs from `H + 1`. A processed block with a Setllend event that names a maturity marks that maturity; `order_cancelled` names none, so it marks the maturity of the cancelled order in the book (all maturities if the order is unknown), and `withdrawn` and `payout_failed` mark nothing. After each poll round, every marked maturity is reloaded as in step 1 at the round's last processed height. A view at block `h` already includes every receipt executed in block `h` ✅ (2026-11-03 on mainnet: an access key's nonce has the value of the block's transaction at `h`, not at `h + 1`, in 4 of 4 samples), so the reload contains the events that triggered it.
-3. **Why reload instead of applying events:** `order_filled` gives absolute remaining amounts but no `collateral_remaining`, so a book built from events would have to repeat the contract's pro-rata collateral rounding ([`borrow`](contract-interface.md#borrow)) and apply every event exactly once. A reload reads the exact state, so a missed, repeated, or misordered event can't leave the book wrong, and no consistency check is needed. It costs about three view calls per maturity per block with activity.
+3. **Why reload instead of applying events:** `order_filled` gives absolute remaining amounts but not the escrow left per token, so a book built from events would have to repeat the contract's pro-rata collateral rounding ([`borrow`](contract-interface.md#borrow)) and apply every event exactly once. A reload reads the exact state, so a missed, repeated, or misordered event can't leave the book wrong, and no consistency check is needed. It costs about three view calls per maturity per block with activity.
 4. **Jump** at startup and when the live cursor is more than 1,000 blocks behind (about 10 minutes): load at the latest final height, which becomes the new `H`.
 5. **Two cursors.** After a load at `H`, the *live* cursor runs from `H + 1` and feeds the book reloads, the matcher, and WebSocket. Blocks between the old cursor and `H` are *backfilled* with the spare request budget, into SQLite only (trade and account history). So a gap never stalls matching, which waits only for the live cursor.
 
@@ -64,16 +64,16 @@ Runs when a book changes, when new oracle prices arrive, and every 5 s, if no ba
 for each maturity m with m > now, in ascending order:
   skip m if its pool has V = 0 and S > 0                                   (notes_wiped_out)
   bids = lend orders, not expired; asks = borrow and sell_note orders, not expired, not parked
-  work on copies of remaining amounts (and of positions, for borrow asks)
+  work on copies of remaining amounts (and of loans, for borrow asks)
   repeat until the batch is full or nothing crosses:
     b = best bid with remaining > 0
     a = best crossing ask with remaining > 0 and a.owner ≠ b.owner; none → next bid
     rate = maker(b, a).rate_bps;  dt = m − now
     borrow ask:    p = min(b.remaining, a.remaining)
                    shares_for(face(p, rate, dt, down)) = 0 → park the pair (zero_shares)
-                   can_open(position + this fill) fails:
+                   can_open(loan + this fill) fails:
                      can_open holds at p = 1 → p = largest principal that passes (binary search)
-                     else → park a until prices, the order, or the position change (cannot_open)
+                     else → park a until prices, the order, or the loan change (cannot_open)
     sell_note ask: p = largest principal ≤ b.remaining whose shares stay ≤ a.remaining
                        (binary search, shares are monotonic in p)
                    shares(p) = 0 and p = b.remaining → park the pair (bid too small)
@@ -82,7 +82,7 @@ for each maturity m with m > now, in ascending order:
 ```
 
 - **Why the `can_open` search is sound:** ignoring rounding, collateral and debt face both grow linearly with `p`, so the principals that pass form an interval that starts at 0 (when 1 unit passes) or ends at the full size (when it doesn't). Only the first case has a boundary below the full size worth searching. The chosen `p` is checked again exactly, with the contract's rounding (a fill that completes the order moves all remaining collateral).
-- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with `max_ltv` and conservative prices, and the position after the fill exactly as `fill_borrow` builds it (existing position from `get_position`, plus pro-rata collateral, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). The pool comes from the book's last reload ([Book](#book), step 1). Positions are not part of the book, so `get_position` is read for each `borrow` ask when a batch is built.
+- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with each token's `max_ltv` (frozen tokens left out, D53) and conservative prices, and the loan after the fill exactly as `fill_borrow` builds it (existing loan from `get_loan`, plus each escrowed token pro rata, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). The pool comes from the book's last reload ([Book](#book), step 1). Loans are not part of the book, so `get_loan` is read for each `borrow` ask when a batch is built.
 - **Prices for pre-checks** come from the same oracle call the contract makes (`list_prices_no_older_than` on `oracle_contract`, `age = oracle_max_age`), validated with the contract's rules at the latest block time. Without usable prices, `borrow` asks are left out and `sell_note` fills still go ahead.
 - **Timing is safe in one direction:** execution happens after `now`, so `dt` only shrinks. A smaller `dt` means a smaller face and fewer shares, so a `sell_note` size that fits at `now` still fits. For `can_open`, a later block only lowers the debt face, which helps.
 - **No safety margins** (D24): the matcher submits whatever passes the pre-checks at current prices. If prices move and the contract skips a fill, the matcher parks it instead of retrying at once.
@@ -92,7 +92,7 @@ for each maturity m with m > now, in ascending order:
 | Setting | Value | Source |
 |---|---|---|
 | Fills per `match_orders` | 10 | [risk-params.md](risk-params.md). `borrow` and `sell_note` fills may share a batch, and a batch may span maturities |
-| Gas attached | 300 Tgas | Sandbox 2026-11-03: 10 `borrow` fills burn 60.8 Tgas and need about 170 Tgas attached, 10 `sell_note` fills about 165 Tgas. Unused gas is refunded. The headroom covers the real `intents.near` and oracle costing more ⚠️ |
+| Gas attached | 300 Tgas | Sandbox 2026-11-03 (contract v0.6): 10 `borrow` fills burn 62.2 Tgas and need about 170 Tgas attached, 10 `sell_note` fills about 165 Tgas. Unused gas is refunded. The headroom covers the real `intents.near` and oracle costing more ⚠️ |
 | Batches in flight | 1 | The next batch is built only after the live cursor has processed every block of the previous batch's receipts and the book is reloaded, so no fill is computed from stale amounts |
 
 Raise the fill count only after measuring on mainnet.
@@ -110,7 +110,7 @@ After each batch the matcher reads `fill_skipped` events from the transaction ou
 | `bid_oversize`, `ask_oversize` | Another fill landed first, or `V / S` moved for a `sell_note`. Park the pair until the reload after the batch, then size it anew from the reloaded order and pool. Oversize again with those inputs means `shared/math.ts` disagrees with the contract: log an error and keep the pair parked |
 | `zero_shares` | Park the pair until the pool changes |
 | `no_price` | Leave `borrow` asks out until the matcher's own oracle read is usable again, then wait one more fresh price (about 20 s) |
-| `cannot_open` | Park the ask until prices, the order, or the position change |
+| `cannot_open` | Park the ask until prices, the order, or the loan change |
 | `bid_not_lend`, `ask_is_lend`, `maturity_mismatch`, `self_trade`, `not_crossed`, `zero_principal` | The matcher's own checks should prevent these. Log an error with the batch and park the pair |
 
 Parked pairs and orders are kept in memory only; a restart clears them, which costs at most one more skipped fill each.
@@ -121,7 +121,7 @@ Parked pairs and orders are kept in memory only; a restart clears them, which co
 
 `POST /api/intents` with `{"signed": {"standard": "erc191", "payload": "...", "signature": "secp256k1:..."}}`, or a `nep413` payload from a NEAR account (D51, format in [intents-primitives.md](intents-primitives.md#payload-format)). The checks below read `signer_id`, deadline, and intents from the inner message of either standard, and accept named NEAR accounts as well as implicit ones. `shared/intents.ts` gets one NEP-413 builder, used by the keeper (D43) and by the frontend for NEAR users:
 
-1. **Check the payload** without spending gas: valid JSON, `verifying_contract` is `intents.near`, `deadline` in the future, `signer_id` a valid lowercase account, at least one intent, and every intent is a Setllend intent: a `transfer` of exactly one token to the Setllend contract with a `msg` that `decodeTransferMsg` accepts and a token that fits the action (the debt token for `lend`, `repay`, `liquidate`; a collateral token from `Config` for `borrow`; `simulate_intents` doesn't run `mt_on_transfer`, so this is the only pre-check), or an `auth_call` to the Setllend contract with a `msg` that `decodeAuthMsg` accepts and no `attached_deposit` (it would come from the user's wNEAR and is never refunded on failure, [contract-interface.md](contract-interface.md#verified-facts-this-design-relies-on)). The relayer pays gas, so it relays nothing else (infrastructure protection, [pitfalls.md](pitfalls.md#off-chain); anyone can still call `execute_intents` directly).
+1. **Check the payload** without spending gas: valid JSON, `verifying_contract` is `intents.near`, `deadline` in the future, `signer_id` a valid lowercase account, at least one intent, and every intent is a Setllend intent: a `transfer` to the Setllend contract with a `msg` that `decodeTransferMsg` accepts and tokens that fit the action (exactly one, the debt token, for `lend`, `repay`, `liquidate`; one or more listed collateral tokens that aren't frozen, from `get_collateral_tokens`, for `borrow` and `add_collateral`; `simulate_intents` doesn't run `mt_on_transfer`, so this is the only pre-check), or an `auth_call` to the Setllend contract with a `msg` that `decodeAuthMsg` accepts and no `attached_deposit` (it would come from the user's wNEAR and is never refunded on failure, [contract-interface.md](contract-interface.md#verified-facts-this-design-relies-on)). The relayer pays gas, so it relays nothing else (infrastructure protection, [pitfalls.md](pitfalls.md#off-chain); anyone can still call `execute_intents` directly).
 2. **Check `min_gas`:** every `auth_call` and every `liquidate` transfer must carry at least the `MIN_GAS` of `shared/intents.ts` (100 Tgas, [risk-params.md](risk-params.md)). Other transfers may leave it out (30 Tgas default) but not set it lower. The relayer can't change a signed payload, so it rejects one without enough gas instead of letting it fail on-chain.
 3. **`simulate_intents`** (a view call). A failure goes back to the user with the contract's message: bad signature, unknown public key, nonce already used, deadline passed, insufficient balance.
 4. **`execute_intents({signed: [payload]})`** with 300 Tgas attached, one user payload per transaction (a batch fails as a whole), sent with `waitUntil: EXECUTED_OPTIMISTIC` (every receipt executed).
@@ -156,30 +156,30 @@ The matcher hands a batch to the relayer, which calls `match_orders({fills})` (`
 
 ## Keeper (D44)
 
-### Finding positions
+### Finding loans
 
-From the contract's state, on every scan: `get_position_count()`, then `get_positions(from_index, limit)` in pages of 100, all at one final block height (D45, [contract-interface.md](contract-interface.md#views)). The keeper keeps no position list of its own, so it doesn't depend on the follower, a database, or history since deploy, and anyone can run one from state alone.
+From the contract's state, on every scan: `get_loan_count()`, then `get_loans(from_index, limit)` in pages of 100, all at one final block height (D45, [contract-interface.md](contract-interface.md#views)). The keeper keeps no loan list of its own, so it doesn't depend on the follower, a database, or history since deploy, and anyone can run one from state alone.
 
 ### Scan
 
 Every 10 s (the oracle updates about every 20 s, [oracle.md](oracle.md)):
 
-1. **Prices:** one `list_prices_no_older_than` view call for the debt feed and every collateral feed, validated exactly like `validate_prices`: `price > 0`, `conf × 10^4 ≤ price × oracle_max_conf`, and `|now − publish_time| ≤ oracle_max_age`, with `now` the latest final block time in seconds. A feed that fails is unusable, and so is every position that needs it (the contract would panic with `No price`, even for overdue debt).
-2. **Positions:** every position, read as in [Finding positions](#finding-positions).
+1. **Prices:** one `list_prices_no_older_than` view call for the debt feed and every collateral feed, validated exactly like `validate_prices`: `price > 0`, `conf × 10^4 ≤ price × oracle_max_conf`, and `|now − publish_time| ≤ oracle_max_age`, with `now` the latest final block time in seconds. A feed that fails is unusable, and so is every loan holding a token on it (the contract would panic with `No price`, even for overdue debt).
+2. **Loans:** every loan, read as in [Finding loans](#finding-loans), and the token list with `get_collateral_tokens` (reloaded on its events, see [D48 changes](#d48-changes)).
 3. **Eligible** when `debt_face > 0` and, checked in this order as the contract does:
    1. overdue: `now ≥ maturity + grace`, or
-   2. unhealthy: `can_open(collateral, decimals, debt_face, collateral_price, debt_price, liq_threshold)` is false, with conservative prices (`price − conf` for collateral, `price + conf` for debt).
-4. **Seizure estimate at mid prices** (D39): `repay = min(debt_face, capital)`, `seized = seize_for(repay)`; if `seized ≥ collateral`, then `seized = collateral` and `repay = min(repay, repay_for(collateral))`. `seized = 0` means the contract would panic (`Nothing to seize`), so the keeper leaves it.
-5. **Order:** overdue positions first, then by lowest health. Bad-debt positions (collateral worth less than debt plus bonus) are liquidated like any other; the contract realizes the rest.
+   2. unhealthy: `can_open` over all the loan's tokens, each at its `liq_threshold`, frozen ones included, is false, with conservative prices (`price − conf` for collateral, `price + conf` for debt).
+4. **Seizure estimate at mid prices** (D39, D53): `repay = min(debt_face, capital)`, then `seize(loan, repay)` exactly as `math.rs` computes it: the same fraction of every token, rounded down per token, capped at all of it with `repay = repay_for(all)`. Nothing seized in any token means the contract would panic (`Nothing to seize`), so the keeper leaves it.
+5. **Order:** overdue loans first, then by lowest health. Bad-debt loans (collateral worth less than debt plus bonus) are liquidated like any other; the contract realizes the rest.
 
 ### Liquidating
 
 - One liquidation in flight at a time, so capital is never counted twice.
 - Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the keeper's signing key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 envelope differs from the ERC-191 payload of `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); it is built in `keeper/`, since only the backend signs that way. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
-- **Partial liquidation:** with less capital than the debt, the keeper liquidates what its capital covers. If the position is still eligible afterwards, a later scan picks it up once capital is back.
-- **Capital** = the backend account's USDC balance on `intents.near` (`mt_balance_of`), minus the amount of the liquidation in flight. With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible positions left. Seized ETH lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized ETH is moved out by hand until the 1Click wrapper turns it back into USDC.
-- **Dust:** every eligible position is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
-- **Failure:** a panic refunds the keeper in full. The reason (`Position is not liquidatable`, `No price`, `Nothing to seize`) is logged and the position is checked again on the next scan.
+- **Partial liquidation:** with less capital than the debt, the keeper liquidates what its capital covers. If the loan is still eligible afterwards, a later scan picks it up once capital is back.
+- **Capital** = the backend account's USDC balance on `intents.near` (`mt_balance_of`), minus the amount of the liquidation in flight. With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible loans left. Seized collateral, one or more tokens, lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized collateral is moved out by hand until the 1Click wrapper turns it back into USDC.
+- **Dust:** every eligible loan is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
+- **Failure:** a panic refunds the keeper in full. The reason (`Loan is not liquidatable`, `No price`, `Nothing to seize`) is logged and the loan is checked again on the next scan.
 
 ### Storage alert
 
@@ -204,7 +204,7 @@ Each scan also reads the contract's `view_account`: free NEAR = `amount − stor
 
 ## Persistence
 
-SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the book and positions are never stored (they come from views).
+SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the book and loans are never stored (they come from views).
 
 | Table | Rows | Used for |
 |---|---|---|
@@ -246,9 +246,9 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |
 | GET | `/api/book/:maturity` | `{bids, asks}`: price levels `{rate_bps, size, orders}` plus the order list. Level sizes are USDC principal; a `sell_note` ask's principal is its `remaining_value` discounted at its own rate to `now` (display only), and its order entry also carries `remaining_value` |
 | GET | `/api/trades/:maturity?since=&limit=` | `order_filled` events with their block time, newest first, from the `events` table. `since` (ns) bounds the rate chart's range |
-| GET | `/api/accounts/:account` | Open orders, loans with health (positions until D48), notes, free balances (views plus `shared/math.ts`); deposits, the Intents balance of every known token (`mt_batch_balance_of` on `intents.near`); and per maturity and side the account's fill totals: principal, face, and principal-weighted rate. Fills are attributed through the `order_placed` owner of each order, since `order_filled` names only order IDs (D49) |
+| GET | `/api/accounts/:account` | Open orders, loans with health, notes, free balances (views plus `shared/math.ts`); deposits, the Intents balance of every known token (`mt_batch_balance_of` on `intents.near`); and per maturity and side the account's fill totals: principal, face, and principal-weighted rate. Fills are attributed through the `order_placed` owner of each order, since `order_filled` names only order IDs (D49) |
 | GET | `/api/accounts/:account/history?before=&limit=` | Every event that names the account (orders, fills through their orders, repay, redeem, withdrawals, liquidation) and its 1Click deposits and withdrawals from `oneclick`, newest first |
-| GET | `/api/collateral-tokens` | Collateral tokens with their parameters and frozen flag (D48; until then, the `Config` tokens with the global values) |
+| GET | `/api/collateral-tokens` | Collateral tokens with their parameters and frozen flag, from `get_collateral_tokens` (D48) |
 | POST | `/api/oneclick/quote` | `{account, direction, asset, chain, amount, to?, address?}` → a 1Click quote with its deposit address, stored in `oneclick`. `address` is the refund address of a deposit or the recipient of a withdrawal on `chain`: required for Bitcoin (D52) and for a NEAR account on Arbitrum or Base (D51); an EVM account defaults to its own address. `to` buys another asset, such as NEAR from USDC (D48). Uses `ONE_CLICK_JWT`, which never reaches the browser |
 | GET | `/api/oneclick/:id` | Status of a stored quote. The backend also polls every open one until 1Click reports a final status |
 | GET | `/api/prices` | Validated oracle prices and their age |
@@ -268,13 +268,13 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 
 ## D48 changes
 
-Written after the contract implements D48 ([contract-interface.md](contract-interface.md#proposed-deposits-and-multi-token-collateral-d48)); everything above describes v0.5 until then.
+The contract implements D48 since contract-interface v0.6 (2026-11-03, D53), and the sections above use its loans. What else the backend core needs for it:
 
-- **Shared types and math:** the new `msg` and `auth_call` shapes, loan and collateral-token views, new events, and `shared/math.ts` with per-token `max_ltv` and `liq_threshold` (`can_open` and health sum over a loan's tokens). Golden fixture entries for each.
-- **Relayer:** accepts a `transfer` with several tokens for `borrow` and with one or more collateral tokens for `add_collateral` (replaces the one-token rule of D42 for those two), and the `auth_call` borrow against an existing loan. Rejects a frozen token before simulating, for a clearer error.
-- **Matcher:** the `can_open` pre-check of a borrow fill counts the loan's existing collateral plus the order's escrow released by the fill, each at its own `max_ltv`. One oracle call per batch still covers every feed involved.
-- **Keeper:** reads loans with the paged loans view (D45 becomes `get_loans`), validates every collateral feed, marks a loan eligible at the summed threshold, and estimates the pro rata seizure per token. Seized collateral can be several tokens; they stay on the backend account until sold by hand.
-- **Parameter updates:** an owner update to a token's parameters applies at once (D50). The book, keeper, and `/api/collateral-tokens` reload on the update event, and loans it makes liquidatable are picked up by the next scan like any other.
+- **Shared types and math:** the `msg` and `auth_call` shapes, loan and collateral-token views, and events are in `backend/src/shared/` with golden fixture entries ✅ 2026-11-03, plus `setllendTransferMany` for several tokens. Still to write: `shared/math.ts` with per-token `max_ltv` (frozen tokens left out) and `liq_threshold` (`can_open` and health sum over a loan's tokens) and `seize`, in `bigint` with the contract's exact rounding, tested against the vectors of `math.rs`.
+- **Relayer:** the token rules of [Submitting user intents](#submitting-user-intents) (several collateral tokens for `borrow` and `add_collateral`), and the `auth_call` borrow against an existing loan. Rejects a frozen token before simulating, for a clearer error.
+- **Matcher:** the `can_open` pre-check of a borrow fill counts the loan's existing collateral plus the order's escrow released by the fill, each at its own `max_ltv`, frozen tokens left out. One oracle call per batch still covers every feed involved.
+- **Keeper:** as in [Keeper](#keeper-d44): `get_loans`, every collateral feed validated, eligibility at the summed threshold, seizure estimated per token with `seize`. Seized collateral can be several tokens; they stay on the backend account until sold by hand.
+- **Parameter updates:** an owner update to a token's parameters applies at once (D50). The book, keeper, and `/api/collateral-tokens` reload on the `collateral_token_*` events, and loans an update makes liquidatable are picked up by the next scan like any other.
 
 ## Interfaces for later components
 
@@ -284,5 +284,5 @@ Written after the contract implements D48 ([contract-interface.md](contract-inte
 ## Tests
 
 - Unit tests with vitest and a mocked chain client (RPC and neardata behind one interface): book load and reload (which maturities each event marks, coalescing per poll round, the jump when far behind), fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing.
-- `shared/math.ts` runs the test vectors of `math.rs` (face rounding, `can_open`, `seize_for`, `repay_for`, price validation), so the backend's numbers match the contract's.
+- `shared/math.ts` runs the test vectors of `math.rs` (face rounding, `can_open` over several tokens, `seize`, `repay_for`, price validation), so the backend's numbers match the contract's.
 - **No sandbox end-to-end test.** neardata doesn't exist for a sandbox, so the follower, the riskiest part, couldn't be tested that way anyway, and the contract's flows are already covered by the Rust sandbox tests. Instead, a scripted **mainnet smoke test with small amounts** right after the deploy (AGENTS.md): place a `lend` and a `borrow`, see them matched, `repay`, `cancel` a leftover order, and check every step in the book, the events table, and the WebSocket feed.

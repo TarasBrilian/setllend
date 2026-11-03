@@ -34,7 +34,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
        │ transfer + msg (order)  │ auth_call (cancel/withdraw) │ mt_transfer (payout)
        ▼                         ▼                             │
  ┌───────────────────────── setllend contract (Rust) ─────────────────────────┐
- │ order escrow per maturity · positions/notes · health factor · settlement · │◄── aggregate-oracle.near
+ │ order escrow per maturity · loans/notes · health factor · settlement ·     │◄── aggregate-oracle.near
  │ liquidation                                                                 │
  └──────────────────────────────▲──────────────────────────────────────────────┘
                                 │ match_orders (permissionless)
@@ -62,7 +62,8 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 - **No custody by the operator.** Every fund movement comes from a user-signed intent verified by `intents.near`.
 - **Permissionless matching.** Orders are escrowed on-chain, so anyone can rebuild the book and run a matcher.
 - **Exit without the operator.** Cancel and withdraw work through `auth_call` from any relayer, and ETH collateral returns to its origin chain through the bridge directly.
-- **No admin pause.** If the oracle is stale, new loans, liquidations, and collateral withdrawals against open debt stop, while repay, cancel, note sales, redeem, and other withdrawals keep working.
+- **No admin pause.** If the oracle is stale, new loans, liquidations, and collateral withdrawals against open debt stop, while repay, adding collateral, cancel, note sales, redeem, and other withdrawals keep working.
+- **Owner-managed collateral.** The contract owner adds collateral tokens, can freeze one (no new deposits of it into loans and no borrowing power from it, while open loans run on), and can change a token's max LTV, liquidation threshold, and liquidation bonus. **Changes apply at once, to open loans too:** lowering a threshold can make a loan liquidatable without warning.
 
 ### Dependencies and risks
 
@@ -71,6 +72,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 - 1Click for cross-chain swaps.
 - Liveness of the matcher, relayer, and keeper.
 - Bad debt: if a borrower's collateral can't cover their debt, the loss is shared pro rata by lenders in that maturity.
+- Owner parameter changes, which take effect immediately (see above).
 
 ## Repository
 
@@ -88,7 +90,7 @@ Requirements: [rustup](https://rustup.rs) (it installs the Rust version pinned i
 ```bash
 cp .env.example .env              # fill in values as needed, all are optional for local runs
 
-# Contract: unit tests, then sandbox tests (deploy, and order, liquidation, and bad-debt flows through mock intents.near and oracle contracts)
+# Contract: unit tests, then sandbox tests (deploy, and order, multi-token loan, liquidation, and bad-debt flows through mock intents.near and oracle contracts)
 (cd contracts && cargo test)
 
 # Backend: API on http://localhost:8080 (GET /health returns {"ok":true})

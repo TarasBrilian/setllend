@@ -7,7 +7,7 @@ use near_sdk::{
 
 use crate::events;
 use crate::msg::WithdrawMsg;
-use crate::state::checked_add;
+use crate::state::{TokenAmounts, checked_add};
 use crate::{Setllend, SetllendExt};
 
 /// Static gas for `intents.near::mt_transfer`. Unused gas of the call is also split across
@@ -48,6 +48,18 @@ impl Setllend {
                     .with_static_gas(GAS_ON_PAYOUT)
                     .on_payout(account_id, token_id, U128(amount)),
             )
+    }
+
+    /// One payout per token, joined. `None` when there is nothing to pay.
+    pub(crate) fn payout_all(
+        &self,
+        account_id: &AccountId,
+        amounts: &TokenAmounts,
+    ) -> Option<Promise> {
+        amounts
+            .iter()
+            .map(|(token_id, amount)| self.payout(account_id.clone(), token_id.clone(), *amount))
+            .reduce(Promise::and)
     }
 
     pub(crate) fn credit_free_balance(
