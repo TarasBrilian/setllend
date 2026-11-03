@@ -14,9 +14,11 @@ setllend/
 │   ├── mocks/            # one crate per mock: intents/ (`mock-intents`), oracle/ (`mock-oracle`)
 │   └── tests/            # crate `setllend-tests`: helpers in src/, near-workspaces sandbox tests in tests/
 ├── backend/              # Node + TypeScript, one process
-│   └── src/              # index.ts starts the server, app.ts builds the Hono app, config.ts, db.ts
-│       ├── chain/        # NEAR RPC client, block follower for contract events (D40 in backend.md)
-│       ├── matcher/      # in-memory order book + REST/WS
+│   └── src/              # index.ts starts the server, app.ts the REST API, service.ts wires the chain parts,
+│       │                 # market.ts (books, loans, totals), prices.ts, ws.ts (WebSocket hub), config.ts, db.ts,
+│       │                 # testing.ts (in-memory RPC and explorer for tests)
+│       ├── chain/        # NEAR RPC client, typed views, event follower on the FastNear explorer, SQLite store (D40, D55)
+│       ├── matcher/      # in-memory order book (book.ts), later the fill builder
 │       ├── relayer/      # execute_intents, match_orders
 │       ├── keeper/       # liquidation + maturity settlement
 │       ├── mm-agent/     # market-maker agent

@@ -1,11 +1,189 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
+import { Service } from "./service.ts";
+import { CONTRACT, ETH, FakeExplorer, FakeRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
+import { Hub } from "./ws.ts";
 
-describe("GET /health", () => {
-  it("returns ok", async () => {
-    const res = await createApp(openDb(":memory:")).request("/health");
+const M = "1795766400000000000";
+const LENDER = "0x1111111111111111111111111111111111111111";
+const BORROWER = "b.near";
+
+function setup() {
+  const state = fakeState();
+  state.maturities = [M];
+  state.orders = [
+    order({ order_id: "1", owner: LENDER, rate_bps: 700, remaining: "400" }),
+    order({ order_id: "2", owner: BORROWER, kind: "borrow", rate_bps: 900, remaining: "50" }),
+  ];
+  state.pools = { [M]: { redemption_pool: "0", total_value: "1000", total_shares: "1000", bad_debt_total: "0" } };
+  state.loans = [{ account_id: BORROWER, maturity: M, collateral: { [ETH]: String(10n ** 18n) }, debt_face: "1000000000" }];
+  state.oracle = {
+    eth: { price: "200000000000", conf: "0", expo: -8, publish_time: 100 },
+    usdc: { price: "100000000", conf: "0", expo: -8, publish_time: 100 },
+  };
+  state.balances = { [BORROWER]: { [USDC]: "5000000" } };
+  const rpc = serve(new FakeRpc(), state);
+  const source = new FakeExplorer();
+  const service = new Service({ db: openDb(":memory:"), rpc, source, contractId: CONTRACT, log: () => {} });
+  return { state, rpc, source, service, app: createApp(service) };
+}
+
+async function ready() {
+  const s = setup();
+  await s.service.follower.init();
+  s.service.contractState = "ready";
+  return s;
+}
+
+const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as any });
+
+describe("API before the contract is loaded", () => {
+  it("answers 503 and reports the contract state on /health", async () => {
+    const { app, service } = setup();
+    service.contractState = "not_deployed";
+    expect(await json(await app.request("/api/config"))).toEqual({ status: 503, body: { error: "The Setllend contract is not deployed yet" } });
+    expect((await json(await app.request("/health"))).body).toMatchObject({ ok: true, contract: "not_deployed" });
+  });
+
+  it("waits for the deploy, then loads", async () => {
+    const { rpc, service, state } = setup();
+    rpc.deployed = false;
+    const waits: number[] = [];
+    const s = new Service({
+      db: openDb(":memory:"),
+      rpc,
+      source: new FakeExplorer(),
+      contractId: CONTRACT,
+      log: () => {},
+      sleep: async (ms) => {
+        waits.push(ms);
+        rpc.deployed = true;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    });
+    // The first load reads the config at a height: the state is `loading` then.
+    const duringLoad: string[] = [];
+    rpc.on(`${CONTRACT}.get_config`, (_args: unknown, height: number | undefined) => {
+      if (height !== undefined) duringLoad.push(s.contractState);
+      return state.config;
+    });
+    await s.start();
+    s.follower.stop();
+    expect(waits[0]).toBe(60_000);
+    expect(duringLoad).toEqual(["loading"]);
+    expect(s.contractState).toBe("ready");
+    expect(s.market.books.has(M)).toBe(true);
+    expect(service.contractState).toBe("checking");
+  });
+});
+
+describe("API", () => {
+  it("serves config, totals, maturities, tokens, and the book", async () => {
+    const { app } = await ready();
+    expect((await json(await app.request("/api/config"))).body.debt_token).toBe(USDC);
+    expect((await json(await app.request("/api/stats"))).body).toEqual({ total_supplied: "1400", active_loans: "1000000000" });
+    expect((await json(await app.request("/api/maturities"))).body).toEqual([
+      { maturity: M, open: true, total_supplied: "1400", active_loans: "1000000000" },
+    ]);
+    expect((await json(await app.request("/api/collateral-tokens"))).body[0].token_id).toBe(ETH);
+    const book = (await json(await app.request(`/api/book/${M}`))).body;
+    expect(book.bids.map((l: any) => [l.rate_bps, l.size])).toEqual([[700, "400"]]);
+    expect(book.asks.map((l: any) => [l.rate_bps, l.size])).toEqual([[900, "50"]]);
+    expect((await app.request("/api/book/1")).status).toBe(404);
+  });
+
+  it("serves prices by token with the raw values (D54)", async () => {
+    const { app } = await ready();
+    const prices = (await json(await app.request("/api/prices"))).body;
+    expect(prices[ETH]).toEqual({ price: "200000000000", conf: "0", expo: -8, usd: 2000, age_s: 0 });
+    expect(prices[USDC].usd).toBe(1);
+  });
+
+  it("serves an account with health, deposits, and fill totals", async () => {
+    const { app, service } = await ready();
+    const lines = [
+      eventLine("order_placed", { order_id: "1", owner: LENDER, kind: "lend", maturity: M, rate_bps: 700, size: "1000", collateral: null, expires_at: null }),
+      eventLine("order_placed", { order_id: "2", owner: BORROWER, kind: "borrow", maturity: M, rate_bps: 900, size: "1000", collateral: {}, expires_at: null }),
+      eventLine("order_filled", { bid: "1", ask: "2", ask_kind: "borrow", maturity: M, rate_bps: 700, principal: "300", face: "310", bid_remaining: "700", ask_remaining: "700" }),
+      eventLine("order_filled", { bid: "1", ask: "2", ask_kind: "borrow", maturity: M, rate_bps: 900, principal: "100", face: "104", bid_remaining: "600", ask_remaining: "600" }),
+    ];
+    service.store.commit(records(90, lines, "r"));
+    const body = (await json(await app.request(`/api/accounts/${BORROWER}`))).body;
+    expect(body.loans).toEqual([{ maturity: M, collateral: { [ETH]: String(10n ** 18n) }, debt_face: "1000000000", health_factor: 1.6 }]);
+    expect(body.deposits).toEqual({ [USDC]: "5000000" });
+    expect(body.orders.map((o: any) => o.order_id)).toEqual(["2"]);
+    expect(body.fill_totals).toEqual([{ maturity: M, side: "borrow", principal: "400", face: "414", avg_rate_bps: 750 }]);
+    const lender = (await json(await app.request(`/api/accounts/${LENDER}`))).body;
+    expect(lender.fill_totals).toEqual([{ maturity: M, side: "lend", principal: "400", face: "414", avg_rate_bps: 750 }]);
+  });
+
+  it("leaves health null without a usable price", async () => {
+    const { app, state } = await ready();
+    state.oracle = { usdc: state.oracle.usdc! };
+    const body = (await json(await app.request(`/api/accounts/${BORROWER}`))).body;
+    expect(body.loans[0].health_factor).toBeNull();
+  });
+
+  it("gives null health, not an error, for a token the list doesn't have yet", async () => {
+    const { app, state } = await ready();
+    state.loans[0]!.collateral = { "nep141:new.near": "5" };
+    const res = await app.request(`/api/accounts/${BORROWER}`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(((await res.json()) as any).loans[0].health_factor).toBeNull();
+  });
+
+  it("rejects a checksummed address and a bad limit", async () => {
+    const { app } = await ready();
+    expect((await app.request("/api/accounts/0xAbC1111111111111111111111111111111111111")).status).toBe(400);
+    expect((await app.request(`/api/trades/${M}?limit=0`)).status).toBe(400);
+    expect((await app.request("/api/accounts/b.near/history?before=x")).status).toBe(400);
+  });
+
+  it("serves trades and paged history", async () => {
+    const { app, service } = await ready();
+    for (let h = 91; h <= 93; h++) {
+      const line = eventLine("order_filled", { bid: "1", ask: "2", ask_kind: "borrow", maturity: M, rate_bps: 700, principal: String(h), face: "1", bid_remaining: "0", ask_remaining: "0" });
+      const placed = eventLine("order_placed", { order_id: "1", owner: LENDER, kind: "lend", maturity: M, rate_bps: 700, size: "1", collateral: null, expires_at: null });
+      service.store.commit(records(h, h === 91 ? [placed, line] : [line]));
+    }
+    const trades = (await json(await app.request(`/api/trades/${M}?limit=2`))).body;
+    expect(trades.map((t: any) => [t.principal, t.timestamp])).toEqual([
+      ["93", "93000000000"],
+      ["92", "92000000000"],
+    ]);
+    const page1 = (await json(await app.request(`/api/accounts/${LENDER}/history?limit=2`))).body;
+    expect(page1.events.map((e: any) => e.block_height)).toEqual([93, 92]);
+    const page2 = (await json(await app.request(`/api/accounts/${LENDER}/history?limit=2&before=${page1.next}`))).body;
+    expect(page2.events.map((e: any) => [e.block_height, e.event])).toEqual([
+      [91, "order_filled"],
+      [91, "order_placed"],
+    ]);
+  });
+
+  it("serves the intents salt", async () => {
+    const { app } = await ready();
+    expect((await json(await app.request("/api/intents/salt"))).body).toEqual({ salt: "0a1b2c3d" });
+  });
+});
+
+describe("Hub", () => {
+  it("validates subscriptions and routes pushes", async () => {
+    const { service } = await ready();
+    const hub = new Hub();
+    const sent: string[] = [];
+    const client = { send: (data: string) => sent.push(data) };
+    expect(hub.message(client, "nope")).toBe("invalid JSON");
+    expect(hub.message(client, JSON.stringify({ subscribe: ["book:abc"] }))).toMatch(/expected/);
+    expect(hub.message(client, JSON.stringify({ subscribe: [`trades:${M}`, `account:${LENDER}`] }))).toBeNull();
+    const placed = eventLine("order_placed", { order_id: "1", owner: LENDER, kind: "lend", maturity: M, rate_bps: 700, size: "1", collateral: null, expires_at: null });
+    service.store.commit(records(80, [placed], "p"));
+    const fill = eventLine("order_filled", { bid: "1", ask: "2", ask_kind: "borrow", maturity: M, rate_bps: 700, principal: "5", face: "5", bid_remaining: "0", ask_remaining: "0" });
+    hub.round(records(81, [fill], "f"), service.store);
+    expect(sent.map((s) => JSON.parse(s).type)).toEqual(["trade", "event"]);
+    expect(JSON.parse(sent[1]!)).toMatchObject({ account: LENDER, event: { event: "order_filled", block_height: 81 } });
+    hub.close(client);
+    hub.round(records(82, [fill], "g"), service.store);
+    expect(sent).toHaveLength(2);
   });
 });
