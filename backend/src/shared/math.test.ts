@@ -1,5 +1,6 @@
 // shared/math.ts against contracts/setllend/src/math.rs: the vectors the contract writes into
-// fixtures/golden.json (`math`), then the unit tests of math.rs and oracle.rs ported.
+// fixtures/golden.json (`math`), then the unit tests of math.rs and the price cases of the
+// contract's oracle tests (tests/matching.rs) ported.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ASSETS } from "./assets.ts";

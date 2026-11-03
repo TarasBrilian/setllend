@@ -202,8 +202,10 @@ const I32_MAX = 2 ** 31 - 1;
 
 /**
  * An oracle feed as numbers, with serde's types: `price` an i64 string, `conf` a u64 string,
- * `expo` an i32, `publish_time` an i64. Throws on anything else; the contract's price callback
- * panics on such a response ("Failed to deserialize callback"), failing the whole call.
+ * `expo` an i32, `publish_time` an integer. Throws on anything serde would reject, where the
+ * contract's price callback panics ("Failed to deserialize callback") and the whole call fails.
+ * Stricter than serde in one way: number strings must be canonical (no leading zeros or `+`),
+ * which the oracle's output always is.
  */
 export function parsePrice(raw: OraclePrice): Price {
   const price = typeof raw.price === "string" && I64.test(raw.price) ? BigInt(raw.price) : null;

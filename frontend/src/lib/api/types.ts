@@ -48,7 +48,10 @@ export type CollateralTokenInfo = {
   frozen: boolean;
 };
 
-/** `GET /api/prices`: validated USD prices by token ID, with their age in seconds. The API adds the raw `price`, `conf`, and `expo` (SOT/backend.md#api). */
+/**
+ * `GET /api/prices`: validated USD prices by token ID, with their age in seconds. The real API also returns the raw
+ * `price`, `conf`, and `expo` (SOT/backend.md#api); they join this type when the UI is wired to it.
+ */
 export type PricesView = Record<TokenId, { usd: number; age_s: number }>;
 
 /** Protocol totals for the Market hero. Not in the backend API yet, see SOT/frontend.md#data. */
