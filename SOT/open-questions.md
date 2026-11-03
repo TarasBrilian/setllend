@@ -6,7 +6,7 @@ Move an item to [decisions.md](decisions.md) once resolved.
 2. **Does `dry: true` quoting have rate limits** with or without a key? Not documented. Response headers on 2026-11-02 show `x-ratelimit-limit-unauth: 1200` with a reset of about 60 s ✅. Keyed requests on 2026-11-03 still returned only the `-unauth` headers ✅, so the authenticated limit, if any, is not exposed.
 3. *Moved to Resolved (D35). Number kept because D30 links to it.*
 4. **USDC exit without 1Click:** confirm native NEAR USDC `ft_withdraw` to a NEAR account works for an implicit Eth account, and whether a Solver Relay swap is worth building as fallback (D10).
-5. **Backend account name and funding** (D43): which account, how much NEAR for gas, and how much USDC for keeper capital. Needed before the mainnet deploy.
+5. **Backend account name and funding** (D43): which account, how much NEAR for gas, how much USDC for keeper capital, and whether a FastNear key is worth it for neardata (D40: the free 180 requests per minute leave little room to catch up). Needed before the mainnet deploy.
 6. **End-to-end backend test against the sandbox:** worth adding the `near-workspaces` npm package (downloads a sandbox binary) to run the backend against the real wasm with the mock `intents.near` and oracle? Unit tests with a mocked chain client cover the logic either way ([backend.md](backend.md#tests)).
 7. **NEP-413 intents from a named account** ⚠️: the keeper's signing path needs `add_public_key` on `intents.near` and a `nep413` payload. Not tested yet; check with `simulate_intents` once the account exists.
 
