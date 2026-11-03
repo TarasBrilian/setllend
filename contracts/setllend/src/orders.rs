@@ -1,12 +1,12 @@
 //! Order placement, storage, and cancellation.
 
 use near_sdk::store::IterableSet;
-use near_sdk::{AccountId, Promise, PromiseOrValue, env, require};
+use near_sdk::{AccountId, PromiseOrValue, env, require};
 
 use crate::Setllend;
 use crate::events;
 use crate::msg::{BorrowMsg, LendMsg};
-use crate::state::{Order, OrderKind, StorageKey};
+use crate::state::{Order, OrderKind, StorageKey, TokenAmounts};
 
 impl Setllend {
     /// Placement rules shared by `lend`, `borrow`, and `sell_note`. No size, rate, or count
@@ -34,23 +34,33 @@ impl Setllend {
         });
     }
 
+    /// An `auth_call` `borrow`: no escrow, borrows against the collateral the loan already
+    /// holds (D50). Needs a loan with collateral in that maturity, so an order that could
+    /// never fill isn't placed.
+    pub(crate) fn place_loan_borrow(&mut self, owner: AccountId, data: BorrowMsg) {
+        let has_collateral = self
+            .loans
+            .get(&(owner.clone(), data.maturity.0))
+            .is_some_and(|loan| !loan.collateral.is_empty());
+        require!(has_collateral, "No collateral in loan");
+        self.place_borrow(owner, TokenAmounts::new(), data);
+    }
+
+    /// `collateral` is the escrow: one or more tokens for a `transfer` `borrow`, none for a
+    /// borrow against the loan.
     pub(crate) fn place_borrow(
         &mut self,
         owner: AccountId,
-        collateral_token: String,
-        amount: u128,
+        collateral: TokenAmounts,
         data: BorrowMsg,
     ) {
         let expires_at = data.expires_at.map(|t| t.0);
         self.assert_can_place(data.maturity.0, expires_at);
         require!(data.principal.0 > 0, "Principal must be positive");
-        // No oracle check here: collateral is checked at fill.
+        // No oracle check here: the loan is checked at fill.
         self.insert_order(Order {
             owner,
-            kind: OrderKind::Borrow {
-                collateral_token,
-                collateral_remaining: amount,
-            },
+            kind: OrderKind::Borrow { collateral },
             maturity: data.maturity.0,
             rate_bps: data.max_rate_bps,
             remaining: data.principal.0,
@@ -62,14 +72,7 @@ impl Setllend {
     pub(crate) fn insert_order(&mut self, order: Order) -> u64 {
         let order_id = self.next_order_id;
         self.next_order_id += 1;
-        let token_id = match &order.kind {
-            OrderKind::Lend => Some(self.config.debt_token.as_str()),
-            OrderKind::Borrow {
-                collateral_token, ..
-            } => Some(collateral_token.as_str()),
-            OrderKind::SellNote => None,
-        };
-        events::order_placed(order_id, &order, token_id);
+        events::order_placed(order_id, &order);
         let maturity = order.maturity;
         self.book_orders
             .entry(maturity)
@@ -125,37 +128,27 @@ impl Setllend {
             .unwrap_or_else(|| env::panic_str("Order not found"));
         require!(order.owner == signer_id, "Not the order owner");
         let order = self.remove_order(order_id);
-        let (refunded, payout): (u128, Option<Promise>) = match order.kind {
+        let (refunded, unlocked_shares) = match order.kind {
             OrderKind::Lend => (
-                order.remaining,
-                Some(self.payout(
-                    order.owner.clone(),
-                    self.config.debt_token.clone(),
-                    order.remaining,
-                )),
+                TokenAmounts::from([(self.config.debt_token.clone(), order.remaining)]),
+                None,
             ),
-            OrderKind::Borrow {
-                collateral_token,
-                collateral_remaining,
-            } => (
-                collateral_remaining,
-                Some(self.payout(order.owner.clone(), collateral_token, collateral_remaining)),
-            ),
+            OrderKind::Borrow { collateral } => (collateral, None),
             OrderKind::SellNote => {
                 self.unlock_shares(&order.owner, order.maturity, order.remaining);
-                (order.remaining, None)
+                (TokenAmounts::new(), Some(order.remaining))
             }
         };
-        events::order_cancelled(order_id, &order.owner, refunded);
-        match payout {
+        events::order_cancelled(order_id, &order.owner, &refunded, unlocked_shares);
+        if unlocked_shares.is_some() {
+            // Unlocking is the only way free shares grow outside a fill, so net here too
+            // (D20). Otherwise notes and debt could stay apart past maturity, when no fill can
+            // net them any more.
+            self.net(&order.owner, order.maturity);
+        }
+        match self.payout_all(&order.owner, &refunded) {
             Some(promise) => PromiseOrValue::Promise(promise),
-            None => {
-                // Unlocking is the only way free shares grow outside a fill, so net here too
-                // (D20). Otherwise notes and debt could stay apart past maturity, when no
-                // fill can net them any more.
-                self.net(&order.owner, order.maturity);
-                PromiseOrValue::Value(())
-            }
+            None => PromiseOrValue::Value(()),
         }
     }
 }

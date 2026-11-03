@@ -3,7 +3,7 @@
 | In | Deferred |
 |---|---|
 | 1 debt asset: native NEAR USDC | Multi-asset debt |
-| Collateral ETH(arb) and ETH(base). Proposed D48: an owner-managed list, set by D52 to add native BTC and NEAR; contract work after the UI | Native BTC, isolated markets |
+| Collateral: an owner-managed list with per-token parameters (D48), at launch ETH(arb), ETH(base), native BTC, and NEAR (D52). One loan per maturity can mix them | Isolated markets |
 | 3 fixed maturities (2026-11-13, 11-27, 12-25) plus short demo maturities, see [risk-params.md](risk-params.md) | Free-form tenors |
 | Limit + market orders, price-time priority (D9) | Advanced order types |
 | Order escrow via `transfer` + `msg`, cancel/withdraw via `auth_call` | Pure off-chain signed orders (dropped, D27) |

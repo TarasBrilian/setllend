@@ -1,6 +1,9 @@
-//! `mt_on_transfer`: `lend`, `borrow`, `repay`, and their reject paths.
+//! `mt_on_transfer`: `lend`, `borrow`, `add_collateral`, `repay`, and their reject paths.
+
+use std::collections::BTreeMap;
 
 use super::*;
+use crate::state::OrderKind;
 
 #[test]
 fn lend_places_a_bid() {
@@ -22,7 +25,7 @@ fn lend_places_a_bid() {
         vec![json!({
             "order_id": "0", "owner": "alice.near", "kind": "lend",
             "maturity": MATURITY.to_string(), "rate_bps": 700,
-            "size": (1_000 * ONE_USDC).to_string(), "token_id": USDC,
+            "size": (1_000 * ONE_USDC).to_string(),
             "collateral": null, "expires_at": null,
         })]
     );
@@ -53,15 +56,179 @@ fn borrow_places_an_ask_without_oracle() {
         vec![json!({
             "order_id": "0", "owner": "bob.near", "kind": "borrow",
             "maturity": MATURITY.to_string(), "rate_bps": 800,
-            "size": "1000000000", "token_id": ETH_ARB,
-            "collateral": ONE_ETH.to_string(), "expires_at": null,
+            "size": "1000000000",
+            "collateral": {ETH_ARB: ONE_ETH.to_string()}, "expires_at": null,
         })]
     );
     let order = c.get_order(U64(0)).unwrap();
-    assert_eq!(order.collateral_token.as_deref(), Some(ETH_ARB));
-    assert_eq!(order.collateral_remaining, Some(U128(ONE_ETH)));
+    assert_eq!(
+        order.collateral,
+        Some(BTreeMap::from([(ETH_ARB.to_string(), U128(ONE_ETH))]))
+    );
     assert_eq!(order.remaining_value, None);
     assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn borrow_escrows_several_tokens() {
+    let mut c = setup();
+    borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (BTC, ONE_BTC)],
+        ONE_USDC,
+        800,
+    );
+    assert_eq!(
+        events("order_placed")[0]["collateral"],
+        json!({BTC: ONE_BTC.to_string(), ETH_ARB: ONE_ETH.to_string()})
+    );
+    let OrderKind::Borrow { collateral } = &c.orders[&0].kind else {
+        panic!("not a borrow");
+    };
+    assert_eq!(collateral, &amounts(&[(ETH_ARB, ONE_ETH), (BTC, ONE_BTC)]));
+}
+
+#[test]
+#[should_panic(expected = "Duplicate token")]
+fn borrow_rejects_a_token_twice() {
+    let mut c = setup();
+    borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (ETH_ARB, ONE_ETH)],
+        ONE_USDC,
+        800,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Wrong token")]
+fn borrow_rejects_debt_token_next_to_collateral() {
+    let mut c = setup();
+    borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (USDC, ONE_USDC)],
+        ONE_USDC,
+        800,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Collateral token is frozen")]
+fn borrow_rejects_frozen_token() {
+    let mut c = setup();
+    context(OWNER);
+    c.freeze_collateral_token(BTC.into());
+    borrow_with(&mut c, "bob.near", BTC, ONE_BTC, ONE_USDC, 800);
+}
+
+#[test]
+#[should_panic(expected = "Amount must be positive")]
+fn borrow_rejects_a_zero_amount_among_tokens() {
+    let mut c = setup();
+    borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (BTC, 0)],
+        ONE_USDC,
+        800,
+    );
+}
+
+#[test]
+#[should_panic(expected = "No tokens")]
+fn borrow_rejects_no_tokens() {
+    let mut c = setup();
+    borrow_many(&mut c, "bob.near", &[], ONE_USDC, 800);
+}
+
+#[test]
+#[should_panic(expected = "Length mismatch")]
+fn transfer_rejects_mismatched_lengths() {
+    let mut c = setup();
+    context(INTENTS);
+    let _ = c.mt_on_transfer(
+        account("alice.near"),
+        vec![account("alice.near")],
+        vec![USDC.into()],
+        vec![],
+        lend_msg(700).to_string(),
+    );
+}
+
+#[test]
+fn add_collateral_tops_up_a_loan() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    let (_, debt) = loan(&c, "bob.near");
+    add_collateral(&mut c, "bob.near", &[(BTC, ONE_BTC), (ETH_ARB, ONE_ETH)]);
+    assert_eq!(
+        events("collateral_added"),
+        vec![json!({
+            "account": "bob.near", "maturity": MATURITY.to_string(),
+            "collateral": {BTC: ONE_BTC.to_string(), ETH_ARB: ONE_ETH.to_string()},
+        })]
+    );
+    assert_eq!(
+        loan(&c, "bob.near"),
+        (amounts(&[(ETH_ARB, 2 * ONE_ETH), (BTC, ONE_BTC)]), debt)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn add_collateral_is_allowed_after_maturity_within_grace() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    set_time(MATURITY + 1);
+    add_collateral(&mut c, "bob.near", &[(ETH_ARB, ONE_ETH)]);
+    assert_eq!(loan(&c, "bob.near").0, amounts(&[(ETH_ARB, 2 * ONE_ETH)]));
+}
+
+#[test]
+#[should_panic(expected = "No debt")]
+fn add_collateral_rejects_a_missing_loan() {
+    let mut c = setup();
+    add_collateral(&mut c, "bob.near", &[(ETH_ARB, ONE_ETH)]);
+}
+
+#[test]
+#[should_panic(expected = "No debt")]
+fn add_collateral_rejects_a_loan_without_debt() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    let (_, debt) = loan(&c, "bob.near");
+    assert_eq!(transfer(&mut c, "bob.near", USDC, debt, repay_msg(None)), 0);
+    add_collateral(&mut c, "bob.near", &[(ETH_ARB, ONE_ETH)]);
+}
+
+#[test]
+#[should_panic(expected = "Debt is overdue")]
+fn add_collateral_rejects_overdue_debt() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    set_time(MATURITY + config().grace.0);
+    add_collateral(&mut c, "bob.near", &[(ETH_ARB, ONE_ETH)]);
+}
+
+#[test]
+#[should_panic(expected = "Collateral token is frozen")]
+fn add_collateral_rejects_frozen_token() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    context(OWNER);
+    c.freeze_collateral_token(BTC.into());
+    add_collateral(&mut c, "bob.near", &[(BTC, ONE_BTC)]);
+}
+
+#[test]
+#[should_panic(expected = "Wrong token")]
+fn add_collateral_rejects_debt_token() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    add_collateral(&mut c, "bob.near", &[(USDC, ONE_USDC)]);
 }
 
 #[test]
@@ -108,7 +275,7 @@ fn transfer_rejects_other_callers() {
 
 #[test]
 #[should_panic(expected = "Expected exactly one token")]
-fn transfer_rejects_several_tokens() {
+fn lend_rejects_several_tokens() {
     let mut c = setup();
     context(INTENTS);
     let _ = c.mt_on_transfer(
@@ -220,7 +387,7 @@ fn transfer_rejects_unknown_action() {
 
 fn repay_msg(borrower: Option<&str>) -> Value {
     json!({"action": "repay", "data": {
-        "maturity": MATURITY.to_string(), "collateral_token": ETH_ARB, "borrower": borrower
+        "maturity": MATURITY.to_string(), "borrower": borrower
     }})
 }
 
@@ -228,7 +395,7 @@ fn repay_msg(borrower: Option<&str>) -> Value {
 fn repay_reduces_debt_and_fills_the_pool() {
     let mut c = setup();
     open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
-    let debt = c.positions[&(account("bob.near"), MATURITY, ETH_ARB.to_string())].debt_face;
+    let (_, debt) = loan(&c, "bob.near");
 
     assert_eq!(
         transfer(&mut c, "bob.near", USDC, 400 * ONE_USDC, repay_msg(None)),
@@ -238,7 +405,7 @@ fn repay_reduces_debt_and_fills_the_pool() {
         events("repaid"),
         vec![json!({
             "borrower": "bob.near", "payer": "bob.near", "maturity": MATURITY.to_string(),
-            "collateral_token": ETH_ARB, "amount": (400 * ONE_USDC).to_string(),
+            "amount": (400 * ONE_USDC).to_string(),
             "debt_remaining": (debt - 400 * ONE_USDC).to_string(),
         })]
     );
@@ -255,12 +422,13 @@ fn repay_reduces_debt_and_fills_the_pool() {
     );
     assert_eq!(refund, 1_000 * ONE_USDC - (debt - 400 * ONE_USDC));
     assert_eq!(c.pool(MATURITY).redemption_pool, debt);
-    let position = c
-        .get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
-        .unwrap();
-    assert_eq!(position.debt_face, U128(0));
+    let view = c.get_loan(account("bob.near"), U64(MATURITY)).unwrap();
+    assert_eq!(view.debt_face, U128(0));
     // Collateral stays until `withdraw_collateral`.
-    assert_eq!(position.collateral, U128(ONE_ETH));
+    assert_eq!(
+        view.collateral,
+        BTreeMap::from([(ETH_ARB.to_string(), U128(ONE_ETH))])
+    );
     assert_invariants(&c, &ACCOUNTS);
 }
 
@@ -278,7 +446,7 @@ fn repay_is_allowed_after_maturity() {
 
 #[test]
 #[should_panic(expected = "No debt")]
-fn repay_rejects_position_without_debt() {
+fn repay_rejects_a_missing_loan() {
     let mut c = setup();
     transfer(&mut c, "bob.near", USDC, ONE_USDC, repay_msg(None));
 }
@@ -317,10 +485,10 @@ fn borrow_rejects_past_maturity() {
 
 #[test]
 #[should_panic(expected = "No debt")]
-fn repay_rejects_position_with_collateral_only() {
+fn repay_rejects_loan_with_collateral_only() {
     let mut c = setup();
     open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
-    let debt = c.positions[&(account("bob.near"), MATURITY, ETH_ARB.to_string())].debt_face;
+    let (_, debt) = loan(&c, "bob.near");
     assert_eq!(transfer(&mut c, "bob.near", USDC, debt, repay_msg(None)), 0);
     transfer(&mut c, "bob.near", USDC, ONE_USDC, repay_msg(None));
 }

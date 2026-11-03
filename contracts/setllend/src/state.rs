@@ -1,5 +1,7 @@
 //! Stored types. Public so sandbox tests can build storage keys and values for state patches.
 
+use std::collections::BTreeMap;
+
 use near_sdk::{AccountId, BorshStorageKey, near};
 
 use crate::math::{self, Rounding};
@@ -14,13 +16,15 @@ pub enum StorageKey {
     BookOrdersInner { maturity: u64 },
     AccountOrders,
     AccountOrdersInner { account_id: AccountId },
-    Positions,
+    Loans,
     Notes,
     FreeBalances,
 }
 
-/// (borrower, maturity, collateral token).
-pub type PositionKey = (AccountId, u64, String);
+/// (borrower, maturity): one loan per maturity (D48).
+pub type LoanKey = (AccountId, u64);
+/// Token ID → amount, without zero entries.
+pub type TokenAmounts = BTreeMap<String, u128>;
 /// (account, maturity).
 pub type NoteKey = (AccountId, u64);
 /// (account, token ID).
@@ -31,11 +35,9 @@ pub type BalanceKey = (AccountId, String);
 pub enum OrderKind {
     /// Bid: escrows USDC, `remaining` is principal.
     Lend,
-    /// Ask that issues new notes: escrows collateral, `remaining` is principal to receive.
-    Borrow {
-        collateral_token: String,
-        collateral_remaining: u128,
-    },
+    /// Ask that issues new notes: `remaining` is principal to receive. `collateral` is the
+    /// escrow left, one or more tokens, or none for a borrow against the loan's collateral.
+    Borrow { collateral: TokenAmounts },
     /// Ask that sells existing notes: `remaining` is locked shares.
     SellNote,
 }
@@ -69,16 +71,48 @@ impl Order {
     }
 }
 
+/// One loan per (borrower, maturity), holding one or more collateral tokens (D48).
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Position {
-    pub collateral: u128,
+pub struct Loan {
+    pub collateral: TokenAmounts,
     pub debt_face: u128,
 }
 
-impl Position {
+impl Loan {
     pub fn is_empty(&self) -> bool {
-        self.collateral == 0 && self.debt_face == 0
+        self.collateral.is_empty() && self.debt_face == 0
+    }
+
+    pub fn amount(&self, token_id: &str) -> u128 {
+        self.collateral.get(token_id).copied().unwrap_or(0)
+    }
+
+    pub fn add(&mut self, token_id: &str, amount: u128) {
+        add_amount(&mut self.collateral, token_id, amount);
+    }
+
+    /// Removes `amount` of `token_id`, dropping the entry once it reaches zero. The caller
+    /// checks the amount is there.
+    pub fn take(&mut self, token_id: &str, amount: u128) {
+        take_amount(&mut self.collateral, token_id, amount);
+    }
+}
+
+pub fn add_amount(amounts: &mut TokenAmounts, token_id: &str, amount: u128) {
+    if amount > 0 {
+        let entry = amounts.entry(token_id.to_string()).or_insert(0);
+        *entry = checked_add(*entry, amount);
+    }
+}
+
+pub fn take_amount(amounts: &mut TokenAmounts, token_id: &str, amount: u128) {
+    let entry = amounts
+        .get_mut(token_id)
+        .unwrap_or_else(|| near_sdk::env::panic_str("Unknown collateral token"));
+    *entry -= amount;
+    if *entry == 0 {
+        amounts.remove(token_id);
     }
 }
 

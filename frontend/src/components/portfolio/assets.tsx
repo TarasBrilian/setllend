@@ -23,7 +23,7 @@ const WALLET_TOKENS = {
 
 /**
  * My Assets (SOT/frontend.md#portfolio-portfolio): the wallet's real balances on Base and Arbitrum,
- * deposits in the Intents balance (not collateral until added, proposed D48), and Setllend free
+ * deposits in the Intents balance (not collateral until added, D48), and Setllend free
  * balances. Deposits and free balances are mock until the backend is up.
  */
 export function Assets({

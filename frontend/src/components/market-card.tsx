@@ -13,7 +13,7 @@ export function MarketCard({
   onOrder,
 }: {
   book: Book;
-  /** Active collateral tokens with their own max LTV (proposed D48). */
+  /** Active collateral tokens with their own max LTV (D48). */
   collateralTokens: CollateralTokenInfo[];
   nowMs: number;
   onOrder: (side: OrderSide) => void;

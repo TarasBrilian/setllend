@@ -15,11 +15,13 @@ use near_sdk::serde_json::{self, Map};
 use super::*;
 use crate::events::{self, Filled};
 use crate::msg::{
-    AuthMsg, BorrowMsg, CancelMsg, LendMsg, LiquidateMsg, RedeemMsg, RepayMsg, SellNoteMsg,
-    TransferMsg, WithdrawCollateralMsg, WithdrawMsg,
+    AddCollateralMsg, AuthMsg, BorrowMsg, CancelMsg, LendMsg, LiquidateMsg, RedeemMsg, RepayMsg,
+    SellNoteMsg, TransferMsg, WithdrawCollateralMsg, WithdrawMsg,
 };
 use crate::state::{Order, OrderKind};
-use crate::{AccountPositionView, NoteView, OrderView, PoolView, PositionView};
+use crate::{
+    AccountLoanView, CollateralToken, LoanEntryView, LoanView, NoteView, OrderView, PoolView,
+};
 
 /// 2026-11-27 08:00 UTC, from `SOT/risk-params.md`.
 const G_MATURITY: u64 = 1_795_766_400_000_000_000;
@@ -69,10 +71,13 @@ fn transfer_msgs() -> BTreeMap<&'static str, String> {
             })),
         ),
         (
+            "add_collateral",
+            round_trip(TransferMsg::AddCollateral(AddCollateralMsg { maturity })),
+        ),
+        (
             "repay",
             round_trip(TransferMsg::Repay(RepayMsg {
                 maturity,
-                collateral_token: ETH_ARB.into(),
                 borrower: None,
             })),
         ),
@@ -80,7 +85,6 @@ fn transfer_msgs() -> BTreeMap<&'static str, String> {
             "repay_for",
             round_trip(TransferMsg::Repay(RepayMsg {
                 maturity,
-                collateral_token: ETH_ARB.into(),
                 borrower: Some(account(G_BORROWER)),
             })),
         ),
@@ -89,7 +93,6 @@ fn transfer_msgs() -> BTreeMap<&'static str, String> {
             round_trip(TransferMsg::Liquidate(LiquidateMsg {
                 borrower: account(G_BORROWER),
                 maturity,
-                collateral_token: ETH_ARB.into(),
             })),
         ),
     ])
@@ -98,6 +101,15 @@ fn transfer_msgs() -> BTreeMap<&'static str, String> {
 fn auth_msgs() -> BTreeMap<&'static str, String> {
     let maturity = U64(G_MATURITY);
     BTreeMap::from([
+        (
+            "borrow",
+            round_trip(AuthMsg::Borrow(BorrowMsg {
+                maturity,
+                max_rate_bps: 800,
+                principal: U128(250_000_000),
+                expires_at: Some(U64(G_EXPIRES)),
+            })),
+        ),
         (
             "cancel",
             round_trip(AuthMsg::Cancel(CancelMsg { order_id: U64(42) })),
@@ -172,14 +184,17 @@ fn order_view(order_id: u64, kind: &str) -> OrderView {
         rate_bps: 700,
         remaining: U128(1_000_000_000),
         remaining_value: None,
-        collateral_token: None,
-        collateral_remaining: None,
+        collateral: None,
         created_at: U64(G_CREATED),
         expires_at: None,
     }
 }
 
 fn views() -> BTreeMap<&'static str, String> {
+    let collateral = BTreeMap::from([
+        (ETH_ARB.to_string(), U128(ONE_ETH)),
+        (BTC.to_string(), U128(2_000_000)),
+    ]);
     let note = NoteView {
         free_shares: U128(1_004_602_739),
         locked_shares: U128(0),
@@ -193,10 +208,19 @@ fn views() -> BTreeMap<&'static str, String> {
             to_json(&OrderView {
                 owner: account(G_BORROWER),
                 rate_bps: 800,
-                collateral_token: Some(ETH_ARB.into()),
-                collateral_remaining: Some(U128(ONE_ETH)),
+                collateral: Some(collateral.clone()),
                 expires_at: Some(U64(G_EXPIRES)),
                 ..order_view(1, "borrow")
+            }),
+        ),
+        (
+            "order_loan_borrow",
+            to_json(&OrderView {
+                owner: account(G_BORROWER),
+                rate_bps: 800,
+                remaining: U128(250_000_000),
+                collateral: Some(BTreeMap::new()),
+                ..order_view(3, "borrow")
             }),
         ),
         (
@@ -209,20 +233,41 @@ fn views() -> BTreeMap<&'static str, String> {
             }),
         ),
         (
-            "position",
-            to_json(&Some(PositionView {
-                collateral: U128(ONE_ETH),
+            "loan",
+            to_json(&Some(LoanView {
+                collateral: collateral.clone(),
                 debt_face: U128(1_004_602_740),
             })),
         ),
-        ("position_none", to_json(&None::<PositionView>)),
+        ("loan_none", to_json(&None::<LoanView>)),
         (
-            "positions_by_account",
-            to_json(&vec![AccountPositionView {
+            "loans_by_account",
+            to_json(&vec![AccountLoanView {
                 maturity: U64(G_MATURITY),
-                collateral_token: ETH_ARB.into(),
-                collateral: U128(ONE_ETH),
+                collateral: collateral.clone(),
                 debt_face: U128(1_004_602_740),
+            }]),
+        ),
+        (
+            "loans",
+            to_json(&vec![LoanEntryView {
+                account_id: account(G_BORROWER),
+                maturity: U64(G_MATURITY),
+                collateral,
+                debt_face: U128(1_004_602_740),
+            }]),
+        ),
+        ("loan_count", to_json(&1u32)),
+        (
+            "collateral_tokens",
+            to_json(&vec![CollateralToken {
+                token_id: BTC.into(),
+                decimals: 8,
+                feed_id: BTC_FEED.into(),
+                max_ltv: 7_000,
+                liq_threshold: 8_000,
+                liq_bonus: 500,
+                frozen: true,
             }]),
         ),
         (
@@ -278,11 +323,8 @@ fn event_logs() -> Vec<String> {
         expires_at: None,
     };
     events::maturity_added(G_MATURITY);
-    events::order_placed(
-        0,
-        &order(&lender, OrderKind::Lend, 700, 1_000_000_000),
-        Some(USDC),
-    );
+    let collateral = amounts(&[(ETH_ARB, ONE_ETH), (BTC, 2_000_000)]);
+    events::order_placed(0, &order(&lender, OrderKind::Lend, 700, 1_000_000_000));
     events::order_placed(
         1,
         &Order {
@@ -290,17 +332,28 @@ fn event_logs() -> Vec<String> {
             ..order(
                 &borrower,
                 OrderKind::Borrow {
-                    collateral_token: ETH_ARB.into(),
-                    collateral_remaining: ONE_ETH,
+                    collateral: collateral.clone(),
                 },
                 800,
                 1_000_000_000,
             )
         },
-        Some(ETH_ARB),
     );
-    events::order_placed(2, &order(&lender, OrderKind::SellNote, 650, 999_999), None);
-    events::order_cancelled(0, &lender, 1_000_000_000);
+    events::order_placed(2, &order(&lender, OrderKind::SellNote, 650, 999_999));
+    events::order_placed(
+        3,
+        &order(
+            &borrower,
+            OrderKind::Borrow {
+                collateral: Default::default(),
+            },
+            800,
+            250_000_000,
+        ),
+    );
+    events::order_cancelled(0, &lender, &amounts(&[(USDC, 1_000_000_000)]), None);
+    events::order_cancelled(1, &borrower, &collateral, None);
+    events::order_cancelled(2, &lender, &Default::default(), Some(999_999));
     events::order_filled(Filled {
         bid: 0,
         ask: 1,
@@ -313,28 +366,39 @@ fn event_logs() -> Vec<String> {
         ask_remaining: 0,
     });
     events::fill_skipped(3, 4, "cannot_open");
-    events::repaid(
-        &borrower,
-        &borrower,
-        G_MATURITY,
-        ETH_ARB,
-        4_602_740,
-        1_000_000_000,
-    );
+    events::repaid(&borrower, &borrower, G_MATURITY, 4_602_740, 1_000_000_000);
     events::liquidated(
         &borrower,
         &keeper,
         G_MATURITY,
-        ETH_ARB,
         1_000_000_000,
-        525_000_000_000_000_000,
+        &amounts(&[(ETH_ARB, 262_500_000_000_000_000), (BTC, 1_050_000)]),
     );
-    events::bad_debt_realized(&borrower, G_MATURITY, ETH_ARB, 12_345, 1_004_590_394);
+    events::bad_debt_realized(&borrower, G_MATURITY, 12_345, 1_004_590_394);
+    events::collateral_added(&borrower, G_MATURITY, &amounts(&[(BTC, 1_000_000)]));
     events::collateral_withdrawn(&borrower, G_MATURITY, ETH_ARB, 475_000_000_000_000_000);
     events::notes_burned("redeemed", &lender, G_MATURITY, 500_000_000, 500_000_000);
     events::notes_burned("netted", &borrower, G_MATURITY, 1_000, 999);
     events::balance_moved("withdrawn", &keeper, ETH_ARB, 1);
     events::balance_moved("payout_failed", &keeper, USDC, 2);
+    let token = CollateralToken {
+        token_id: BTC.into(),
+        decimals: 8,
+        feed_id: BTC_FEED.into(),
+        max_ltv: 7_000,
+        liq_threshold: 8_000,
+        liq_bonus: 500,
+        frozen: false,
+    };
+    events::collateral_token_added(&token);
+    events::collateral_token_updated(&CollateralToken {
+        max_ltv: 6_500,
+        liq_threshold: 7_500,
+        liq_bonus: 750,
+        ..token
+    });
+    events::token_flag("collateral_token_frozen", BTC);
+    events::token_flag("collateral_token_unfrozen", BTC);
     get_logs()
 }
 

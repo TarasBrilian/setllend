@@ -52,21 +52,41 @@ export type IntentPayload = {
   intents: SetllendIntent[];
 };
 
-/** A `transfer` of one token to Setllend with a `msg`. The contract accepts exactly one token. */
+/** A `transfer` of one token to Setllend with a `msg`. */
 export function setllendTransfer(
   token: TokenId,
   amount: bigint,
   msg: TransferMsg,
   contractId: AccountId = ACCOUNTS.setllend,
 ): TransferIntent {
-  if (amount <= 0n) throw new RangeError("amount must be positive");
+  return setllendTransferMany({ [token]: amount }, msg, contractId);
+}
+
+/**
+ * A `transfer` of one or more tokens to Setllend with a `msg`. `borrow` and `add_collateral` take
+ * one or more collateral tokens; `lend`, `repay`, and `liquidate` exactly one, the debt token.
+ */
+export function setllendTransferMany(
+  amounts: Record<TokenId, bigint>,
+  msg: TransferMsg,
+  contractId: AccountId = ACCOUNTS.setllend,
+): TransferIntent {
+  const entries = Object.entries(amounts);
+  if (entries.length === 0) throw new RangeError("at least one token is required");
+  const multiToken = msg.action === "borrow" || msg.action === "add_collateral";
+  if (!multiToken && entries.length !== 1) throw new RangeError(`${msg.action} takes exactly one token`);
+  const tokens: Record<TokenId, U128> = {};
+  for (const [token, amount] of entries) {
+    if (amount <= 0n) throw new RangeError("amount must be positive");
+    tokens[token] = u128(amount);
+  }
   const intent: TransferIntent = {
     intent: "transfer",
     receiver_id: contractId,
-    tokens: { [token]: u128(amount) },
+    tokens,
     msg: encodeTransferMsg(msg),
   };
-  // lend, borrow, and repay settle inside `mt_on_transfer`, so the 30 Tgas default is enough.
+  // Every action but liquidate settles inside `mt_on_transfer`, so the 30 Tgas default is enough.
   if (msg.action === "liquidate") intent.min_gas = MIN_GAS.liquidate.toString();
   return intent;
 }

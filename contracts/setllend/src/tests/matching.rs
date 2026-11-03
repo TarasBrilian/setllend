@@ -119,7 +119,7 @@ fn invalid_fills_are_skipped_without_state_change() {
             .map(|a| {
                 (
                     c.note(&account(a), MATURITY),
-                    c.get_positions_by_account(account(a)),
+                    c.get_loans_by_account(account(a)),
                     c.get_free_balances(account(a)),
                 )
             })
@@ -251,12 +251,14 @@ fn borrow_fill_mints_notes_and_debt() {
         note_face
     );
     assert_eq!(
-        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into()),
-        Some(crate::PositionView {
-            collateral: U128(ONE_ETH),
-            debt_face: U128(debt_face)
-        })
+        loan(&c, "bob.near"),
+        (amounts(&[(ETH_ARB, ONE_ETH)]), debt_face)
     );
+    // The new loan is in the paged index (D45).
+    assert_eq!(c.get_loan_count(), 1);
+    let entries = c.get_loans(None, None);
+    assert_eq!(entries[0].account_id, account("bob.near"));
+    assert_eq!(entries[0].debt_face, U128(debt_face));
     assert!(c.get_order(U64(ask)).is_none());
     assert!(c.get_order(U64(bid)).is_none());
     assert_invariants(&c, &ACCOUNTS);
@@ -267,30 +269,55 @@ fn partial_borrow_fills_move_collateral_pro_rata_without_dust() {
     let mut c = setup();
     // 1 ETH + 1 wei for 3 USDC so the pro-rata shares don't divide evenly.
     let collateral = ONE_ETH + 1;
-    let ask = borrow(&mut c, "bob.near", collateral, 3 * ONE_USDC, 1_000);
+    // A satoshi count that doesn't divide by 3 either, so every token rounds.
+    let btc = 10;
+    let ask = borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, collateral), (BTC, btc)],
+        3 * ONE_USDC,
+        1_000,
+    );
     let bid = lend(&mut c, "alice.near", 3 * ONE_USDC, 700);
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
 
     borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
     let first = collateral / 3;
-    assert_eq!(c.positions[&key].collateral, first);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[(ETH_ARB, first), (BTC, 3)])
+    );
     let order = c.get_order(U64(ask)).unwrap();
-    assert_eq!(order.collateral_remaining, Some(U128(collateral - first)));
+    assert_eq!(
+        order.collateral,
+        Some(
+            [
+                (ETH_ARB.to_string(), U128(collateral - first)),
+                (BTC.to_string(), U128(7))
+            ]
+            .into()
+        )
+    );
     assert_eq!(order.remaining, U128(2 * ONE_USDC));
 
     borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
     let second = (collateral - first) / 2;
-    assert_eq!(c.positions[&key].collateral, first + second);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[(ETH_ARB, first + second), (BTC, 6)])
+    );
 
     // The final fill moves everything left.
     borrow_fill(&mut c, bid, ask, ONE_USDC).unwrap();
-    assert_eq!(c.positions[&key].collateral, collateral);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[(ETH_ARB, collateral), (BTC, btc)])
+    );
     assert!(c.get_order(U64(ask)).is_none());
     assert_invariants(&c, &ACCOUNTS);
 }
 
 #[test]
-fn borrow_fill_rejects_undercollateralized_position() {
+fn borrow_fill_rejects_undercollateralized_loan() {
     let mut c = setup();
     // 1 ETH at $2,000 and 70% LTV carries at most $1,400 of debt face.
     let ask = borrow(&mut c, "bob.near", ONE_ETH, 1_400 * ONE_USDC, 1_000);
@@ -301,10 +328,7 @@ fn borrow_fill_rejects_undercollateralized_position() {
         Err("cannot_open")
     );
     assert_eq!(c.pool(MATURITY), &pool_before);
-    assert!(
-        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
-            .is_none()
-    );
+    assert!(c.get_loan(account("bob.near"), U64(MATURITY)).is_none());
     assert_eq!(
         c.get_order(U64(ask)).unwrap().remaining,
         U128(1_400 * ONE_USDC)
@@ -313,7 +337,7 @@ fn borrow_fill_rejects_undercollateralized_position() {
 }
 
 #[test]
-fn borrow_fill_checks_the_whole_position() {
+fn borrow_fill_checks_the_whole_loan() {
     let mut c = setup();
     // 0.1 ETH ($200) can't carry 1,000 USDC on its own (max $140 at 70% LTV)...
     let ask = borrow(&mut c, "bob.near", ONE_ETH / 10, 1_000 * ONE_USDC, 1_000);
@@ -322,13 +346,82 @@ fn borrow_fill_checks_the_whole_position() {
         borrow_fill(&mut c, bid, ask, 1_000 * ONE_USDC),
         Err("cannot_open")
     );
-    // ...but it can once the same position already holds 1 ETH with 100 USDC of debt:
-    // 1.1 ETH × $2,000 × 70% = $1,540 against about $1,109 of face.
-    let first = borrow(&mut c, "bob.near", ONE_ETH, 100 * ONE_USDC, 1_000);
+    // ...but it can once the same loan already holds other tokens with 100 USDC of debt.
+    let first = borrow_many(
+        &mut c,
+        "bob.near",
+        &[(BTC, 2 * ONE_BTC / 100), (ETH_BASE, ONE_ETH)],
+        100 * ONE_USDC,
+        1_000,
+    );
     borrow_fill(&mut c, bid, first, 100 * ONE_USDC).unwrap();
+    // ETH Arb $140 + BTC $700 + ETH Base $1,400 = $2,240 against about $1,109 of face.
     assert_eq!(borrow_fill(&mut c, bid, ask, 1_000 * ONE_USDC), Ok(()));
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    assert_eq!(c.positions[&key].collateral, ONE_ETH + ONE_ETH / 10);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[
+            (ETH_ARB, ONE_ETH / 10),
+            (ETH_BASE, ONE_ETH),
+            (BTC, 2 * ONE_BTC / 100)
+        ])
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn a_frozen_token_gives_no_borrowing_power_to_fills() {
+    let mut c = setup();
+    // The loan holds 1 ETH (arb) and 0.1 ETH (base); ETH Base gets frozen.
+    let ask = borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH / 10), (ETH_BASE, ONE_ETH)],
+        100 * ONE_USDC,
+        1_000,
+    );
+    let bid = lend(&mut c, "alice.near", 1_000 * ONE_USDC, 700);
+    context(OWNER);
+    c.freeze_collateral_token(ETH_BASE.into());
+    // Only 0.1 ETH ($140 at 70%) counts: 100 USDC fits, more doesn't.
+    borrow_fill(&mut c, bid, ask, 100 * ONE_USDC).unwrap();
+    let more = loan_borrow(&mut c, "bob.near", 100 * ONE_USDC, 1_000);
+    assert_eq!(
+        borrow_fill(&mut c, bid, more, 100 * ONE_USDC),
+        Err("cannot_open")
+    );
+    context(OWNER);
+    c.unfreeze_collateral_token(ETH_BASE.into());
+    assert_eq!(borrow_fill(&mut c, bid, more, 100 * ONE_USDC), Ok(()));
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn a_borrow_fill_needs_prices_only_for_tokens_that_count() {
+    let mut c = setup();
+    let ask = borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (BTC, ONE_BTC)],
+        100 * ONE_USDC,
+        1_000,
+    );
+    let bid = lend(&mut c, "alice.near", 100 * ONE_USDC, 700);
+    let mut no_btc = crate::oracle::Prices::default();
+    no_btc.insert(ETH_FEED, eth_price(2_000));
+    no_btc.insert(USDC_FEED, usdc_price());
+    context(MATCHER);
+    assert_eq!(
+        c.fill_borrow(&fill(bid, ask, 100 * ONE_USDC), &no_btc),
+        Err("no_price")
+    );
+    // Frozen, BTC gives no borrowing power, so its price isn't needed.
+    context(OWNER);
+    c.freeze_collateral_token(BTC.into());
+    context(MATCHER);
+    assert_eq!(
+        c.fill_borrow(&fill(bid, ask, 100 * ONE_USDC), &no_btc),
+        Ok(())
+    );
     assert_invariants(&c, &ACCOUNTS);
 }
 
@@ -349,8 +442,7 @@ fn netting_reduces_debt_and_value_together() {
     let mut c = setup();
     // Bob borrows from Alice, then buys notes back in the same maturity (early exit, D20).
     open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    let debt_before = c.positions[&key].debt_face;
+    let (_, debt_before) = loan(&c, "bob.near");
     let ask = sell_note(&mut c, "alice.near", 400 * ONE_USDC, 900);
     let bid = lend(&mut c, "bob.near", 300 * ONE_USDC, 800);
     let pool_before = c.pool(MATURITY).clone();
@@ -370,27 +462,24 @@ fn netting_reduces_debt_and_value_together() {
     let pool = c.pool(MATURITY);
     assert_eq!(pool.total_value, pool_before.total_value - value);
     assert_eq!(pool.redemption_pool, pool_before.redemption_pool);
-    assert_eq!(c.positions[&key].debt_face, debt_before - value);
+    assert_eq!(loan(&c, "bob.near").1, debt_before - value);
     assert!(c.get_notes(account("bob.near")).is_empty());
     assert_invariants(&c, &ACCOUNTS);
 }
 
 #[test]
-fn netting_stops_at_the_debt_and_goes_in_token_id_order() {
+fn netting_stops_at_the_debt() {
     let mut c = setup();
-    // Bob has two small positions: base (listed first in config) and arb (lower token ID).
-    let base_ask = borrow_with(&mut c, "bob.near", ETH_BASE, ONE_ETH, 10 * ONE_USDC, 1_000);
-    let base_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
-    borrow_fill(&mut c, base_bid, base_ask, 10 * ONE_USDC).unwrap();
-    let arb_ask = borrow(&mut c, "bob.near", ONE_ETH, 10 * ONE_USDC, 1_000);
-    let arb_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
-    borrow_fill(&mut c, arb_bid, arb_ask, 10 * ONE_USDC).unwrap();
-    let arb = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    let base = (account("bob.near"), MATURITY, ETH_BASE.to_string());
-    let arb_debt = c.positions[&arb].debt_face;
-    let base_debt = c.positions[&base].debt_face;
+    // Bob's loan holds two tokens and the debt of two fills.
+    let first = borrow_with(&mut c, "bob.near", ETH_BASE, ONE_ETH, 10 * ONE_USDC, 1_000);
+    let first_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
+    borrow_fill(&mut c, first_bid, first, 10 * ONE_USDC).unwrap();
+    let second = borrow(&mut c, "bob.near", ONE_ETH, 10 * ONE_USDC, 1_000);
+    let second_bid = lend(&mut c, "dave.near", 10 * ONE_USDC, 700);
+    borrow_fill(&mut c, second_bid, second, 10 * ONE_USDC).unwrap();
+    let (collateral, debt) = loan(&c, "bob.near");
 
-    // Alice lends to Carol, then sells Bob more notes than his total debt.
+    // Alice lends to Carol, then sells Bob more notes than his debt.
     open_loan(&mut c, "alice.near", "carol.near", 1_000 * ONE_USDC);
     let ask = sell_note(&mut c, "alice.near", 100 * ONE_USDC, 0);
     let bid = lend(&mut c, "bob.near", 100 * ONE_USDC, 0);
@@ -399,11 +488,8 @@ fn netting_stops_at_the_debt_and_goes_in_token_id_order() {
     let netted = &events("netted")[0];
     let value: u128 = netted["value"].as_str().unwrap().parse().unwrap();
     assert_eq!(value, 15 * ONE_USDC);
-    // The arb position goes first and is cleared; base takes the rest.
-    assert_eq!(c.positions[&arb].debt_face, 0);
-    assert_eq!(c.positions[&base].debt_face, base_debt - (value - arb_debt));
-    // Collateral stays, so the cleared position is kept.
-    assert_eq!(c.positions[&arb].collateral, ONE_ETH);
+    // Collateral stays, so the loan is kept.
+    assert_eq!(loan(&c, "bob.near"), (collateral.clone(), debt - value));
 
     // Buying more than the debt leaves the rest as free notes.
     match_orders(&mut c, vec![fill(bid, ask, 20 * ONE_USDC)]);
@@ -412,11 +498,11 @@ fn netting_stops_at_the_debt_and_goes_in_token_id_order() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(value, arb_debt + base_debt - 15 * ONE_USDC);
-    assert_eq!(c.positions[&base].debt_face, 0);
+    assert_eq!(value, debt - 15 * ONE_USDC);
+    assert_eq!(loan(&c, "bob.near"), (collateral, 0));
     assert_eq!(
         c.note(&account("bob.near"), MATURITY).free_shares,
-        35 * ONE_USDC - (arb_debt + base_debt)
+        35 * ONE_USDC - debt
     );
     assert_invariants(&c, &ACCOUNTS);
 }
@@ -430,7 +516,6 @@ fn netting_also_runs_for_the_ask_owner() {
     let ask = borrow(&mut c, "bob.near", ONE_ETH, 400 * ONE_USDC, 1_000);
     let bid = lend(&mut c, "dave.near", 400 * ONE_USDC, 700);
     borrow_fill(&mut c, bid, ask, 400 * ONE_USDC).unwrap();
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
     let netted = &events("netted")[0];
     assert_eq!(netted["account"], "bob.near");
     let value: u128 = netted["value"].as_str().unwrap().parse().unwrap();
@@ -438,7 +523,7 @@ fn netting_also_runs_for_the_ask_owner() {
         value,
         math::face(400 * ONE_USDC, 1_000, MATURITY - NOW, Rounding::Up)
     );
-    assert_eq!(c.positions[&key].debt_face, 0);
+    assert_eq!(loan(&c, "bob.near").1, 0);
     assert_eq!(
         c.note(&account("bob.near"), MATURITY).free_shares,
         shares - value
@@ -500,10 +585,7 @@ fn batch_with_a_borrow_ask_settles_in_the_price_callback() {
             ("dave.near".into(), USDC.into(), 100 * ONE_USDC),
         ]
     );
-    let position = c
-        .get_position(account("dave.near"), U64(MATURITY), ETH_ARB.into())
-        .unwrap();
-    assert_eq!(position.collateral, U128(ONE_ETH));
+    assert_eq!(loan(&c, "dave.near").0, amounts(&[(ETH_ARB, ONE_ETH)]));
     assert_invariants(&c, &ACCOUNTS);
 }
 
@@ -590,8 +672,7 @@ fn without_a_usable_price(case: &str, response: Result<OracleResponse, near_sdk:
         assert_eq!(filled.len(), 1, "{case}");
         assert_eq!(filled[0]["ask_kind"], "sell_note", "{case}");
         assert!(
-            c.get_position(account("dave.near"), U64(MATURITY), ETH_ARB.into())
-                .is_none(),
+            c.get_loan(account("dave.near"), U64(MATURITY)).is_none(),
             "{case}"
         );
         assert_invariants(&c, &ACCOUNTS);
@@ -608,6 +689,7 @@ fn prices_at_the_limits_are_accepted() {
     };
     let response = OracleResponse::from([
         (ETH_FEED.to_string(), oracle_price(&eth, 60)),
+        (BTC_FEED.to_string(), oracle_price(&btc_price(50_000), 60)),
         (USDC_FEED.to_string(), oracle_price(&usdc_price(), 60)),
     ]);
     match_with_oracle(

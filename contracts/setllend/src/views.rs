@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use near_sdk::json_types::{U64, U128};
 use near_sdk::{AccountId, near};
 
-use crate::state::{Order, OrderKind, Pool};
-use crate::{Config, Setllend, SetllendExt};
+use crate::events;
+use crate::state::{Loan, Order, OrderKind, Pool};
+use crate::{CollateralToken, Config, Setllend, SetllendExt};
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
@@ -20,26 +21,45 @@ pub struct OrderView {
     pub remaining: U128,
     /// `sell_note` only: current value of the remaining shares.
     pub remaining_value: Option<U128>,
-    pub collateral_token: Option<String>,
-    pub collateral_remaining: Option<U128>,
+    /// `borrow` only: escrow left, `{}` for a borrow against the loan's collateral.
+    pub collateral: Option<BTreeMap<String, U128>>,
     pub created_at: U64,
     pub expires_at: Option<U64>,
 }
 
+/// `get_loan`.
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
-pub struct PositionView {
-    pub collateral: U128,
+pub struct LoanView {
+    /// Token ID → amount.
+    pub collateral: BTreeMap<String, U128>,
     pub debt_face: U128,
 }
 
+/// `get_loans_by_account`.
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
-pub struct AccountPositionView {
+pub struct AccountLoanView {
     pub maturity: U64,
-    pub collateral_token: String,
-    pub collateral: U128,
+    pub collateral: BTreeMap<String, U128>,
     pub debt_face: U128,
+}
+
+/// `get_loans`.
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanEntryView {
+    pub account_id: AccountId,
+    pub maturity: U64,
+    pub collateral: BTreeMap<String, U128>,
+    pub debt_face: U128,
+}
+
+fn collateral_view(loan: &Loan) -> BTreeMap<String, U128> {
+    loan.collateral
+        .iter()
+        .map(|(token_id, amount)| (token_id.clone(), U128(*amount)))
+        .collect()
 }
 
 #[near(serializers = [json])]
@@ -73,19 +93,19 @@ impl From<&Pool> for PoolView {
 
 impl Setllend {
     fn order_view(&self, order_id: u64, order: &Order) -> OrderView {
-        let (remaining_value, collateral_token, collateral_remaining) = match &order.kind {
-            OrderKind::Lend => (None, None, None),
-            OrderKind::Borrow {
-                collateral_token,
-                collateral_remaining,
-            } => (
+        let (remaining_value, collateral) = match &order.kind {
+            OrderKind::Lend => (None, None),
+            OrderKind::Borrow { collateral } => (
                 None,
-                Some(collateral_token.clone()),
-                Some(U128(*collateral_remaining)),
+                Some(
+                    events::amounts(collateral)
+                        .into_iter()
+                        .map(|(token_id, amount)| (token_id.to_string(), amount))
+                        .collect(),
+                ),
             ),
             OrderKind::SellNote => (
                 Some(U128(self.pool(order.maturity).value_of(order.remaining))),
-                None,
                 None,
             ),
         };
@@ -97,8 +117,7 @@ impl Setllend {
             rate_bps: order.rate_bps,
             remaining: U128(order.remaining),
             remaining_value,
-            collateral_token,
-            collateral_remaining,
+            collateral,
             created_at: U64(order.created_at),
             expires_at: order.expires_at.map(U64),
         }
@@ -168,38 +187,59 @@ impl Setllend {
         self.order_views(ids)
     }
 
-    pub fn get_position(
-        &self,
-        account_id: AccountId,
-        maturity: U64,
-        collateral_token: String,
-    ) -> Option<PositionView> {
-        self.positions
-            .get(&(account_id, maturity.0, collateral_token))
-            .map(|position| PositionView {
-                collateral: U128(position.collateral),
-                debt_face: U128(position.debt_face),
+    /// Every collateral token, frozen ones included, in the order added.
+    pub fn get_collateral_tokens(&self) -> &Vec<CollateralToken> {
+        &self.collateral_tokens
+    }
+
+    pub fn get_loan(&self, account_id: AccountId, maturity: U64) -> Option<LoanView> {
+        self.loans
+            .get(&(account_id, maturity.0))
+            .map(|loan| LoanView {
+                collateral: collateral_view(loan),
+                debt_face: U128(loan.debt_face),
             })
     }
 
-    /// By maturity, then collateral token ID. Maturities and collateral tokens are both short
-    /// owner-set lists, so this is a bounded number of lookups.
-    pub fn get_positions_by_account(&self, account_id: AccountId) -> Vec<AccountPositionView> {
-        let mut views = Vec::new();
-        for maturity in self.get_maturities() {
-            for token_id in self.config.sorted_collateral_ids() {
-                let key = (account_id.clone(), maturity.0, token_id.to_string());
-                if let Some(position) = self.positions.get(&key) {
-                    views.push(AccountPositionView {
+    /// By maturity. Maturities are a short owner-set list, so this is a bounded number of
+    /// lookups.
+    pub fn get_loans_by_account(&self, account_id: AccountId) -> Vec<AccountLoanView> {
+        self.get_maturities()
+            .into_iter()
+            .filter_map(|maturity| {
+                self.loans
+                    .get(&(account_id.clone(), maturity.0))
+                    .map(|loan| AccountLoanView {
                         maturity,
-                        collateral_token: token_id.to_string(),
-                        collateral: U128(position.collateral),
-                        debt_face: U128(position.debt_face),
-                    });
-                }
-            }
-        }
-        views
+                        collateral: collateral_view(loan),
+                        debt_face: U128(loan.debt_face),
+                    })
+            })
+            .collect()
+    }
+
+    /// Loans of all accounts, `limit` of them from position `from_index` of the loan index, so
+    /// a keeper finds every loan from state alone (D45). Index order, not sorted: deleting a
+    /// loan moves the last one into its slot, so page at one block height. `from_index`
+    /// defaults to 0, and without `limit` the rest is returned.
+    pub fn get_loans(&self, from_index: Option<u32>, limit: Option<u32>) -> Vec<LoanEntryView> {
+        let limit = limit.map_or(usize::MAX, |limit| limit as usize);
+        self.loans
+            .iter()
+            .skip(from_index.unwrap_or(0) as usize)
+            .take(limit)
+            .map(|((account_id, maturity), loan)| LoanEntryView {
+                account_id: account_id.clone(),
+                maturity: U64(*maturity),
+                collateral: collateral_view(loan),
+                debt_face: U128(loan.debt_face),
+            })
+            .collect()
+    }
+
+    /// Number of loans, for paging `get_loans`.
+    pub fn get_loan_count(&self) -> u32 {
+        self.loans.len()
     }
 
     /// Keyed by maturity (decimal string).
@@ -224,12 +264,8 @@ impl Setllend {
 
     /// Non-zero free balances. Payouts only move the debt token and collateral tokens.
     pub fn get_free_balances(&self, account_id: AccountId) -> BTreeMap<String, U128> {
-        let tokens = std::iter::once(&self.config.debt_token).chain(
-            self.config
-                .collateral_tokens
-                .iter()
-                .map(|token| &token.token_id),
-        );
+        let tokens = std::iter::once(&self.config.debt_token)
+            .chain(self.collateral_tokens.iter().map(|token| &token.token_id));
         tokens
             .filter_map(|token_id| {
                 self.free_balances

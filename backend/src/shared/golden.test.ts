@@ -13,8 +13,11 @@ import {
   encodeTransferMsg,
 } from "./msg.ts";
 import {
-  type AccountPositionView,
+  type AccountLoanView,
+  type CollateralToken,
   type Config,
+  type LoanEntryView,
+  type LoanView,
   type NotesView,
   type OracleResponse,
   type OrderView,
@@ -40,6 +43,7 @@ const MATURITY = "1795766400000000000";
 const EXPIRES = "1795000000000000000";
 const BORROWER = "0x2222222222222222222222222222222222222222";
 const ETH_ARB = ASSETS.ethArb;
+const BTC = ASSETS.btc;
 const USDC = "nep141:usdc"; // the unit-test debt token
 
 const transferCases: Record<string, TransferMsg> = {
@@ -49,12 +53,17 @@ const transferCases: Record<string, TransferMsg> = {
     action: "borrow",
     data: { maturity: MATURITY, max_rate_bps: 800, principal: "1000000000", expires_at: null },
   },
-  repay: { action: "repay", data: { maturity: MATURITY, collateral_token: ETH_ARB, borrower: null } },
-  repay_for: { action: "repay", data: { maturity: MATURITY, collateral_token: ETH_ARB, borrower: BORROWER } },
-  liquidate: { action: "liquidate", data: { borrower: BORROWER, maturity: MATURITY, collateral_token: ETH_ARB } },
+  add_collateral: { action: "add_collateral", data: { maturity: MATURITY } },
+  repay: { action: "repay", data: { maturity: MATURITY, borrower: null } },
+  repay_for: { action: "repay", data: { maturity: MATURITY, borrower: BORROWER } },
+  liquidate: { action: "liquidate", data: { borrower: BORROWER, maturity: MATURITY } },
 };
 
 const authCases: Record<string, AuthMsg> = {
+  borrow: {
+    action: "borrow",
+    data: { maturity: MATURITY, max_rate_bps: 800, principal: "250000000", expires_at: EXPIRES },
+  },
   cancel: { action: "cancel", data: { order_id: "42" } },
   sell_note: {
     action: "sell_note",
@@ -102,7 +111,7 @@ describe("transfer msg", () => {
       `{"action":"lend","data":{"maturity":"${MATURITY}","min_rate_bps":4294967296}}`,
       `{"action":"borrow","data":{"maturity":"${MATURITY}","max_rate_bps":800,"principal":"-1"}}`,
       `{"action":"borrow","data":{"maturity":"${MATURITY}","max_rate_bps":800,"principal":"340282366920938463463374607431768211456"}}`,
-      `{"action":"liquidate","data":{"borrower":"0xABCD000000000000000000000000000000000000","maturity":"${MATURITY}","collateral_token":"t"}}`,
+      `{"action":"liquidate","data":{"borrower":"0xABCD000000000000000000000000000000000000","maturity":"${MATURITY}"}}`,
       `{"action":"cancel","data":{"order_id":"1"}}`, // an auth action
       `{"action":"constructor","data":{}}`,
       `{"lend":{}}`,
@@ -146,10 +155,10 @@ describe("views", () => {
   it("orders carry kind-specific fields", () => {
     const lend = view<OrderView>("order_lend");
     expect(lend.kind).toBe("lend");
-    expect(lend.collateral_token).toBeNull();
+    expect(lend.collateral).toBeNull();
     const borrow = view<OrderView>("order_borrow");
-    expect(borrow.collateral_token).toBe(ETH_ARB);
-    expect(BigInt(borrow.collateral_remaining!)).toBe(10n ** 18n);
+    expect(borrow.collateral).toEqual({ [ETH_ARB]: "1000000000000000000", [BTC]: "2000000" });
+    expect(view<OrderView>("order_loan_borrow").collateral).toEqual({});
     const sell = view<OrderView>("order_sell_note");
     expect(sell.remaining_value).toBe("899999");
     // The view type lists exactly the contract's fields, in its order.
@@ -161,22 +170,37 @@ describe("views", () => {
       "rate_bps",
       "remaining",
       "remaining_value",
-      "collateral_token",
-      "collateral_remaining",
+      "collateral",
       "created_at",
       "expires_at",
     ];
     expect(Object.keys(lend)).toEqual(keys);
   });
 
-  it("positions, notes, pool, config", () => {
-    expect(view<AccountPositionView[]>("positions_by_account")[0]!.debt_face).toBe("1004602740");
-    expect(view<null>("position_none")).toBeNull();
+  it("loans, notes, pool, config, collateral tokens", () => {
+    const collateral = { [ETH_ARB]: "1000000000000000000", [BTC]: "2000000" };
+    expect(view<LoanView>("loan")).toEqual({ collateral, debt_face: "1004602740" });
+    expect(view<null>("loan_none")).toBeNull();
+    expect(view<AccountLoanView[]>("loans_by_account")[0]!.collateral).toEqual(collateral);
+    const entry = view<LoanEntryView[]>("loans")[0]!;
+    expect(Object.keys(entry)).toEqual(["account_id", "maturity", "collateral", "debt_face"]);
+    expect(entry.account_id).toBe(BORROWER);
+    expect(view<number>("loan_count")).toBe(1);
     expect(view<NotesView>("notes")[MATURITY]!.free_value).toBe("1004602739");
     expect(view<PoolView>("pool").total_shares).toBe("1004602739");
     const config = view<Config>("config");
-    expect(config.collateral_tokens.map((t) => t.decimals)).toEqual([18, 18]);
     expect(config.grace).toBe("3600000000000");
+    expect(Object.keys(config)).not.toContain("collateral_tokens");
+    const [btc] = view<CollateralToken[]>("collateral_tokens");
+    expect(btc).toEqual({
+      token_id: BTC,
+      decimals: 8,
+      feed_id: "btc-feed",
+      max_ltv: 7000,
+      liq_threshold: 8000,
+      liq_bonus: 500,
+      frozen: true,
+    });
   });
 
   it("oracle response keeps null for a stale feed", () => {
@@ -207,26 +231,45 @@ describe("events", () => {
       "order_placed",
       "order_placed",
       "order_placed",
+      "order_placed",
+      "order_cancelled",
+      "order_cancelled",
       "order_cancelled",
       "order_filled",
       "fill_skipped",
       "repaid",
       "liquidated",
       "bad_debt_realized",
+      "collateral_added",
       "collateral_withdrawn",
       "redeemed",
       "netted",
       "withdrawn",
       "payout_failed",
+      "collateral_token_added",
+      "collateral_token_updated",
+      "collateral_token_frozen",
+      "collateral_token_unfrozen",
     ]);
     const borrow = events[2]!;
     expect(borrow.event === "order_placed" && borrow.data).toMatchObject({
       kind: "borrow",
-      token_id: ETH_ARB,
-      collateral: "1000000000000000000",
+      collateral: { [ETH_ARB]: "1000000000000000000", [BTC]: "2000000" },
       expires_at: EXPIRES,
     });
-    const skipped = events[6]!;
+    const loanBorrow = events[4]!;
+    expect(loanBorrow.event === "order_placed" && loanBorrow.data.collateral).toEqual({});
+    const sellCancel = events[7]!;
+    expect(sellCancel.event === "order_cancelled" && sellCancel.data).toMatchObject({
+      refunded: {},
+      unlocked_shares: "999999",
+    });
+    const liquidated = events[11]!;
+    expect(liquidated.event === "liquidated" && liquidated.data.seized).toEqual({
+      [ETH_ARB]: "262500000000000000",
+      [BTC]: "1050000",
+    });
+    const skipped = events[9]!;
     expect(skipped.event === "fill_skipped" && SKIP_REASONS.includes(skipped.data.reason)).toBe(true);
   });
 

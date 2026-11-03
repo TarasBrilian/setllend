@@ -1,4 +1,4 @@
-//! `on_auth`: `cancel`, `sell_note`, `withdraw_collateral`, `redeem`, `withdraw`.
+//! `on_auth`: `borrow`, `cancel`, `sell_note`, `withdraw_collateral`, `redeem`, `withdraw`.
 
 use super::*;
 use crate::math::{self, Rounding};
@@ -35,9 +35,8 @@ fn cancel_lend_refunds_escrow() {
     assert!(matches!(result, PromiseOrValue::Promise(_)));
     assert_eq!(
         events("order_cancelled"),
-        vec![
-            json!({"order_id": id.to_string(), "owner": "alice.near", "refunded": (5 * ONE_USDC).to_string()})
-        ]
+        vec![json!({"order_id": id.to_string(), "owner": "alice.near",
+            "refunded": {USDC: (5 * ONE_USDC).to_string()}, "unlocked_shares": null})]
     );
     assert!(c.get_order(U64(id)).is_none());
     assert!(c.get_orders(U64(MATURITY), None, None).is_empty());
@@ -57,9 +56,83 @@ fn cancel_borrow_refunds_remaining_collateral() {
     auth(&mut c, "bob.near", cancel_msg(ask));
     assert_eq!(
         events("order_cancelled")[0]["refunded"],
-        (ONE_ETH * 3 / 4).to_string()
+        json!({ETH_ARB: (ONE_ETH * 3 / 4).to_string()})
     );
     assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn cancel_borrow_refunds_every_escrowed_token() {
+    let mut c = setup();
+    let ask = borrow_many(
+        &mut c,
+        "bob.near",
+        &[(ETH_ARB, ONE_ETH), (BTC, ONE_BTC)],
+        ONE_USDC,
+        1_000,
+    );
+    // The mock schedules a promise's receipts when it is dropped, so match without binding.
+    assert!(matches!(
+        auth_result(&mut c, "bob.near", cancel_msg(ask)),
+        PromiseOrValue::Promise(_)
+    ));
+    assert_eq!(
+        payouts(),
+        vec![
+            ("bob.near".into(), ETH_ARB.into(), ONE_ETH),
+            ("bob.near".into(), BTC.into(), ONE_BTC),
+        ]
+    );
+}
+
+#[test]
+fn loan_borrow_places_an_order_without_escrow() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    let id = loan_borrow(&mut c, "bob.near", 200 * ONE_USDC, 1_000);
+    assert_eq!(events("order_placed")[0]["collateral"], json!({}));
+    let order = c.get_order(U64(id)).unwrap();
+    assert_eq!(order.kind, "borrow");
+    assert_eq!(order.collateral, Some(Default::default()));
+
+    // It fills against the loan's collateral: 1 ETH at $2,000 covers 1,400 USDC of face.
+    let bid = lend(&mut c, "carol.near", 200 * ONE_USDC, 1_000);
+    borrow_fill(&mut c, bid, id, 200 * ONE_USDC).unwrap();
+    let (collateral, debt) = loan(&c, "bob.near");
+    assert_eq!(collateral, amounts(&[(ETH_ARB, ONE_ETH)]));
+    assert_eq!(
+        debt,
+        math::face(100 * ONE_USDC, 1_000, 30 * DAY, Rounding::Up)
+            + math::face(200 * ONE_USDC, 1_000, 30 * DAY, Rounding::Up)
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn cancel_loan_borrow_has_nothing_to_refund() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    let id = loan_borrow(&mut c, "bob.near", ONE_USDC, 1_000);
+    let result = auth_result(&mut c, "bob.near", cancel_msg(id));
+    assert!(matches!(result, PromiseOrValue::Value(())));
+    assert_eq!(events("order_cancelled")[0]["refunded"], json!({}));
+    assert!(payouts().is_empty());
+}
+
+#[test]
+#[should_panic(expected = "No collateral in loan")]
+fn loan_borrow_needs_a_loan_with_collateral() {
+    let mut c = setup();
+    loan_borrow(&mut c, "bob.near", ONE_USDC, 1_000);
+}
+
+#[test]
+#[should_panic(expected = "Maturity has passed")]
+fn loan_borrow_follows_the_placement_rules() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
+    set_time(MATURITY);
+    loan_borrow(&mut c, "bob.near", ONE_USDC, 1_000);
 }
 
 #[test]
@@ -94,7 +167,6 @@ fn sell_note_locks_shares_rounded_up() {
     let id = sell_note(&mut c, "alice.near", 300 * ONE_USDC, 900);
     let placed = &events("order_placed")[0];
     assert_eq!(placed["kind"], "sell_note");
-    assert_eq!(placed["token_id"], Value::Null);
     assert_eq!(placed["collateral"], Value::Null);
     // V = S here, so shares equal value.
     assert_eq!(placed["size"], (300 * ONE_USDC).to_string());
@@ -180,16 +252,18 @@ fn withdraw_collateral_msg(amount: u128) -> Value {
     }})
 }
 
+fn repay_msg() -> Value {
+    json!({"action": "repay", "data": {"maturity": MATURITY.to_string(), "borrower": null}})
+}
+
 fn repay_all(c: &mut Setllend, borrower: &str) {
-    let debt = c.positions[&(account(borrower), MATURITY, ETH_ARB.to_string())].debt_face;
-    let msg = json!({"action": "repay", "data": {
-        "maturity": MATURITY.to_string(), "collateral_token": ETH_ARB, "borrower": null
-    }});
+    let (_, debt) = loan(c, borrower);
+    let msg = repay_msg();
     assert_eq!(transfer(c, borrower, USDC, debt, msg), 0);
 }
 
 #[test]
-fn withdraw_collateral_without_debt_pays_and_deletes_position() {
+fn withdraw_collateral_without_debt_pays_and_deletes_the_loan() {
     let mut c = setup();
     open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
     repay_all(&mut c, "bob.near");
@@ -203,11 +277,34 @@ fn withdraw_collateral_without_debt_pays_and_deletes_position() {
         ]
     );
     auth(&mut c, "bob.near", withdraw_collateral_msg(ONE_ETH * 3 / 4));
-    assert!(
-        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
-            .is_none()
-    );
-    assert!(c.get_positions_by_account(account("bob.near")).is_empty());
+    assert!(c.get_loan(account("bob.near"), U64(MATURITY)).is_none());
+    assert!(c.get_loans_by_account(account("bob.near")).is_empty());
+    assert_eq!(c.get_loan_count(), 0);
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn get_loans_pages_by_index() {
+    let mut c = setup();
+    for borrower in ["bob.near", "carol.near", "dave.near"] {
+        open_loan(&mut c, "alice.near", borrower, 100 * ONE_USDC);
+    }
+    let owners = |c: &Setllend, from, limit| {
+        c.get_loans(from, limit)
+            .into_iter()
+            .map(|entry| entry.account_id.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(c.get_loan_count(), 3);
+    assert_eq!(owners(&c, Some(1), Some(1)), vec!["carol.near"]);
+    assert_eq!(owners(&c, Some(2), None), vec!["dave.near"]);
+    assert!(owners(&c, Some(3), None).is_empty());
+
+    // Bob's loan empties: the last loan moves into its slot.
+    repay_all(&mut c, "bob.near");
+    auth(&mut c, "bob.near", withdraw_collateral_msg(ONE_ETH));
+    assert_eq!(owners(&c, None, None), vec!["dave.near", "carol.near"]);
+    assert_eq!(c.get_loan_count(), 2);
     assert_invariants(&c, &ACCOUNTS);
 }
 
@@ -221,8 +318,8 @@ fn withdraw_collateral_rejects_more_than_collateral() {
 }
 
 #[test]
-#[should_panic(expected = "No position")]
-fn withdraw_collateral_rejects_missing_position() {
+#[should_panic(expected = "No loan")]
+fn withdraw_collateral_rejects_a_missing_loan() {
     let mut c = setup();
     auth(&mut c, "bob.near", withdraw_collateral_msg(1));
 }
@@ -280,12 +377,9 @@ fn redeem_rejects_more_than_free_value() {
 fn redeem_pays_up_to_the_pool_then_the_rest() {
     let mut c = setup();
     let shares = open_loan(&mut c, "alice.near", "bob.near", 100 * ONE_USDC);
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    let debt = c.positions[&key].debt_face;
+    let (_, debt) = loan(&c, "bob.near");
     // Partial repayment: the pool holds less than the notes are worth.
-    let msg = json!({"action": "repay", "data": {
-        "maturity": MATURITY.to_string(), "collateral_token": ETH_ARB, "borrower": null
-    }});
+    let msg = repay_msg();
     transfer(&mut c, "bob.near", USDC, 60 * ONE_USDC, msg.clone());
     set_time(MATURITY);
 
@@ -369,8 +463,7 @@ fn cancel_sell_note_nets_against_debt_even_after_maturity() {
     let bid = lend(&mut c, "dave.near", 500 * ONE_USDC, 700);
     borrow_fill(&mut c, bid, ask, 500 * ONE_USDC).unwrap();
     assert!(events("netted").is_empty());
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    let debt = c.positions[&key].debt_face;
+    let (_, debt) = loan(&c, "bob.near");
     assert!(debt > 0);
 
     // After maturity no fill can net any more. The cancel does.
@@ -383,7 +476,7 @@ fn cancel_sell_note_nets_against_debt_even_after_maturity() {
             "value": debt.to_string(), "shares": debt.to_string()})
         ]
     );
-    assert_eq!(c.positions[&key].debt_face, 0);
+    assert_eq!(loan(&c, "bob.near").1, 0);
     assert_eq!(
         c.note(&account("bob.near"), MATURITY).free_shares,
         shares - debt
@@ -504,10 +597,19 @@ fn finish_withdraw(
     amount: u128,
     response: Result<OracleResponse, near_sdk::PromiseError>,
 ) {
+    finish_withdraw_of(c, ETH_ARB, amount, response);
+}
+
+fn finish_withdraw_of(
+    c: &mut Setllend,
+    token: &str,
+    amount: u128,
+    response: Result<OracleResponse, near_sdk::PromiseError>,
+) {
     context(CONTRACT);
     let data = crate::msg::WithdrawCollateralMsg {
         maturity: U64(MATURITY),
-        collateral_token: ETH_ARB.into(),
+        collateral_token: token.into(),
         amount: U128(amount),
     };
     let _ = c.on_withdraw_collateral_prices(account("bob.near"), data, response);
@@ -525,9 +627,73 @@ fn withdraw_collateral_with_debt_keeps_max_ltv() {
         vec![("bob.near".into(), ETH_ARB.into(), ONE_ETH / 4)]
     );
     assert_eq!(events("collateral_withdrawn").len(), 1);
-    let key = (account("bob.near"), MATURITY, ETH_ARB.to_string());
-    assert_eq!(c.positions[&key].collateral, ONE_ETH * 3 / 4);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[(ETH_ARB, ONE_ETH * 3 / 4)])
+    );
     assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn withdraw_collateral_counts_the_other_tokens() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    // 0.02 BTC adds $1,000 × 70% of borrowing power, so 2/3 of the ETH can go: $467 + $700
+    // still covers about $1,008 of face.
+    add_collateral(&mut c, "bob.near", &[(BTC, 2 * ONE_BTC / 100)]);
+    let bob_withdraws = |c: &mut Setllend, amount| {
+        start_withdraw(c, amount);
+        finish_withdraw(c, amount, Ok(oracle_response(2_000)));
+    };
+    bob_withdraws(&mut c, ONE_ETH * 2 / 3);
+    assert_eq!(
+        loan(&c, "bob.near").0,
+        amounts(&[
+            (ETH_ARB, ONE_ETH - ONE_ETH * 2 / 3),
+            (BTC, 2 * ONE_BTC / 100)
+        ])
+    );
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+fn a_frozen_token_can_leave_in_full_when_the_rest_covers_the_debt() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    add_collateral(&mut c, "bob.near", &[(BTC, 2 * ONE_BTC / 100)]);
+    context(OWNER);
+    c.freeze_collateral_token(BTC.into());
+    // 1 ETH alone ($1,400 at 70%) covers the face, and the frozen BTC adds nothing to it.
+    auth(
+        &mut c,
+        "bob.near",
+        json!({"action": "withdraw_collateral", "data": {
+            "maturity": MATURITY.to_string(), "collateral_token": BTC,
+            "amount": (2 * ONE_BTC / 100).to_string()
+        }}),
+    );
+    finish_withdraw_of(&mut c, BTC, 2 * ONE_BTC / 100, Ok(oracle_response(2_000)));
+    assert_eq!(loan(&c, "bob.near").0, amounts(&[(ETH_ARB, ONE_ETH)]));
+    assert_invariants(&c, &ACCOUNTS);
+}
+
+#[test]
+#[should_panic(expected = "Withdrawal exceeds max LTV")]
+fn a_frozen_token_gives_no_borrowing_power_to_withdrawals() {
+    let mut c = setup();
+    open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
+    add_collateral(&mut c, "bob.near", &[(BTC, 2 * ONE_BTC / 100)]);
+    context(OWNER);
+    c.freeze_collateral_token(ETH_ARB.into());
+    // Only the BTC counts now: $1,000 × 70% is below the face, so not even 1 BTC unit can go.
+    auth(
+        &mut c,
+        "bob.near",
+        json!({"action": "withdraw_collateral", "data": {
+            "maturity": MATURITY.to_string(), "collateral_token": BTC, "amount": "1"
+        }}),
+    );
+    finish_withdraw_of(&mut c, BTC, 1, Ok(oracle_response(2_000)));
 }
 
 #[test]
@@ -546,7 +712,7 @@ fn withdraw_collateral_callback_uses_debt_added_meanwhile() {
     open_loan(&mut c, "alice.near", "bob.near", 1_000 * ONE_USDC);
     // 0.25 ETH is free against about 1,008 USDC of face at $2,000...
     start_withdraw(&mut c, ONE_ETH / 4);
-    // ...but Bob borrows 200 USDC more into the same position while the oracle call runs.
+    // ...but Bob borrows 200 USDC more into the same loan while the oracle call runs.
     let ask = borrow_with(&mut c, "bob.near", ETH_ARB, 1, 200 * ONE_USDC, 1_000);
     let bid = lend(&mut c, "carol.near", 200 * ONE_USDC, 1_000);
     borrow_fill(&mut c, bid, ask, 200 * ONE_USDC).unwrap();
@@ -582,9 +748,6 @@ fn withdrawal_needs_no_price_if_the_debt_was_repaid_meanwhile() {
         payouts(),
         vec![("bob.near".into(), ETH_ARB.into(), ONE_ETH)]
     );
-    assert!(
-        c.get_position(account("bob.near"), U64(MATURITY), ETH_ARB.into())
-            .is_none()
-    );
+    assert!(c.get_loan(account("bob.near"), U64(MATURITY)).is_none());
     assert_invariants(&c, &ACCOUNTS);
 }

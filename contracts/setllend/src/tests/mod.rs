@@ -10,7 +10,8 @@ use near_sdk::test_utils::{VMContextBuilder, get_created_receipts, get_logs};
 use near_sdk::{AccountId, NearToken, PromiseOrValue, testing_env};
 
 use crate::oracle::{OraclePrice, OracleResponse, Prices};
-use crate::{CollateralToken, Config, Fill, Price, Setllend};
+use crate::state::TokenAmounts;
+use crate::{Config, Fill, Price, Setllend};
 
 mod admin;
 mod auth;
@@ -27,9 +28,11 @@ pub const MATCHER: &str = "matcher.near";
 pub const USDC: &str = "nep141:usdc";
 pub const ETH_ARB: &str = "nep141:arb.omft.near";
 pub const ETH_BASE: &str = "nep141:base.omft.near";
+pub const BTC: &str = "nep141:btc.omft.near";
 pub const ORACLE: &str = "aggregate-oracle.near";
 pub const USDC_FEED: &str = "usdc-feed";
 pub const ETH_FEED: &str = "eth-feed";
+pub const BTC_FEED: &str = "btc-feed";
 
 /// Every account the tests use, for `assert_invariants`.
 pub const ACCOUNTS: [&str; 5] = [
@@ -45,6 +48,7 @@ pub const NOW: u64 = 1_790_000_000_000_000_000;
 pub const MATURITY: u64 = NOW + 30 * DAY;
 pub const ONE_USDC: u128 = 1_000_000;
 pub const ONE_ETH: u128 = 1_000_000_000_000_000_000;
+pub const ONE_BTC: u128 = 100_000_000;
 
 thread_local! {
     static CLOCK: Cell<u64> = const { Cell::new(NOW) };
@@ -77,35 +81,53 @@ pub fn config() -> Config {
         oracle_contract: account(ORACLE),
         debt_token: USDC.into(),
         debt_feed_id: USDC_FEED.into(),
-        // Not sorted by token ID, so netting order is really tested.
-        collateral_tokens: vec![
-            CollateralToken {
-                token_id: ETH_BASE.into(),
-                decimals: 18,
-                feed_id: ETH_FEED.into(),
-            },
-            CollateralToken {
-                token_id: ETH_ARB.into(),
-                decimals: 18,
-                feed_id: ETH_FEED.into(),
-            },
-        ],
-        max_ltv: 7000,
-        liq_threshold: 8000,
-        liq_bonus: 500,
         grace: U64(3_600_000_000_000),
         oracle_max_age: 60,
         oracle_max_conf: 100,
     }
 }
 
-/// A contract with `MATURITY` listed, at time `NOW`.
+/// The owner adds a collateral token at 70% / 80% / 5% (`SOT/risk-params.md`).
+pub fn add_token(c: &mut Setllend, token_id: &str, decimals: u8, feed_id: &str) {
+    context(OWNER);
+    c.add_collateral_token(token_id.into(), decimals, feed_id.into(), 7_000, 8_000, 500);
+}
+
+/// A contract with `MATURITY` listed, at time `NOW`, with ETH on Base and Arbitrum (one ETH
+/// feed) and BTC as collateral.
 pub fn setup() -> Setllend {
     set_time(NOW);
     context(OWNER);
     let mut contract = Setllend::new(config());
     contract.add_maturity(U64(MATURITY));
+    add_token(&mut contract, ETH_BASE, 18, ETH_FEED);
+    add_token(&mut contract, ETH_ARB, 18, ETH_FEED);
+    add_token(&mut contract, BTC, 8, BTC_FEED);
     contract
+}
+
+/// `intents.near` delivering a `transfer` of several tokens with `msg`. Returns the refunds.
+pub fn transfer_many(
+    c: &mut Setllend,
+    sender: &str,
+    tokens: &[(&str, u128)],
+    msg: Value,
+) -> Vec<u128> {
+    context(INTENTS);
+    let result = c.mt_on_transfer(
+        account(sender),
+        vec![account(sender); tokens.len()],
+        tokens.iter().map(|(token, _)| token.to_string()).collect(),
+        tokens.iter().map(|(_, amount)| U128(*amount)).collect(),
+        msg.to_string(),
+    );
+    match result {
+        PromiseOrValue::Value(refunds) => {
+            assert_eq!(refunds.len(), tokens.len());
+            refunds.into_iter().map(|refund| refund.0).collect()
+        }
+        PromiseOrValue::Promise(_) => panic!("mt_on_transfer returned a promise"),
+    }
 }
 
 /// `intents.near` delivering a single-token `transfer` with `msg`. Returns the refund.
@@ -161,11 +183,49 @@ pub fn borrow_with(
     principal: u128,
     rate: u32,
 ) -> u64 {
-    assert_eq!(
-        transfer(c, owner, token, collateral, borrow_msg(principal, rate)),
-        0
-    );
+    borrow_many(c, owner, &[(token, collateral)], principal, rate)
+}
+
+/// A `borrow` escrowing several tokens.
+pub fn borrow_many(
+    c: &mut Setllend,
+    owner: &str,
+    tokens: &[(&str, u128)],
+    principal: u128,
+    rate: u32,
+) -> u64 {
+    let refunds = transfer_many(c, owner, tokens, borrow_msg(principal, rate));
+    assert!(refunds.iter().all(|refund| *refund == 0));
     last_order_id(c)
+}
+
+pub fn add_collateral(c: &mut Setllend, owner: &str, tokens: &[(&str, u128)]) {
+    let msg = json!({"action": "add_collateral", "data": {"maturity": MATURITY.to_string()}});
+    let refunds = transfer_many(c, owner, tokens, msg);
+    assert!(refunds.iter().all(|refund| *refund == 0));
+}
+
+/// An `auth_call` `borrow` against the loan's collateral.
+pub fn loan_borrow(c: &mut Setllend, owner: &str, principal: u128, rate: u32) -> u64 {
+    auth(c, owner, borrow_msg(principal, rate));
+    last_order_id(c)
+}
+
+/// `{token_id: amount}` of a loan or an order's escrow.
+pub fn amounts(entries: &[(&str, u128)]) -> TokenAmounts {
+    entries
+        .iter()
+        .map(|(token, amount)| (token.to_string(), *amount))
+        .collect()
+}
+
+/// The loan of `name` in `MATURITY`: (collateral, debt face). Empty when there is none.
+pub fn loan(c: &Setllend, name: &str) -> (TokenAmounts, u128) {
+    c.loans
+        .get(&(account(name), MATURITY))
+        .map_or((TokenAmounts::new(), 0), |loan| {
+            (loan.collateral.clone(), loan.debt_face)
+        })
 }
 
 /// `intents.near` delivering an `auth_call` with `msg`.
@@ -219,10 +279,15 @@ pub fn usdc_price() -> Price {
     }
 }
 
-/// Validated prices: ETH at `eth_usd`, USDC at $1, both without `conf`.
+pub fn btc_price(usd: i64) -> Price {
+    eth_price(usd)
+}
+
+/// Validated prices: ETH at `eth_usd`, BTC at $50,000, USDC at $1, all without `conf`.
 pub fn prices(eth_usd: i64) -> Prices {
     let mut prices = Prices::default();
     prices.insert(ETH_FEED, eth_price(eth_usd));
+    prices.insert(BTC_FEED, btc_price(50_000));
     prices.insert(USDC_FEED, usdc_price());
     prices
 }
@@ -238,10 +303,12 @@ pub fn oracle_price(price: &Price, age_s: i64) -> Option<OraclePrice> {
     })
 }
 
-/// `list_prices_no_older_than` result with fresh ETH at `eth_usd` and USDC at $1.
+/// `list_prices_no_older_than` result with fresh ETH at `eth_usd`, BTC at $50,000, and USDC
+/// at $1.
 pub fn oracle_response(eth_usd: i64) -> OracleResponse {
     OracleResponse::from([
         (ETH_FEED.to_string(), oracle_price(&eth_price(eth_usd), 0)),
+        (BTC_FEED.to_string(), oracle_price(&btc_price(50_000), 0)),
         (USDC_FEED.to_string(), oracle_price(&usdc_price(), 0)),
     ])
 }
@@ -304,7 +371,7 @@ pub fn assert_fetched_prices() {
         .expect("oracle call");
     assert_eq!(
         args,
-        &json!({"price_ids": [USDC_FEED, ETH_FEED], "age": 60})
+        &json!({"price_ids": [USDC_FEED, ETH_FEED, BTC_FEED], "age": 60})
     );
 }
 
@@ -339,21 +406,35 @@ pub fn skipped_reasons() -> Vec<String> {
 }
 
 /// `redemption_pool + Σ debt_face ≥ V` per maturity, the note shares of `accounts` add up to
-/// `S`, and each account's locked shares match its open `sell_note` orders. `accounts` must
-/// list every account that ever held notes or debt in the test.
+/// `S`, each account's locked shares match its open `sell_note` orders, and the loan index
+/// (D45) lists exactly the loans of `accounts`. `accounts` must list every account that ever
+/// held notes, debt, or collateral in the test.
 pub fn assert_invariants(c: &Setllend, accounts: &[&str]) {
+    let mut loans = 0;
+    for name in accounts {
+        loans += c.get_loans_by_account(account(name)).len();
+    }
+    let page = c.get_loans(None, None);
+    assert_eq!(page.len(), loans, "loan index vs loans");
+    assert_eq!(c.get_loan_count() as usize, loans);
+    for entry in page {
+        let view = c.get_loan(entry.account_id, entry.maturity).unwrap();
+        assert_eq!(
+            (view.collateral, view.debt_face),
+            (entry.collateral, entry.debt_face)
+        );
+    }
     for maturity in c.maturities.iter().copied() {
         let pool = c.pool(maturity);
         let mut debt = 0;
         let mut shares = 0;
         for name in accounts {
-            for token_id in c.config.sorted_collateral_ids() {
-                if let Some(position) =
-                    c.positions
-                        .get(&(account(name), maturity, token_id.to_string()))
-                {
-                    debt += position.debt_face;
-                }
+            if let Some(loan) = c.loans.get(&(account(name), maturity)) {
+                debt += loan.debt_face;
+                assert!(
+                    loan.collateral.values().all(|amount| *amount > 0),
+                    "{name}: zero collateral entry"
+                );
             }
             let note = c.note(&account(name), maturity);
             shares += note.free_shares + note.locked_shares;

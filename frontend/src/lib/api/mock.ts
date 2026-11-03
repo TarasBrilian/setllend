@@ -36,13 +36,6 @@ const CONFIG: Config = {
   oracle_contract: ACCOUNTS.oracle,
   debt_token: ASSETS.usdcNear,
   debt_feed_id: "usdc",
-  collateral_tokens: [
-    { token_id: ASSETS.ethArb, decimals: DECIMALS.eth, feed_id: "eth" },
-    { token_id: ASSETS.ethBase, decimals: DECIMALS.eth, feed_id: "eth" },
-  ],
-  max_ltv: 7000,
-  liq_threshold: 8000,
-  liq_bonus: 500,
   grace: "3600000000000",
   oracle_max_age: 60,
   oracle_max_conf: 100,
@@ -82,9 +75,8 @@ function order(kind: OrderKind, maturity: U64, rate_bps: number, usdc: number, o
     rate_bps,
     remaining: String(BigInt(usdc) * USDC),
     remaining_value: null,
-    collateral_token: isBorrow ? ASSETS.ethArb : null,
     // Enough ETH for 50% LTV at $2,260.
-    collateral_remaining: isBorrow ? String((BigInt(usdc) * 2n * ETH) / 2260n) : null,
+    collateral: isBorrow ? { [ASSETS.ethArb]: String((BigInt(usdc) * 2n * ETH) / 2260n) } : null,
     created_at: "1793606400000000000", // 2026-11-02 08:00 UTC
     expires_at: null,
   };
@@ -137,7 +129,7 @@ export function getPrices(): Promise<PricesView> {
   return delay(Object.fromEntries(Object.entries(USD).map(([token, usd]) => [token, { usd, age_s: 14 }])));
 }
 
-// Per-token parameters from SOT/risk-params.md#per-token-parameters-d48-proposed (D52): 70/80/5 for all.
+// Per-token parameters from SOT/risk-params.md#per-token-parameters-d48 (D52): 70/80/5 for all.
 const COLLATERAL_TOKENS: CollateralTokenInfo[] = [ASSETS.ethArb, ASSETS.ethBase, ASSETS.btc, ASSETS.wnear].map((token_id) => ({
   token_id,
   decimals: TOKENS[token_id].decimals,
@@ -147,7 +139,7 @@ const COLLATERAL_TOKENS: CollateralTokenInfo[] = [ASSETS.ethArb, ASSETS.ethBase,
   frozen: false,
 }));
 
-/** The owner-managed collateral list (proposed D48). Not in the backend API yet. */
+/** The owner-managed collateral list (D48). Not in the backend API yet. */
 export function getCollateralTokens(): Promise<CollateralTokenInfo[]> {
   return delay(COLLATERAL_TOKENS);
 }

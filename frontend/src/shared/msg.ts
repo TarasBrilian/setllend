@@ -22,18 +22,23 @@ export type BorrowMsg = {
   principal: U128;
   expires_at: U64 | null;
 };
+/** Tokens added to the caller's loan in `maturity`. */
+export type AddCollateralMsg = { maturity: U64 };
 export type RepayMsg = {
   maturity: U64;
-  collateral_token: TokenId;
   /** `null` = the sender. Anyone may repay for someone else. */
   borrower: AccountId | null;
 };
-export type LiquidateMsg = { borrower: AccountId; maturity: U64; collateral_token: TokenId };
+export type LiquidateMsg = { borrower: AccountId; maturity: U64 };
 
-/** `msg` of a `transfer` intent, delivered to `mt_on_transfer`. */
+/**
+ * `msg` of a `transfer` intent, delivered to `mt_on_transfer`. `borrow` and `add_collateral` carry
+ * one or more collateral tokens; the others exactly one token, the debt token.
+ */
 export type TransferMsg =
   | { action: "lend"; data: LendMsg }
   | { action: "borrow"; data: BorrowMsg }
+  | { action: "add_collateral"; data: AddCollateralMsg }
   | { action: "repay"; data: RepayMsg }
   | { action: "liquidate"; data: LiquidateMsg };
 
@@ -51,8 +56,9 @@ export type RedeemMsg = { maturity: U64; value: U128 | null };
 /** `amount: null` = the whole free balance. */
 export type WithdrawMsg = { token_id: TokenId; amount: U128 | null };
 
-/** `msg` of an `auth_call` intent, delivered to `on_auth`. */
+/** `msg` of an `auth_call` intent, delivered to `on_auth`. `borrow` borrows against the loan's collateral, without escrow. */
 export type AuthMsg =
+  | { action: "borrow"; data: BorrowMsg }
   | { action: "cancel"; data: CancelMsg }
   | { action: "sell_note"; data: SellNoteMsg }
   | { action: "withdraw_collateral"; data: WithdrawCollateralMsg }
@@ -69,11 +75,13 @@ type Fields = Record<string, Record<string, FieldKind>>;
 const TRANSFER_FIELDS = {
   lend: { maturity: "u64", min_rate_bps: "u32", expires_at: "u64?" },
   borrow: { maturity: "u64", max_rate_bps: "u32", principal: "u128", expires_at: "u64?" },
-  repay: { maturity: "u64", collateral_token: "string", borrower: "account?" },
-  liquidate: { borrower: "account", maturity: "u64", collateral_token: "string" },
+  add_collateral: { maturity: "u64" },
+  repay: { maturity: "u64", borrower: "account?" },
+  liquidate: { borrower: "account", maturity: "u64" },
 } as const satisfies Record<TransferAction, Record<string, FieldKind>>;
 
 const AUTH_FIELDS = {
+  borrow: { maturity: "u64", max_rate_bps: "u32", principal: "u128", expires_at: "u64?" },
   cancel: { order_id: "u64" },
   sell_note: { maturity: "u64", value: "u128", max_rate_bps: "u32", expires_at: "u64?" },
   withdraw_collateral: { maturity: "u64", collateral_token: "string", amount: "u128" },

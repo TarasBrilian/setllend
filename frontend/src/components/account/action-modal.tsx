@@ -1,7 +1,7 @@
 "use client";
 
 // Modals for the actions on existing holdings (SOT/frontend.md#portfolio-portfolio). Each one only
-// simulates its steps (D47). Add collateral and multi-token loans follow the proposed D48.
+// simulates its steps (D47). Add collateral and multi-token loans follow D48.
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -200,14 +200,18 @@ function RepayForm({ loan, tokens, prices, nowMs, onDone }: Context & { loan: Lo
 }
 
 /**
- * Moves a deposit into a loan (`add_collateral`, proposed D48). Opened from a loan, the user picks
- * the token; opened from a deposit, the user picks the loan.
+ * Moves a deposit into a loan (`add_collateral`, D48). Opened from a loan, the user picks
+ * the token; opened from a deposit, the user picks the loan. The contract takes it only for a loan
+ * with debt, before maturity + grace (D53).
  */
-function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, tokens, prices, onDone }: Context & { loan?: LoanView; token?: TokenId; onDone: () => void }) {
+function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config, tokens, prices, nowMs, onDone }: Context & { loan?: LoanView; token?: TokenId; onDone: () => void }) {
   const usable = (tokens ?? []).filter((t) => !t.frozen).map((t) => t.token_id);
+  const graceMs = Number(BigInt(config.grace) / 1_000_000n);
+  const overdue = (l: LoanView) => nowMs >= maturityToMs(l.maturity) + graceMs;
+  const open = account.loans.filter((l) => BigInt(l.debt_face) > 0n && !overdue(l));
   const [token, setToken] = useState<TokenId>(fixedToken ?? usable.find((t) => account.deposits[t]) ?? usable[0]);
-  const [maturity, setMaturity] = useState<U64 | undefined>(fixedLoan?.maturity ?? account.loans[0]?.maturity);
-  const loan = fixedLoan ?? account.loans.find((l) => l.maturity === maturity);
+  const [maturity, setMaturity] = useState<U64 | undefined>(fixedLoan?.maturity ?? open[0]?.maturity);
+  const loan = fixedLoan ?? open.find((l) => l.maturity === maturity);
   const deposited = account.deposits[token] ? tokenAmount(token, account.deposits[token]) : 0;
   const [amount, setAmount] = useState(String(deposited));
   const value = Number(amount) || 0;
@@ -219,7 +223,9 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, tokens
   const signPrefix = useSignPrefix();
 
   let error: string | undefined;
-  if (!loan) error = "You have no loan to add to";
+  if (!loan) error = "You have no loan with debt to add to";
+  else if (BigInt(loan.debt_face) === 0n) error = "This loan has no debt. Withdraw its collateral instead";
+  else if (overdue(loan)) error = "Past maturity and the grace period: collateral can no longer be added";
   else if (info?.frozen) error = "This token is frozen";
   else if (deposited === 0) error = "Nothing deposited. Deposit it first";
   else if (value <= 0) error = "Enter an amount";
@@ -248,7 +254,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, tokens
       {!fixedLoan && (
         <div>
           <p className="mb-1.5 text-sm text-muted">Loan</p>
-          <Segmented options={account.loans.map((l) => formatMaturity(l.maturity))} value={loan ? formatMaturity(loan.maturity) : ""} onChange={(label) => setMaturity(account.loans.find((l) => formatMaturity(l.maturity) === label)?.maturity)} />
+          <Segmented options={open.map((l) => formatMaturity(l.maturity))} value={loan ? formatMaturity(loan.maturity) : ""} onChange={(label) => setMaturity(open.find((l) => formatMaturity(l.maturity) === label)?.maturity)} />
         </div>
       )}
       <Field
@@ -364,12 +370,19 @@ function RedeemForm({ note, onDone }: { note: NoteView; onDone: () => void }) {
   );
 }
 
+function borrowRefund(collateral: OrderView["collateral"]): string {
+  const escrow = Object.entries(collateral ?? {});
+  // A borrow against the loan's collateral escrows nothing.
+  if (escrow.length === 0) return "Nothing is escrowed, your loan's collateral stays in the loan";
+  return `${escrow.map(([token, amount]) => formatToken(token, amount)).join(" and ")} collateral returns to your Intents balance`;
+}
+
 function CancelForm({ order, onDone }: { order: OrderView; onDone: () => void }) {
   const refund =
     order.kind === "lend"
       ? `${formatToken(ASSETS.usdcNear, order.remaining)} returns to your Intents balance`
       : order.kind === "borrow"
-        ? `${formatToken(order.collateral_token!, order.collateral_remaining!)} collateral returns to your Intents balance`
+        ? borrowRefund(order.collateral)
         : `${formatToken(ASSETS.usdcNear, order.remaining_value!)} of notes unlock and stay in your portfolio`;
   const signPrefix = useSignPrefix();
   return (

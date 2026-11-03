@@ -2,21 +2,23 @@
 
 use std::path::Path;
 
-use near_sdk::borsh::{self, BorshSerialize};
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::types::Gas;
 use near_workspaces::{Account, AccountId, Contract, Worker};
 use serde_json::{Value, json};
-use setllend::state::{NoteBalance, Pool, Position, StorageKey};
 use tokio::sync::OnceCell;
 
 pub const USDC: &str = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 pub const ETH_ARB: &str = "nep141:arb.omft.near";
+pub const ETH_BASE: &str = "nep141:base.omft.near";
+pub const BTC: &str = "nep141:btc.omft.near";
 pub const USDC_FEED: &str = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 pub const ETH_FEED: &str = "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
+pub const BTC_FEED: &str = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
 pub const ONE_USDC: u128 = 1_000_000;
 pub const ONE_ETH: u128 = 1_000_000_000_000_000_000;
+pub const ONE_BTC: u128 = 100_000_000;
 pub const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
 /// Builds a crate with `cargo-near` once per test binary. Tests run in parallel, and two
@@ -48,7 +50,7 @@ pub async fn mock_oracle_wasm() -> anyhow::Result<Vec<u8>> {
     compile(&WASM, "../mocks/oracle").await
 }
 
-/// Init args with the approved risk parameters (`SOT/risk-params.md`).
+/// Init args with the approved oracle guards and grace (`SOT/risk-params.md`).
 pub fn default_config(owner_id: &str, intents_contract: &str, oracle_contract: &str) -> Value {
     json!({
         "owner_id": owner_id,
@@ -56,21 +58,22 @@ pub fn default_config(owner_id: &str, intents_contract: &str, oracle_contract: &
         "oracle_contract": oracle_contract,
         "debt_token": USDC,
         "debt_feed_id": USDC_FEED,
-        "collateral_tokens": [
-            { "token_id": ETH_ARB, "decimals": 18, "feed_id": ETH_FEED },
-            { "token_id": "nep141:base.omft.near", "decimals": 18, "feed_id": ETH_FEED }
-        ],
-        "max_ltv": 7000,
-        "liq_threshold": 8000,
-        "liq_bonus": 500,
         "grace": "3600000000000",
         "oracle_max_age": 60,
         "oracle_max_conf": 100
     })
 }
 
+/// The collateral set of D52 the owner adds after init, all at 70% / 80% / 5%:
+/// (token ID, decimals, feed ID).
+pub const COLLATERAL_TOKENS: [(&str, u8, &str); 3] = [
+    (ETH_ARB, 18, ETH_FEED),
+    (ETH_BASE, 18, ETH_FEED),
+    (BTC, 8, BTC_FEED),
+];
+
 /// Setllend wired to the mock `intents.near` and the mock oracle, with one maturity 30 days
-/// out, ETH at $2,000, and USDC at $1.
+/// out, ETH and BTC as collateral, ETH at $2,000, BTC at $50,000, and USDC at $1.
 pub struct Env {
     pub sandbox: Worker<Sandbox>,
     pub intents: Contract,
@@ -96,6 +99,17 @@ impl Env {
             .transact()
             .await?
             .into_result()?;
+        for (token_id, decimals, feed_id) in COLLATERAL_TOKENS {
+            setllend
+                .call("add_collateral_token")
+                .args_json(json!({
+                    "token_id": token_id, "decimals": decimals, "feed_id": feed_id,
+                    "max_ltv": 7000, "liq_threshold": 8000, "liq_bonus": 500
+                }))
+                .transact()
+                .await?
+                .into_result()?;
+        }
         let now = sandbox.view_block().await?.timestamp();
         let maturity = now + 30 * DAY_NS;
         setllend
@@ -113,6 +127,7 @@ impl Env {
         };
         env.set_price(USDC_FEED, 100_000_000, None).await?;
         env.set_eth_price(2_000).await?;
+        env.set_price(BTC_FEED, 50_000 * 100_000_000, None).await?;
         Ok(env)
     }
 
@@ -183,7 +198,7 @@ impl Env {
         amount: u128,
         msg: Value,
     ) -> anyhow::Result<ExecutionFinalResult> {
-        self.transfer_with_gas(user, token_id, amount, msg, None)
+        self.transfer_many(user, &[(token_id, amount)], msg, None)
             .await
     }
 
@@ -196,12 +211,29 @@ impl Env {
         msg: Value,
         min_gas: Option<Gas>,
     ) -> anyhow::Result<ExecutionFinalResult> {
+        self.transfer_many(user, &[(token_id, amount)], msg, min_gas)
+            .await
+    }
+
+    /// One `transfer` intent carrying several tokens.
+    pub async fn transfer_many(
+        &self,
+        user: &Account,
+        tokens: &[(&str, u128)],
+        msg: Value,
+        min_gas: Option<Gas>,
+    ) -> anyhow::Result<ExecutionFinalResult> {
+        let token_ids: Vec<&str> = tokens.iter().map(|(token_id, _)| *token_id).collect();
+        let amounts: Vec<String> = tokens
+            .iter()
+            .map(|(_, amount)| amount.to_string())
+            .collect();
         Ok(user
             .call(self.intents.id(), "transfer")
             .args_json(json!({
                 "receiver_id": self.setllend.id(),
-                "token_ids": [token_id],
-                "amounts": [amount.to_string()],
+                "token_ids": token_ids,
+                "amounts": amounts,
                 "msg": msg.to_string(),
                 "min_gas": min_gas.map(|gas| gas.as_gas().to_string()),
             }))
@@ -256,13 +288,26 @@ impl Env {
         principal: u128,
         rate: u32,
     ) -> anyhow::Result<u64> {
-        self.deposit(user.id().as_str(), ETH_ARB, collateral)
-            .await?;
+        self.borrow_many(user, &[(ETH_ARB, collateral)], principal, rate)
+            .await
+    }
+
+    /// `user` escrows several collateral tokens in one `borrow`.
+    pub async fn borrow_many(
+        &self,
+        user: &Account,
+        collateral: &[(&str, u128)],
+        principal: u128,
+        rate: u32,
+    ) -> anyhow::Result<u64> {
+        for (token_id, amount) in collateral {
+            self.deposit(user.id().as_str(), token_id, *amount).await?;
+        }
         let msg = json!({"action": "borrow", "data": {
             "maturity": self.maturity.to_string(), "max_rate_bps": rate,
             "principal": principal.to_string(), "expires_at": null
         }});
-        let result = self.transfer(user, ETH_ARB, collateral, msg).await?;
+        let result = self.transfer_many(user, collateral, msg, None).await?;
         assert!(result.is_success(), "{:?}", result.failures());
         Ok(placed_order_id(&result))
     }
@@ -304,64 +349,25 @@ impl Env {
         Ok(self.setllend.view(method).args_json(args).await?.json()?)
     }
 
-    /// Gives `lender` `value` of notes backed by `borrower` debt of the same face, as a
-    /// `lend` × `borrow` fill at 0% would. Patched into state instead of filled, for round
-    /// numbers in the note-sale tests; the oracle flows open real loans. The pool must still
-    /// be empty.
-    pub async fn patch_loan(
+    /// Gives `lender` `value` of notes backed by `borrower` debt of the same face, through a
+    /// `lend` × `borrow` fill at 0%, for round numbers in the note-sale tests. The borrower
+    /// escrows 1 ETH per 1,000 USDC plus 1 and receives `value` USDC; the lender's USDC is
+    /// deposited first. The pool must still be empty.
+    pub async fn zero_rate_loan(
         &self,
         lender: &Account,
         borrower: &Account,
         value: u128,
     ) -> anyhow::Result<()> {
-        let pool = Pool {
-            total_value: value,
-            total_shares: value,
-            ..Pool::default()
-        };
-        let note = NoteBalance {
-            free_shares: value,
-            locked_shares: 0,
-        };
-        let position = Position {
-            collateral: ONE_ETH,
-            debt_face: value,
-        };
-        let lender_id: near_sdk::AccountId = lender.id().as_str().parse()?;
-        let borrower_id: near_sdk::AccountId = borrower.id().as_str().parse()?;
-        let records = [
-            (key(StorageKey::Pools, &self.maturity), to_vec(&pool)),
-            (
-                key(StorageKey::Notes, &(lender_id, self.maturity)),
-                to_vec(&note),
-            ),
-            (
-                key(
-                    StorageKey::Positions,
-                    &(borrower_id, self.maturity, ETH_ARB.to_string()),
-                ),
-                to_vec(&position),
-            ),
-        ];
-        for (key, value) in records {
-            self.sandbox
-                .patch_state(self.setllend.id(), &key, &value)
-                .await?;
-        }
-        self.deposit(self.setllend.id().as_str(), ETH_ARB, ONE_ETH)
-            .await
+        let collateral = ONE_ETH * (value / (1_000 * ONE_USDC) + 1);
+        self.deposit(lender.id().as_str(), USDC, value).await?;
+        let ask = self.borrow(borrower, collateral, value, 0).await?;
+        let bid = self.lend(lender, value, 0).await?;
+        let result = self.match_orders(lender, &[(bid, ask, value)]).await?;
+        assert!(result.is_success(), "{:?}", result.failures());
+        assert_eq!(events(&result, "order_filled").len(), 1);
+        Ok(())
     }
-}
-
-fn to_vec<T: BorshSerialize>(value: &T) -> Vec<u8> {
-    borsh::to_vec(value).unwrap()
-}
-
-/// Storage key of a `near_sdk::store::LookupMap` entry: prefix, then the borsh key.
-fn key<K: BorshSerialize>(prefix: StorageKey, map_key: &K) -> Vec<u8> {
-    let mut key = to_vec(&prefix);
-    key.extend(to_vec(map_key));
-    key
 }
 
 /// Data of every Setllend `event` in the transaction's logs.

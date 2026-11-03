@@ -34,20 +34,23 @@ export type OrderView = {
   remaining: U128;
   /** `sell_note` only: current value of the remaining shares. */
   remaining_value: U128 | null;
-  collateral_token: TokenId | null;
-  collateral_remaining: U128 | null;
+  /** `borrow` only: escrow left by token, `{}` for a borrow against the loan's collateral. */
+  collateral: Record<TokenId, U128> | null;
   created_at: U64;
   expires_at: U64 | null;
 };
 
-/** `get_position`, or `null`. */
-export type PositionView = { collateral: U128; debt_face: U128 };
+/** `get_loan`, or `null`. One loan per (account, maturity), holding one or more tokens (D48). */
+export type LoanView = { collateral: Record<TokenId, U128>; debt_face: U128 };
 
-/** `get_positions_by_account`: by maturity, then collateral token ID. */
-export type AccountPositionView = {
+/** `get_loans_by_account`: by maturity. */
+export type AccountLoanView = { maturity: U64; collateral: Record<TokenId, U128>; debt_face: U128 };
+
+/** `get_loans(from_index, limit)`: every account's loans, in index order (D45). */
+export type LoanEntryView = {
+  account_id: AccountId;
   maturity: U64;
-  collateral_token: TokenId;
-  collateral: U128;
+  collateral: Record<TokenId, U128>;
   debt_face: U128;
 };
 
@@ -74,22 +77,28 @@ export type PoolView = {
   bad_debt_total: U128;
 };
 
-export type CollateralToken = { token_id: TokenId; decimals: number; feed_id: string };
-
-/** `get_config`. Fixed at init (D22). */
-export type Config = {
-  owner_id: AccountId;
-  intents_contract: AccountId;
-  oracle_contract: AccountId;
-  debt_token: TokenId;
-  debt_feed_id: string;
-  collateral_tokens: CollateralToken[];
+/** One entry of `get_collateral_tokens`, owner-managed with its own risk parameters (D48). */
+export type CollateralToken = {
+  token_id: TokenId;
+  decimals: number;
+  feed_id: string;
   /** bps */
   max_ltv: number;
   /** bps */
   liq_threshold: number;
   /** bps */
   liq_bonus: number;
+  /** No new escrow or top-ups and no borrowing power; open loans run on (D53). */
+  frozen: boolean;
+};
+
+/** `get_config`. Fixed at init; collateral tokens are managed separately (D48). */
+export type Config = {
+  owner_id: AccountId;
+  intents_contract: AccountId;
+  oracle_contract: AccountId;
+  debt_token: TokenId;
+  debt_feed_id: string;
   /** Nanoseconds after maturity before unpaid debt is liquidatable (D19). */
   grace: U64;
   /** Seconds. */
