@@ -87,8 +87,23 @@ fn pow10(exp: i64) -> u128 {
         .unwrap_or_else(|| overflow())
 }
 
-/// `collateral_value_usd × max_ltv ≥ debt_value_usd`, valuing collateral at `price − conf` and
-/// debt at `price + conf`.
+/// Powers of ten that bring `10^lhs_exp` and `10^rhs_exp` to their common base, so products
+/// stay small: only the difference of the two exponents is ever multiplied in.
+fn common_scale(lhs_exp: i64, rhs_exp: i64) -> (u128, u128) {
+    let common = lhs_exp.min(rhs_exp);
+    (pow10(lhs_exp - common), pow10(rhs_exp - common))
+}
+
+fn product(terms: &[u128]) -> u128 {
+    terms
+        .iter()
+        .try_fold(1u128, |acc, term| acc.checked_mul(*term))
+        .unwrap_or_else(|| overflow())
+}
+
+/// `collateral_value_usd × ratio ≥ debt_value_usd`, valuing collateral at `price − conf` and
+/// debt at `price + conf`. With `max_ltv` this is `can_open`; with `liq_threshold` it is
+/// `health_factor ≥ 1`.
 ///
 /// Compared as cross-multiplied integers. The two sides carry different powers of ten (price
 /// exponents and token decimals), so the common power is cancelled first to keep the products
@@ -99,7 +114,7 @@ pub fn can_open(
     debt_face: u128,
     collateral_price: &Price,
     debt_price: &Price,
-    max_ltv: u32,
+    ratio: u32,
 ) -> bool {
     if debt_face == 0 {
         return true;
@@ -109,30 +124,78 @@ pub fn can_open(
     if collateral_px <= 0 || debt_px <= 0 {
         return false;
     }
-    // collateral × cpx × 10^ce / 10^cd × ltv / BPS ≥ debt × dpx × 10^de / 10^6
-    // ⇔ collateral × cpx × ltv × 10^(ce + 6) ≥ debt × dpx × BPS × 10^(de + cd)
-    let lhs_exp = i64::from(collateral_price.expo) + i64::from(DEBT_DECIMALS);
-    let rhs_exp = i64::from(debt_price.expo) + i64::from(collateral_decimals);
-    let common = lhs_exp.min(rhs_exp);
-    let checked = |terms: [u128; 4]| {
-        terms
-            .into_iter()
-            .try_fold(1u128, u128::checked_mul)
-            .unwrap_or_else(|| overflow())
-    };
-    let lhs = checked([
+    // collateral × cpx × 10^ce / 10^cd × ratio / BPS ≥ debt × dpx × 10^de / 10^6
+    // ⇔ collateral × cpx × ratio × 10^(ce + 6) ≥ debt × dpx × BPS × 10^(de + cd)
+    let (lhs_scale, rhs_scale) = common_scale(
+        i64::from(collateral_price.expo) + i64::from(DEBT_DECIMALS),
+        i64::from(debt_price.expo) + i64::from(collateral_decimals),
+    );
+    let lhs = product(&[
         collateral,
         collateral_px as u128,
-        u128::from(max_ltv),
-        pow10(lhs_exp - common),
+        u128::from(ratio),
+        lhs_scale,
     ]);
-    let rhs = checked([
-        debt_face,
-        debt_px as u128,
-        u128::from(BPS),
-        pow10(rhs_exp - common),
-    ]);
+    let rhs = product(&[debt_face, debt_px as u128, u128::from(BPS), rhs_scale]);
     lhs >= rhs
+}
+
+/// Mid prices as unsigned integers, with the scales of `seize_for`: the collateral side
+/// carries `10^(ce + 6)`, the debt side `10^(de + cd)`.
+fn mid_prices(
+    collateral_decimals: u8,
+    collateral_price: &Price,
+    debt_price: &Price,
+) -> (u128, u128, u128, u128) {
+    let (Ok(collateral_px), Ok(debt_px)) = (
+        u128::try_from(collateral_price.price),
+        u128::try_from(debt_price.price),
+    ) else {
+        env::panic_str("Invalid price")
+    };
+    if collateral_px == 0 || debt_px == 0 {
+        env::panic_str("Invalid price");
+    }
+    let (collateral_scale, debt_scale) = common_scale(
+        i64::from(collateral_price.expo) + i64::from(DEBT_DECIMALS),
+        i64::from(debt_price.expo) + i64::from(collateral_decimals),
+    );
+    (collateral_px, collateral_scale, debt_px, debt_scale)
+}
+
+/// Collateral a liquidator receives for repaying `repaid` of debt face: the repaid USD value
+/// plus `liq_bonus`, at the oracle mid prices (no `conf`, as in Aave). Rounds down.
+///
+/// `repaid × dpx × 10^de / 10^6 × (1 + bonus) = seized × cpx × 10^ce / 10^cd`. Overflows above
+/// roughly $300M in one call; a liquidator can split a larger position into several calls.
+pub fn seize_for(
+    repaid: u128,
+    collateral_decimals: u8,
+    collateral_price: &Price,
+    debt_price: &Price,
+    liq_bonus: u32,
+) -> u128 {
+    let (cpx, collateral_scale, dpx, debt_scale) =
+        mid_prices(collateral_decimals, collateral_price, debt_price);
+    let numerator = product(&[repaid, dpx, u128::from(BPS + liq_bonus), debt_scale]);
+    let denominator = product(&[cpx, u128::from(BPS), collateral_scale]);
+    numerator / denominator
+}
+
+/// Debt face a liquidator repays to take all of `collateral`: the inverse of `seize_for`,
+/// rounded up so a capped liquidation never repays less than the collateral is worth.
+pub fn repay_for(
+    collateral: u128,
+    collateral_decimals: u8,
+    collateral_price: &Price,
+    debt_price: &Price,
+    liq_bonus: u32,
+) -> u128 {
+    let (cpx, collateral_scale, dpx, debt_scale) =
+        mid_prices(collateral_decimals, collateral_price, debt_price);
+    let numerator = product(&[collateral, cpx, u128::from(BPS), collateral_scale]);
+    let denominator = product(&[dpx, u128::from(BPS + liq_bonus), debt_scale]);
+    numerator.div_ceil(denominator)
 }
 
 #[cfg(test)]
@@ -312,5 +375,47 @@ mod tests {
             &usdc(),
             7_000
         ));
+    }
+
+    #[test]
+    fn seize_adds_the_bonus_at_mid_prices() {
+        // Repay $1,000 with ETH at $2,000 and a 5% bonus: $1,050 of ETH = 0.525 ETH.
+        assert_eq!(
+            seize_for(1_000 * USDC, 18, &eth(2_000), &usdc(), 500),
+            525_000_000_000_000_000
+        );
+        // conf is ignored for seizure.
+        let wide = Price {
+            conf: 10_000_000_000,
+            ..eth(2_000)
+        };
+        assert_eq!(
+            seize_for(1_000 * USDC, 18, &wide, &usdc(), 500),
+            525_000_000_000_000_000
+        );
+        // A depegged debt price pays less collateral.
+        let depeg = Price {
+            price: 50_000_000,
+            ..usdc()
+        };
+        assert_eq!(
+            seize_for(1_000 * USDC, 18, &eth(2_000), &depeg, 500),
+            262_500_000_000_000_000
+        );
+    }
+
+    #[test]
+    fn repay_for_inverts_seize_for_and_rounds_up() {
+        // All of 1 ETH at $2,000 with a 5% bonus costs $2,000 / 1.05 ≈ 1,904.761905 USDC.
+        let repay = repay_for(ETH, 18, &eth(2_000), &usdc(), 500);
+        assert_eq!(repay, 1_904_761_905);
+        assert!(seize_for(repay, 18, &eth(2_000), &usdc(), 500) >= ETH);
+        assert!(seize_for(repay - 1, 18, &eth(2_000), &usdc(), 500) < ETH);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid price")]
+    fn seize_rejects_a_non_positive_price() {
+        seize_for(USDC, 18, &eth(0), &usdc(), 500);
     }
 }

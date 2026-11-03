@@ -119,6 +119,46 @@ pub(crate) fn repaid(
     );
 }
 
+pub(crate) fn liquidated(
+    borrower: &AccountId,
+    liquidator: &AccountId,
+    maturity: u64,
+    collateral_token: &str,
+    repaid: u128,
+    seized: u128,
+) {
+    emit(
+        "liquidated",
+        json!({
+            "borrower": borrower,
+            "liquidator": liquidator,
+            "maturity": U64(maturity),
+            "collateral_token": collateral_token,
+            "repaid": U128(repaid),
+            "seized": U128(seized),
+        }),
+    );
+}
+
+pub(crate) fn bad_debt_realized(
+    borrower: &AccountId,
+    maturity: u64,
+    collateral_token: &str,
+    amount: u128,
+    total_value_after: u128,
+) {
+    emit(
+        "bad_debt_realized",
+        json!({
+            "borrower": borrower,
+            "maturity": U64(maturity),
+            "collateral_token": collateral_token,
+            "amount": U128(amount),
+            "total_value_after": U128(total_value_after),
+        }),
+    );
+}
+
 pub(crate) fn collateral_withdrawn(
     account: &AccountId,
     maturity: u64,

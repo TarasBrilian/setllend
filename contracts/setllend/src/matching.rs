@@ -4,12 +4,16 @@
 //! the same rule the oracle callback follows, so one stale order never costs the whole batch.
 
 use near_sdk::json_types::{U64, U128};
-use near_sdk::{PromiseOrValue, env, near, require};
+use near_sdk::{Gas, PromiseError, PromiseOrValue, env, near, require};
 
 use crate::events::{self, Filled};
-use crate::math::{self, Price, Rounding};
+use crate::math::{self, Rounding};
+use crate::oracle::{OracleResponse, Prices};
 use crate::state::{Order, OrderKind, checked_add};
 use crate::{Setllend, SetllendExt};
+
+/// Static gas for `on_match_prices`, on top of its share of the unused gas.
+const GAS_ON_MATCH_PRICES: Gas = Gas::from_tgas(10);
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq)]
@@ -129,15 +133,7 @@ impl Setllend {
 
     /// `lend` × `borrow`: mints notes for the lender and debt for the borrower, moves pro-rata
     /// collateral into the position, and pays the bid's USDC to the borrower.
-    ///
-    /// Takes the oracle prices as arguments. Phase 2 calls it from the oracle callback.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn fill_borrow(
-        &mut self,
-        fill: &Fill,
-        collateral_price: &Price,
-        debt_price: &Price,
-    ) -> Result<(), Skip> {
+    pub(crate) fn fill_borrow(&mut self, fill: &Fill, prices: &Prices) -> Result<(), Skip> {
         let Checked {
             mut bid,
             mut ask,
@@ -162,6 +158,10 @@ impl Setllend {
         if shares == 0 {
             return Err("zero_shares");
         }
+        let Some((collateral_price, debt_price)) = self.prices_for(prices, &collateral_token)
+        else {
+            return Err("no_price");
+        };
         // Pro rata of what is left, so the fill that completes the order moves the rest.
         let moved = if principal == ask.remaining {
             collateral_remaining
@@ -186,8 +186,8 @@ impl Setllend {
             position.collateral,
             decimals,
             position.debt_face,
-            collateral_price,
-            debt_price,
+            &collateral_price,
+            &debt_price,
             self.config.max_ltv,
         ) {
             return Err("cannot_open");
@@ -241,27 +241,64 @@ impl Setllend {
     /// Permissionless. The matcher picks pairs and sizes, the contract checks every fill and
     /// sets the rate (D17).
     ///
-    /// Phase 1: batches with a `borrow` ask panic until the oracle call and `on_match_prices`
-    /// callback land. All-`sell_note` batches settle synchronously.
+    /// A batch with a `borrow` ask fetches prices once and settles in `on_match_prices`.
+    /// All-`sell_note` batches settle synchronously.
     pub fn match_orders(&mut self, fills: Vec<Fill>) -> PromiseOrValue<()> {
         require!(!fills.is_empty(), "No fills");
-        let needs_oracle = fills.iter().any(|fill| {
-            matches!(
-                self.orders.get(&fill.ask.0),
-                Some(Order {
-                    kind: OrderKind::Borrow { .. },
-                    ..
-                })
-            )
-        });
+        let needs_oracle = fills.iter().any(|fill| self.is_borrow_ask(fill));
         if needs_oracle {
-            env::panic_str("Not implemented: borrow fills need the oracle");
+            return PromiseOrValue::Promise(
+                self.fetch_prices().then(
+                    Self::ext(env::current_account_id())
+                        .with_static_gas(GAS_ON_MATCH_PRICES)
+                        .with_unused_gas_weight(1)
+                        .on_match_prices(fills),
+                ),
+            );
         }
-        for fill in &fills {
-            if let Err(reason) = self.fill_sell_note(fill) {
+        let prices = Prices::default();
+        self.execute_fills(&fills, &prices);
+        PromiseOrValue::Value(())
+    }
+
+    /// Every fill is validated again here: orders can be cancelled or filled while the oracle
+    /// call is in flight. Without a usable price, `borrow` fills skip with `no_price` and
+    /// `sell_note` fills still settle.
+    #[private]
+    pub fn on_match_prices(
+        &mut self,
+        fills: Vec<Fill>,
+        #[callback_result] prices: Result<OracleResponse, PromiseError>,
+    ) {
+        let prices = self.validate_prices(prices);
+        self.execute_fills(&fills, &prices);
+    }
+}
+
+impl Setllend {
+    fn is_borrow_ask(&self, fill: &Fill) -> bool {
+        matches!(
+            self.orders.get(&fill.ask.0),
+            Some(Order {
+                kind: OrderKind::Borrow { .. },
+                ..
+            })
+        )
+    }
+
+    /// Routes each fill by its ask kind. Order IDs are never reused, so the kind can't change
+    /// between `match_orders` and the callback. Anything that isn't a `borrow` ask goes to
+    /// `fill_sell_note`, whose shared checks report a missing or `lend` ask.
+    fn execute_fills(&mut self, fills: &[Fill], prices: &Prices) {
+        for fill in fills {
+            let result = if self.is_borrow_ask(fill) {
+                self.fill_borrow(fill, prices)
+            } else {
+                self.fill_sell_note(fill)
+            };
+            if let Err(reason) = result {
                 events::fill_skipped(fill.bid.0, fill.ask.0, reason);
             }
         }
-        PromiseOrValue::Value(())
     }
 }

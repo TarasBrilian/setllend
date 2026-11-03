@@ -2,15 +2,19 @@
 
 use std::cell::Cell;
 
+use near_sdk::json_types::I64;
 use near_sdk::json_types::{U64, U128};
+use near_sdk::mock::MockAction;
 use near_sdk::serde_json::{Value, json};
-use near_sdk::test_utils::{VMContextBuilder, get_logs};
+use near_sdk::test_utils::{VMContextBuilder, get_created_receipts, get_logs};
 use near_sdk::{AccountId, NearToken, PromiseOrValue, testing_env};
 
+use crate::oracle::{OraclePrice, OracleResponse, Prices};
 use crate::{CollateralToken, Config, Fill, Price, Setllend};
 
 mod admin;
 mod auth;
+mod liquidation;
 mod matching;
 mod payout;
 mod transfer;
@@ -22,6 +26,9 @@ pub const MATCHER: &str = "matcher.near";
 pub const USDC: &str = "nep141:usdc";
 pub const ETH_ARB: &str = "nep141:arb.omft.near";
 pub const ETH_BASE: &str = "nep141:base.omft.near";
+pub const ORACLE: &str = "aggregate-oracle.near";
+pub const USDC_FEED: &str = "usdc-feed";
+pub const ETH_FEED: &str = "eth-feed";
 
 /// Every account the tests use, for `assert_invariants`.
 pub const ACCOUNTS: [&str; 5] = [
@@ -66,20 +73,20 @@ pub fn config() -> Config {
     Config {
         owner_id: account(OWNER),
         intents_contract: account(INTENTS),
-        oracle_contract: account("aggregate-oracle.near"),
+        oracle_contract: account(ORACLE),
         debt_token: USDC.into(),
-        debt_feed_id: "usdc-feed".into(),
+        debt_feed_id: USDC_FEED.into(),
         // Not sorted by token ID, so netting order is really tested.
         collateral_tokens: vec![
             CollateralToken {
                 token_id: ETH_BASE.into(),
                 decimals: 18,
-                feed_id: "eth-feed".into(),
+                feed_id: ETH_FEED.into(),
             },
             CollateralToken {
                 token_id: ETH_ARB.into(),
                 decimals: 18,
-                feed_id: "eth-feed".into(),
+                feed_id: ETH_FEED.into(),
             },
         ],
         max_ltv: 7000,
@@ -211,7 +218,34 @@ pub fn usdc_price() -> Price {
     }
 }
 
-/// `lend` × `borrow` fill with ETH at $2,000, as the phase 2 oracle callback will run it.
+/// Validated prices: ETH at `eth_usd`, USDC at $1, both without `conf`.
+pub fn prices(eth_usd: i64) -> Prices {
+    let mut prices = Prices::default();
+    prices.insert(ETH_FEED, eth_price(eth_usd));
+    prices.insert(USDC_FEED, usdc_price());
+    prices
+}
+
+/// One feed as `aggregate-oracle.near` returns it, published `age_s` seconds ago.
+pub fn oracle_price(price: &Price, age_s: i64) -> Option<OraclePrice> {
+    let now = i64::try_from(CLOCK.with(Cell::get) / 1_000_000_000).unwrap();
+    Some(OraclePrice {
+        price: I64(price.price),
+        conf: U64(price.conf),
+        expo: price.expo,
+        publish_time: now - age_s,
+    })
+}
+
+/// `list_prices_no_older_than` result with fresh ETH at `eth_usd` and USDC at $1.
+pub fn oracle_response(eth_usd: i64) -> OracleResponse {
+    OracleResponse::from([
+        (ETH_FEED.to_string(), oracle_price(&eth_price(eth_usd), 0)),
+        (USDC_FEED.to_string(), oracle_price(&usdc_price(), 0)),
+    ])
+}
+
+/// `lend` × `borrow` fill with ETH at $2,000, as `on_match_prices` runs it.
 pub fn borrow_fill(
     c: &mut Setllend,
     bid: u64,
@@ -219,7 +253,58 @@ pub fn borrow_fill(
     principal: u128,
 ) -> Result<(), &'static str> {
     context(MATCHER);
-    c.fill_borrow(&fill(bid, ask, principal), &eth_price(2_000), &usdc_price())
+    c.fill_borrow(&fill(bid, ask, principal), &prices(2_000))
+}
+
+/// Function calls the current call created: (receiver, method, JSON args).
+pub fn created_calls() -> Vec<(String, String, Value)> {
+    get_created_receipts()
+        .into_iter()
+        .flat_map(|receipt| {
+            let receiver = receipt.receiver_id.to_string();
+            receipt
+                .actions
+                .into_iter()
+                .filter_map(move |action| match action {
+                    MockAction::FunctionCallWeight {
+                        method_name, args, ..
+                    } => Some((
+                        receiver.clone(),
+                        String::from_utf8(method_name).unwrap(),
+                        near_sdk::serde_json::from_slice(&args).unwrap_or(Value::Null),
+                    )),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+/// The `mt_transfer` payouts the current call created: (receiver, token, amount).
+pub fn payouts() -> Vec<(String, String, u128)> {
+    created_calls()
+        .into_iter()
+        .filter(|(receiver, method, _)| receiver == INTENTS && method == "mt_transfer")
+        .map(|(_, _, args)| {
+            (
+                args["receiver_id"].as_str().unwrap().to_string(),
+                args["token_id"].as_str().unwrap().to_string(),
+                args["amount"].as_str().unwrap().parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Asserts the current call fetched prices for every feed, with `oracle_max_age`.
+pub fn assert_fetched_prices() {
+    let calls = created_calls();
+    let (_, _, args) = calls
+        .iter()
+        .find(|(receiver, method, _)| receiver == ORACLE && method == "list_prices_no_older_than")
+        .expect("oracle call");
+    assert_eq!(
+        args,
+        &json!({"price_ids": [USDC_FEED, ETH_FEED], "age": 60})
+    );
 }
 
 /// `lender` lends `principal` to `borrower` at 10% APR on 1 ETH. Returns the note value.

@@ -218,16 +218,6 @@ fn transfer_rejects_unknown_action() {
     );
 }
 
-#[test]
-#[should_panic(expected = "Not implemented: liquidate")]
-fn liquidate_is_not_implemented_yet() {
-    let mut c = setup();
-    let msg = json!({"action": "liquidate", "data": {
-        "borrower": "bob.near", "maturity": MATURITY.to_string(), "collateral_token": ETH_ARB
-    }});
-    transfer(&mut c, "keeper.near", USDC, ONE_USDC, msg);
-}
-
 fn repay_msg(borrower: Option<&str>) -> Value {
     json!({"action": "repay", "data": {
         "maturity": MATURITY.to_string(), "collateral_token": ETH_ARB, "borrower": borrower

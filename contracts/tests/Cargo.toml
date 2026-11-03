@@ -16,6 +16,8 @@ near-workspaces = { workspace = true }
 serde_json = { workspace = true }
 # Stored types, to build storage keys and values for state patches.
 setllend = { path = "../setllend" }
+# OnceCell, to build each wasm once per test binary.
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

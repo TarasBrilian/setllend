@@ -1,8 +1,9 @@
-//! End-to-end flows through the mock `intents.near`.
+//! End-to-end flows through the mock `intents.near` and the mock oracle.
 
-use near_workspaces::AccountId;
+use near_workspaces::types::Gas;
+use near_workspaces::{Account, AccountId};
 use serde_json::{Value, json};
-use setllend_tests::{ETH_ARB, Env, ONE_USDC, USDC, events};
+use setllend_tests::{ETH_ARB, ETH_FEED, Env, ONE_ETH, ONE_USDC, USDC, events};
 
 fn as_u128(value: &Value) -> u128 {
     value.as_str().unwrap().parse().unwrap()
@@ -302,4 +303,246 @@ async fn match_orders_gas_per_sell_note_fill() -> anyhow::Result<()> {
         println!("match_orders {label} x{count}: call {call:.2} Tgas, total {total:.2} Tgas");
     }
     assert_invariants(&env, &[alice.id(), bob.id(), carol.id()]).await
+}
+
+fn tgas(gas: Gas) -> f64 {
+    gas.as_gas() as f64 / 1e12
+}
+
+/// `min_gas` the keeper and relayer set for intents that reach the oracle.
+const ORACLE_MIN_GAS: Gas = Gas::from_tgas(100);
+
+/// Alice lends Bob `principal` USDC on 1 ETH at 10% APR, through an oracle-priced fill.
+/// Returns the gas of `match_orders` in Tgas: (the call itself, all receipts).
+async fn open_loan(
+    env: &Env,
+    alice: &Account,
+    bob: &Account,
+    principal: u128,
+) -> anyhow::Result<(f64, f64)> {
+    let ask = env.borrow(bob, ONE_ETH, principal, 1_000).await?;
+    let bid = env.lend(alice, principal, 1_000).await?;
+    let result = env.match_orders(alice, &[(bid, ask, principal)]).await?;
+    assert!(result.is_success(), "{:?}", result.failures());
+    assert_eq!(
+        events(&result, "order_filled").len(),
+        1,
+        "logs: {:?}",
+        result.logs()
+    );
+    Ok((
+        tgas(result.receipt_outcomes()[0].gas_burnt),
+        tgas(result.total_gas_burnt),
+    ))
+}
+
+async fn bob_position(env: &Env, bob: &Account) -> anyhow::Result<Value> {
+    env.view(
+        "get_position",
+        json!({
+            "account_id": bob.id(), "maturity": env.maturity.to_string(),
+            "collateral_token": ETH_ARB
+        }),
+    )
+    .await
+}
+
+fn liquidate_msg(env: &Env, borrower: &Account) -> Value {
+    json!({"action": "liquidate", "data": {
+        "borrower": borrower.id(), "maturity": env.maturity.to_string(),
+        "collateral_token": ETH_ARB
+    }})
+}
+
+/// Gas of a one-fill `borrow` batch, oracle round trip included. Run with `--nocapture`.
+#[tokio::test]
+async fn borrow_fill_prices_through_the_oracle() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_000 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let (call, total) = open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
+
+    // The borrower got the principal in their Intents balance.
+    assert_eq!(env.balance(bob.id(), USDC).await?, 1_000 * ONE_USDC);
+    let position = bob_position(&env, &bob).await?;
+    assert_eq!(as_u128(&position["collateral"]), ONE_ETH);
+    assert!(as_u128(&position["debt_face"]) > 1_000 * ONE_USDC);
+    println!("match_orders borrow x1: call {call:.2} Tgas, total {total:.2} Tgas");
+    assert_invariants(&env, &[alice.id(), bob.id()]).await
+}
+
+#[tokio::test]
+async fn stale_price_skips_borrow_fills() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_000 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let ask = env.borrow(&bob, ONE_ETH, 1_000 * ONE_USDC, 1_000).await?;
+    let bid = env.lend(&alice, 1_000 * ONE_USDC, 1_000).await?;
+    let now_s = (env.sandbox.view_block().await?.timestamp() / 1_000_000_000) as i64;
+    env.set_price(ETH_FEED, 2_000 * 100_000_000, Some(now_s - 120))
+        .await?;
+
+    let result = env
+        .match_orders(&alice, &[(bid, ask, 1_000 * ONE_USDC)])
+        .await?;
+    assert!(result.is_success(), "{:?}", result.failures());
+    assert_eq!(events(&result, "fill_skipped")[0]["reason"], "no_price");
+    assert_eq!(env.balance(bob.id(), USDC).await?, 0);
+
+    // A fresh price lets the same fill through.
+    env.set_eth_price(2_000).await?;
+    let result = env
+        .match_orders(&alice, &[(bid, ask, 1_000 * ONE_USDC)])
+        .await?;
+    assert_eq!(events(&result, "order_filled").len(), 1);
+    assert_eq!(env.balance(bob.id(), USDC).await?, 1_000 * ONE_USDC);
+    assert_invariants(&env, &[alice.id(), bob.id()]).await
+}
+
+/// Gas of `liquidate`, oracle round trip included. Run with `--nocapture`.
+#[tokio::test]
+async fn keeper_liquidates_an_unhealthy_position() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_000 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let keeper = env.user(2_000 * ONE_USDC).await?;
+    open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
+    let debt = as_u128(&bob_position(&env, &bob).await?["debt_face"]);
+
+    // Healthy at $2,000: the callback panics and the keeper is refunded in full.
+    let msg = liquidate_msg(&env, &bob);
+    let result = env
+        .transfer_with_gas(
+            &keeper,
+            USDC,
+            2_000 * ONE_USDC,
+            msg.clone(),
+            Some(ORACLE_MIN_GAS),
+        )
+        .await?;
+    let failure = format!("{:?}", result.receipt_failures());
+    assert!(
+        failure.contains("Position is not liquidatable"),
+        "{failure}"
+    );
+    assert_eq!(env.balance(keeper.id(), USDC).await?, 2_000 * ONE_USDC);
+
+    env.set_eth_price(1_200).await?;
+    let result = env
+        .transfer_with_gas(&keeper, USDC, 2_000 * ONE_USDC, msg, Some(ORACLE_MIN_GAS))
+        .await?;
+    assert!(
+        result.receipt_failures().is_empty(),
+        "{:?}",
+        result.failures()
+    );
+    let liquidated = &events(&result, "liquidated")[0];
+    assert_eq!(as_u128(&liquidated["repaid"]), debt);
+    let seized = as_u128(&liquidated["seized"]);
+    // $1,008.22 × 1.05 / $1,200 ≈ 0.8822 ETH.
+    assert!(seized > ONE_ETH * 88 / 100 && seized < ONE_ETH * 89 / 100);
+    assert_eq!(
+        env.balance(keeper.id(), USDC).await?,
+        2_000 * ONE_USDC - debt
+    );
+    assert_eq!(env.balance(keeper.id(), ETH_ARB).await?, seized);
+    let position = bob_position(&env, &bob).await?;
+    assert_eq!(as_u128(&position["debt_face"]), 0);
+    assert_eq!(as_u128(&position["collateral"]), ONE_ETH - seized);
+    println!("liquidate: total {:.2} Tgas", tgas(result.total_gas_burnt));
+    assert_invariants(&env, &[alice.id(), bob.id(), keeper.id()]).await
+}
+
+#[tokio::test]
+async fn liquidation_realizes_bad_debt() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_000 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let keeper = env.user(2_000 * ONE_USDC).await?;
+    open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
+    let debt = as_u128(&bob_position(&env, &bob).await?["debt_face"]);
+
+    env.set_eth_price(1_000).await?;
+    let msg = liquidate_msg(&env, &bob);
+    let result = env
+        .transfer_with_gas(&keeper, USDC, 2_000 * ONE_USDC, msg, Some(ORACLE_MIN_GAS))
+        .await?;
+    assert!(
+        result.receipt_failures().is_empty(),
+        "{:?}",
+        result.failures()
+    );
+    let repaid = as_u128(&events(&result, "liquidated")[0]["repaid"]);
+    let bad_debt = &events(&result, "bad_debt_realized")[0];
+    assert_eq!(as_u128(&bad_debt["amount"]), debt - repaid);
+    assert_eq!(env.balance(keeper.id(), ETH_ARB).await?, ONE_ETH);
+    assert!(bob_position(&env, &bob).await?.is_null());
+    let pool = env
+        .view("get_pool", json!({ "maturity": env.maturity.to_string() }))
+        .await?;
+    assert_eq!(as_u128(&pool["bad_debt_total"]), debt - repaid);
+    assert_eq!(as_u128(&pool["redemption_pool"]), repaid);
+    assert_invariants(&env, &[alice.id(), bob.id(), keeper.id()]).await
+}
+
+#[tokio::test]
+async fn withdraw_collateral_with_debt_checks_the_oracle() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(1_000 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    open_loan(&env, &alice, &bob, 1_000 * ONE_USDC).await?;
+    let withdraw = |amount: u128| {
+        json!({"action": "withdraw_collateral", "data": {
+            "maturity": env.maturity.to_string(), "collateral_token": ETH_ARB,
+            "amount": amount.to_string()
+        }})
+    };
+
+    // About 1,008.22 USDC of face at 70% LTV needs 0.7202 ETH at $2,000.
+    let result = env
+        .auth_call_with_gas(&bob, withdraw(ONE_ETH / 2), Some(ORACLE_MIN_GAS))
+        .await?;
+    let failure = format!("{:?}", result.receipt_failures());
+    assert!(failure.contains("Withdrawal exceeds max LTV"), "{failure}");
+
+    let result = env
+        .auth_call_with_gas(&bob, withdraw(ONE_ETH / 4), Some(ORACLE_MIN_GAS))
+        .await?;
+    assert!(
+        result.receipt_failures().is_empty(),
+        "{:?}",
+        result.failures()
+    );
+    assert_eq!(env.balance(bob.id(), ETH_ARB).await?, ONE_ETH / 4);
+    println!(
+        "withdraw_collateral with debt: total {:.2} Tgas",
+        tgas(result.total_gas_burnt)
+    );
+
+    assert_invariants(&env, &[alice.id(), bob.id()]).await
+}
+
+/// Gas of a 10-fill `borrow` batch, the matcher's batch limit (`SOT/risk-params.md`). Run with
+/// `--nocapture`.
+#[tokio::test]
+async fn match_orders_gas_for_ten_borrow_fills() -> anyhow::Result<()> {
+    let env = Env::new().await?;
+    let alice = env.user(100 * ONE_USDC).await?;
+    let bob = env.user(0).await?;
+    let mut asks = Vec::new();
+    for _ in 0..10 {
+        asks.push(env.borrow(&bob, ONE_ETH / 10, 10 * ONE_USDC, 1_000).await?);
+    }
+    let bid = env.lend(&alice, 100 * ONE_USDC, 1_000).await?;
+    let fills: Vec<(u64, u64, u128)> = asks.iter().map(|ask| (bid, *ask, 10 * ONE_USDC)).collect();
+
+    let result = env.match_orders(&alice, &fills).await?;
+    assert!(result.is_success(), "{:?}", result.failures());
+    assert_eq!(events(&result, "order_filled").len(), 10);
+    assert!(events(&result, "fill_skipped").is_empty());
+    assert_eq!(env.balance(bob.id(), USDC).await?, 100 * ONE_USDC);
+    let call = tgas(result.receipt_outcomes()[0].gas_burnt);
+    let total = tgas(result.total_gas_burnt);
+    println!("match_orders borrow x10: call {call:.2} Tgas, total {total:.2} Tgas");
+    assert_invariants(&env, &[alice.id(), bob.id()]).await
 }
