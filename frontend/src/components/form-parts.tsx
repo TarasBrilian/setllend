@@ -2,8 +2,32 @@
 
 // Building blocks shared by the order modal, the order panel, and the deposit modal.
 
-export type Chain = "Arbitrum" | "Base";
+import { useAccount } from "@/lib/account";
+
+export type Chain = "Arbitrum" | "Base" | "NEAR";
 export const CHAINS: Chain[] = ["Arbitrum", "Base"];
+
+/** Chains a payment or payout can use: NEAR first for a NEAR account (D51), then Arbitrum and Base. */
+export function useChainOptions(): Chain[] {
+  return useAccount().active?.kind === "near" ? ["NEAR", ...CHAINS] : CHAINS;
+}
+
+/** Paying into the Intents balance: one NEAR transaction from NEAR (D51), 1Click otherwise. */
+export function payInStep(amount: string, symbol: string, chain: Chain): string {
+  return chain === "NEAR"
+    ? `Send ${amount} ${symbol} from your NEAR account to NEAR Intents (one NEAR transaction)`
+    : `Deposit ${amount} ${symbol} from ${chain} via 1Click`;
+}
+
+/** Leaving the Intents balance: straight to the NEAR account, or 1Click to Arbitrum or Base. */
+export function payOutStep(symbol: string, chain: Chain): string {
+  return chain === "NEAR" ? `${symbol} is sent to your NEAR account` : `1Click sends ${symbol} to your wallet on ${chain}`;
+}
+
+/** Before its first signed intent, a NEAR account registers its key on `intents.near` (D51). */
+export function useSignPrefix(): string[] {
+  return useAccount().active?.kind === "near" ? ["Register your key on NEAR Intents (first time only)"] : [];
+}
 
 export const amountInput = "w-full min-w-0 bg-transparent text-xl font-semibold tabular-nums outline-none";
 

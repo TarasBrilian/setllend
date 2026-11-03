@@ -1,11 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useConnection } from "wagmi";
 import { getAccount, getStats } from "@/lib/api";
 import type { AccountView } from "@/lib/api";
 import { usdcToNumber, usdParts } from "@/lib/format";
-import { useHydrated } from "@/lib/use-now";
+import { useAccount } from "@/lib/account";
 
 /** The user's own figures: supplied = note value plus open `lend` orders, borrowed = debt face. */
 function accountTotals(account: AccountView) {
@@ -21,10 +20,7 @@ function accountTotals(account: AccountView) {
 }
 
 export function Hero() {
-  const { address } = useConnection();
-  const hydrated = useHydrated();
-  // An EVM address is used as a NEAR implicit account in lowercase.
-  const account = hydrated ? address?.toLowerCase() : undefined;
+  const account = useAccount().active?.accountId;
   const stats = useQuery({ queryKey: ["stats"], queryFn: getStats });
   const mine = useQuery({
     queryKey: ["account", account],

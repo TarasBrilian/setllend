@@ -50,7 +50,7 @@ Checked against [near/intents](https://github.com/near/intents) `main` on 2026-1
 | `order_id` | `u64` | decimal string | Sequential, never reused |
 | Note shares | `u128` | decimal string | Internal unit of note ownership per maturity. See [Note accounting](#note-accounting) |
 | Token IDs | `String` | string | Intents asset ID, e.g. `nep141:arb.omft.near` |
-| Accounts | `AccountId` | string | MetaMask/Rabby users are implicit Eth accounts like `0xabc…` (lowercase) |
+| Accounts | `AccountId` | string | MetaMask/Rabby users are implicit Eth accounts like `0xabc…` (lowercase); NEAR users are their NEAR account (D51). The contract treats both alike |
 
 `msg` payloads are JSON objects serialized **into a string**, tagged like the official `escrow-swap` contract: `{"action": "<snake_case>", "data": {…}}`. In Rust: `#[serde(tag = "action", content = "data", rename_all = "snake_case")]`.
 

@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { useConnection } from "wagmi";
 import { type Book, type CollateralTokenInfo, getAccount, getCollateralTokens, type PricesView } from "@/lib/api";
 import { borrowLimit, health, legsOf, liquidationPriceOf } from "@/lib/collateral";
 import { formatMaturity, formatRate, formatUsd, maturityToMs, usdcToNumber } from "@/lib/format";
@@ -13,7 +12,8 @@ import { useStepper } from "@/lib/use-stepper";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
 import type { NoteView } from "@/shared/views";
-import { amountInput, CHAINS, type Chain, Field, Row, Segmented, Stepper, SubmitButton } from "./form-parts";
+import { useAccount } from "@/lib/account";
+import { amountInput, type Chain, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -51,9 +51,9 @@ export function OrderForm({
   const isBorrow = side === "borrow";
   const bestRate = (isBorrow ? book.bids[0] : book.asks[0])?.rate_bps;
   const tokens = useQuery({ queryKey: ["collateral-tokens"], queryFn: getCollateralTokens, enabled: isBorrow });
-  const { address } = useConnection();
-  // An EVM address is used as a NEAR implicit account in lowercase.
-  const account = address?.toLowerCase();
+  const account = useAccount().active?.accountId;
+  const chains = useChainOptions();
+  const signPrefix = useSignPrefix();
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: isBorrow && account !== undefined });
   const deposits = mine.data?.deposits ?? {};
   // One loan per maturity (D48): a new borrow adds to the loan already open here, if any.
@@ -64,7 +64,7 @@ export function OrderForm({
   const [rate, setRate] = useState(toPercent(initialRateBps ?? bestRate));
   const [source, setSource] = useState<Source>("New deposit");
   const [legs, setLegs] = useState<Leg[]>([{ token: ASSETS.ethArb, amount: "0.75" }]);
-  const [chain, setChain] = useState<Chain>(isBorrow ? "Arbitrum" : "Base");
+  const [chain, setChain] = useState<Chain>(chains[0] === "NEAR" ? "NEAR" : isBorrow ? "Arbitrum" : "Base");
 
   const principal = Number(amount) || 0;
   const market = marketFill(book, side, principal);
@@ -114,11 +114,13 @@ export function OrderForm({
   const steps = isBorrow
     ? [
         ...(source === "New deposit" ? depositSteps : []),
+        ...signPrefix,
         source === "Existing loan" ? "Sign the borrow order with your wallet (no collateral added)" : "Sign the borrow order with your wallet",
-        `Order placed. After a match, USDC is sent to ${chain}`,
+        `Order placed. After a match, USDC is sent to ${chain === "NEAR" ? "your NEAR account" : chain}`,
       ]
     : [
-        `Deposit ${principal.toLocaleString("en-US")} USDC from ${chain} via 1Click`,
+        payInStep(principal.toLocaleString("en-US"), "USDC", chain),
+        ...signPrefix,
         "Sign the lend order with your wallet",
         "Order placed in the book",
       ];
@@ -180,7 +182,7 @@ export function OrderForm({
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted">{isBorrow ? "Receive USDC on" : "Pay USDC from"}</span>
-        <Segmented options={CHAINS} value={chain} onChange={setChain} />
+        <Segmented options={chains} value={chain} onChange={setChain} />
       </div>
 
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
@@ -328,7 +330,8 @@ export function SellNoteForm({
   else if (mode === "Market" && market.filled === 0) error = "No orders to fill. Use Limit";
   else if (rateBps <= 0) error = "Enter a rate";
 
-  const steps = ["Sign the sell order with your wallet", "Order placed in the book", "USDC from each fill goes to your Intents balance"];
+  const signPrefix = useSignPrefix();
+  const steps = [...signPrefix, "Sign the sell order with your wallet", "Order placed in the book", "USDC from each fill goes to your Intents balance"];
   const stepper = useStepper(steps.length);
   if (stepper.step !== null) {
     return <Stepper steps={steps} current={stepper.step} onDone={onDone ?? stepper.reset} />;

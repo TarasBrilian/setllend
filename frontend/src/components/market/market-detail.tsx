@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState } from "react";
-import { useConnection } from "wagmi";
+import { useAccount } from "@/lib/account";
 import { getAccount, getBook, getConfig, getMaturities, getMaturityStats, getPrices, getTrades } from "@/lib/api";
 import { daysUntil, formatMaturity, usdcToNumber, usdParts } from "@/lib/format";
 import { useNowMs } from "@/lib/use-now";
@@ -18,9 +18,7 @@ import { OrderPanel, type PanelState } from "./order-panel";
 /** Market detail for one maturity (SOT/frontend.md#market-detail-marketmaturity). */
 export function MarketDetail({ maturity }: { maturity: U64 }) {
   const nowMs = useNowMs();
-  const { address } = useConnection();
-  // An EVM address is used as a NEAR implicit account in lowercase.
-  const account = address?.toLowerCase();
+  const account = useAccount().active?.accountId;
 
   const maturities = useQuery({ queryKey: ["maturities"], queryFn: getMaturities });
   const config = useQuery({ queryKey: ["config"], queryFn: getConfig });

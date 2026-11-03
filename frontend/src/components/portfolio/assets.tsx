@@ -1,9 +1,11 @@
 "use client";
 
-import { formatUnits, type Address } from "viem";
+import { formatUnits } from "viem";
+import type { ActiveAccount } from "@/lib/account";
 import type { AccountView, CollateralTokenInfo, PricesView } from "@/lib/api";
 import { formatUsd } from "@/lib/format";
 import { formatTokenAmount, MOCK_ASSETS, TOKENS, tokenAmount } from "@/lib/tokens";
+import { useNearBalances } from "@/lib/use-near-balances";
 import { useWalletBalances, type WalletChain } from "@/lib/use-wallet-balances";
 import { ASSETS, DECIMALS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
@@ -26,28 +28,37 @@ const WALLET_TOKENS = {
  * balances. Deposits and free balances are mock until the backend is up.
  */
 export function Assets({
-  address,
+  active,
   account,
   tokens,
   prices,
   onAction,
 }: {
-  address: Address;
+  active: ActiveAccount;
   account: AccountView;
   tokens: CollateralTokenInfo[] | undefined;
   prices: PricesView | undefined;
   onAction: (action: AccountAction) => void;
 }) {
-  const wallet = useWalletBalances(address);
+  // Wallet balances of the active account: Base and Arbitrum for EVM, the NEAR account for NEAR (D51).
+  const wallet = useWalletBalances(active.kind === "evm" ? active.address : undefined);
+  const nearWallet = useNearBalances(active.kind === "near" ? active.accountId : undefined);
   const units = (raw: bigint | undefined, decimals: number) => (raw === undefined ? undefined : Number(formatUnits(raw, decimals)));
   const isCollateral = (token: TokenId) => tokens?.some((t) => t.token_id === token && !t.frozen) ?? false;
 
+  const walletRows: Row[] =
+    active.kind === "near"
+      ? [
+          { key: "near-native", token: MOCK_ASSETS.near, where: "Wallet · NEAR", amount: units(nearWallet.data?.near, 24) },
+          { key: "near-usdc", token: ASSETS.usdcNear, where: "Wallet · NEAR", amount: units(nearWallet.data?.usdc, DECIMALS.usdc) },
+        ]
+      : WALLET_CHAINS.flatMap((chain) => [
+          { key: `usdc-${chain}`, token: WALLET_TOKENS.USDC[chain], where: `Wallet · ${chain}`, amount: units(wallet.usdc[chain], DECIMALS.usdc) },
+          { key: `eth-${chain}`, token: WALLET_TOKENS.ETH[chain], where: `Wallet · ${chain}`, amount: units(wallet.eth[chain], DECIMALS.eth) },
+          { key: `wbtc-${chain}`, token: WALLET_TOKENS.WBTC[chain], where: `Wallet · ${chain}`, amount: units(wallet.wbtc[chain], 8) },
+        ]);
   const rows: Row[] = [
-    ...WALLET_CHAINS.flatMap((chain) => [
-      { key: `usdc-${chain}`, token: WALLET_TOKENS.USDC[chain], where: `Wallet · ${chain}`, amount: units(wallet.usdc[chain], DECIMALS.usdc) },
-      { key: `eth-${chain}`, token: WALLET_TOKENS.ETH[chain], where: `Wallet · ${chain}`, amount: units(wallet.eth[chain], DECIMALS.eth) },
-      { key: `wbtc-${chain}`, token: WALLET_TOKENS.WBTC[chain], where: `Wallet · ${chain}`, amount: units(wallet.wbtc[chain], 8) },
-    ]),
+    ...walletRows,
     ...Object.entries(account.deposits).map(([token, raw]) => ({
       key: `deposit-${token}`,
       token,
@@ -76,7 +87,8 @@ export function Assets({
         <div>
           <h2 className="text-lg font-semibold">My Assets</h2>
           <p className="text-xs text-faint">
-            Wallet balances are read live from Base and Arbitrum{wallet.error ? "; some could not be read right now" : ""}. Deposits are not collateral until you add them to a loan.
+            Wallet balances are read live from {active.kind === "near" ? "your NEAR account" : "Base and Arbitrum"}
+            {(active.kind === "near" ? nearWallet.error : wallet.error) ? "; some could not be read right now" : ""}. Deposits are not collateral until you add them to a loan.
           </p>
         </div>
         <button onClick={() => onAction({ kind: "deposit" })} className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-background hover:bg-accent-soft">
