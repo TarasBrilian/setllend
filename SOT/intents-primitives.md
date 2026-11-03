@@ -20,3 +20,15 @@ Tested 2026-11-01 with `simulate_intents` on mainnet `intents.near` using a thro
 - **Ordering:** intents in one batch execute in order, but the cross-contract promises they spawn run concurrently. Don't rely on completion order.
 - **Events:** DIP-4 (version 0.4.3 on mainnet), e.g. `intents_executed`, `token_diff`, `mt_transfer`. Usable by the matcher's indexer.
 - **Simulation:** `simulate_intents` takes the same input as `execute_intents`. The relayer should simulate before submitting.
+
+## Payload format
+
+Read from near/intents source (`contracts/defuse/core`, commit `d340060`) 📄 on 2026-11-03, and checked with `simulate_intents` on mainnet ✅ 2026-11-03 (a throwaway key; an `auth_call` payload executed, a `transfer` failed only on the empty balance). Built by `backend/src/shared/intents.ts`.
+
+- **Payload** (the string signed with ERC-191): `{"signer_id", "verifying_contract": "intents.near", "deadline", "nonce", "intents": [...]}`. `deadline` is RFC 3339 (`Date.toISOString()` works) and must not be later than the nonce's own deadline. `nonce` is base64 of the 32-byte versioned nonce above (the version byte is the borsh enum index, `00` for V1).
+- **`transfer`:** `{"intent": "transfer", "receiver_id", "tokens": {"<asset id>": "<amount>"}, "msg", "min_gas"}`. `msg` and `min_gas` are flattened from the notification. `min_gas` defaults to 30 Tgas, minimum 5 Tgas.
+- **`auth_call`:** `{"intent": "auth_call", "contract_id", "msg", "attached_deposit", "min_gas"}`. `attached_deposit` is omitted when 0, `min_gas` defaults to 10 Tgas.
+- **Gas** is a decimal string of gas units (`"100000000000000"` = 100 Tgas), like `NearGas` in `near-sdk`.
+- **`execute_intents` / `simulate_intents`** take `{"signed": [<MultiPayload>]}`. For ERC-191: `{"standard": "erc191", "payload": "<the signed string>", "signature": "secp256k1:<base58 of r ‖ s ‖ v>"}`, `v` normalized to 0 or 1, no public key.
+- **NEP-413** (for a NEAR account such as the backend's): `{"standard": "nep413", "payload": {"message", "nonce", "recipient": "intents.near"}, "public_key", "signature"}`, where `message` is `{"signer_id", "deadline", "intents"}` and the nonce sits in the NEP-413 payload. A named account must first register its key with `add_public_key` on `intents.near`. Not tested by us yet ⚠️.
+- **Failed receipts keep their logs.** A receipt that panics after `log_str` still lists those logs in its outcome, so an indexer must read events only from receipts whose status is a success.

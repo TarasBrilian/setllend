@@ -376,15 +376,15 @@ The matcher rebuilds the book from `get_order_count` and `get_orders` pages at s
 - Not capped per account (D24). The contract keeps enough NEAR for storage and is topped up when needed. Orders are deleted when filled or cancelled, positions when both collateral and debt reach zero, note entries when both share balances reach zero. Deletion frees storage.
 - Expired orders (`expires_at` passed) are never filled. The owner cancels to get funds back.
 
-## Example: relayer payload for a `lend` order 📄
+## Example: relayer payload for a `lend` order ✅
 
-This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet. The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. The exact wrapper and field formats (e.g. `deadline`) are not verified by us yet. Check them against [Signing Intents](https://docs.near-intents.org/integration/verifier-contract/signing-intents.md) with `simulate_intents` before relying on them.
+This is the message the user signs with ERC-191 (`personal_sign`) in their EVM wallet. The relayer wraps the stringified message with its signature (standard `erc191`), calls `simulate_intents`, then `execute_intents`. Built by `buildIntentPayload` in `backend/src/shared/intents.ts`; formats are in [intents-primitives.md](intents-primitives.md#payload-format). Verified ✅ 2026-11-03 with `simulate_intents` on mainnet (view call, throwaway key): an `auth_call` payload built this way executes, and a `transfer` fails only on the empty balance.
 
 ```json
 {
   "signer_id": "0xabc…",
   "verifying_contract": "intents.near",
-  "deadline": "2026-11-10T00:00:00Z",
+  "deadline": "2026-11-10T00:00:00.000Z",
   "nonce": "<base64 versioned nonce, see intents-primitives.md>",
   "intents": [
     {
