@@ -14,6 +14,7 @@ use crate::{CollateralToken, Config, Fill, Price, Setllend};
 
 mod admin;
 mod auth;
+mod golden;
 mod liquidation;
 mod matching;
 mod payout;
