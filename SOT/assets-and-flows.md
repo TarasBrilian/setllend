@@ -10,7 +10,7 @@
 | ETH | Arbitrum | 18 | `nep141:arb.omft.near` | Collateral |
 | ETH | Base | 18 | `nep141:base.omft.near` | Collateral |
 
-Collateral added by D48 and D52 (contract work pending), from 1Click `GET /v0/tokens` and keyed dry quotes ✅ 2026-11-03:
+Collateral added by D48 and D52 (in the contract since contract-interface v0.6; the owner adds each token after deploy, D53), from 1Click `GET /v0/tokens` and keyed dry quotes ✅ 2026-11-03:
 
 | Asset | Chain | Decimals | Intents asset ID | How it arrives |
 |---|---|---|---|---|
