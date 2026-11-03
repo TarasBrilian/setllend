@@ -133,6 +133,11 @@ describe("match_orders args", () => {
     ];
     expect(encodeMatchOrdersArgs(fills)).toBe(golden.match_orders_args);
   });
+
+  it("rejects what the contract would refuse", () => {
+    expect(() => encodeMatchOrdersArgs([])).toThrow();
+    expect(() => encodeMatchOrdersArgs([{ bid: "1", ask: "2", principal: "-5" }])).toThrow();
+  });
 });
 
 describe("views", () => {
@@ -183,6 +188,14 @@ describe("views", () => {
       publish_time: 1793517540,
     });
     expect(response["usdc-feed"]).toBeNull();
+  });
+});
+
+describe("skip reasons", () => {
+  it("match the reasons in matching.rs, in the order the contract checks them", () => {
+    const source = readFileSync(new URL("../../../contracts/setllend/src/matching.rs", import.meta.url), "utf8");
+    const reasons = [...source.matchAll(/(?:Err|ok_or)\("([a-z_]+)"\)/g)].map((m) => m[1]);
+    expect([...new Set(reasons)]).toEqual([...SKIP_REASONS]);
   });
 });
 

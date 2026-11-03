@@ -145,7 +145,12 @@ export function encodeAuthMsg(msg: AuthMsg): string {
   return encode(AUTH_FIELDS, msg);
 }
 
-/** Parses and validates a `transfer` `msg`. Throws where the contract would panic with "Invalid msg". */
+/**
+ * Parses and validates a `transfer` `msg`, throwing where the contract would panic with
+ * "Invalid msg". Two differences: number spellings that `JSON.parse` normalizes (`700.0`, `7e2`)
+ * pass here but not in serde, and decimal strings must be canonical (no leading zeros or `+`),
+ * which serde would accept. Our encoders produce neither.
+ */
 export function decodeTransferMsg(json: string): TransferMsg {
   return decode<TransferMsg>(TRANSFER_FIELDS, json);
 }

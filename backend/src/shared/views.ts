@@ -1,7 +1,7 @@
 // View results, `match_orders` arguments, and oracle prices, mirroring contracts/setllend/src
 // (views.rs, matching.rs, config.rs, oracle.rs). Shapes: SOT/contract-interface.md#views.
 
-import type { AccountId, TokenId, U128, U64 } from "./encoding.ts";
+import { type AccountId, type TokenId, type U128, type U64, parseU128, parseU64 } from "./encoding.ts";
 
 export type OrderKind = "lend" | "borrow" | "sell_note";
 
@@ -10,6 +10,13 @@ export type Fill = { bid: U64; ask: U64; principal: U128 };
 
 /** Arguments of `match_orders`, in the order the contract serializes them. */
 export function encodeMatchOrdersArgs(fills: readonly Fill[]): string {
+  // The contract panics on an empty list ("No fills").
+  if (fills.length === 0) throw new RangeError("fills must not be empty");
+  for (const fill of fills) {
+    parseU64(fill.bid);
+    parseU64(fill.ask);
+    parseU128(fill.principal);
+  }
   return JSON.stringify({
     fills: fills.map((fill) => ({ bid: fill.bid, ask: fill.ask, principal: fill.principal })),
   });
