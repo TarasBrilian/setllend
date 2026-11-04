@@ -2,6 +2,7 @@
 import { type AccountTx, type EventRecord, type TxDetail, type TxReceipt, type TxSource, setllendEvents } from "./chain/explorer.ts";
 import type { AccountState, FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc, ViewAt } from "./chain/rpc.ts";
 import { NotDeployedError } from "./chain/rpc.ts";
+import type { GeneratedIntent, OneClickApi, QuoteRequest, QuoteResponse, StatusResponse } from "./oneclick/client.ts";
 import { EVENT_STANDARD, EVENT_VERSION } from "./shared/events.ts";
 import type { CollateralToken, Config, LoanEntryView, OracleResponse, OrderView, PoolView } from "./shared/views.ts";
 
@@ -258,5 +259,78 @@ export class FakeTxRpc implements TxRpc {
   async txStatus(hash: string): Promise<TxOutcome> {
     this.looked.push(hash);
     return this.onStatus(hash, this.looked.length);
+  }
+}
+
+/**
+ * An in-memory 1Click: each quote gets a new deposit address, `generate-intent` builds the payload
+ * 1Click would (one transfer of the quoted amount), and statuses come from `statuses`. Set `fail`
+ * to make the next calls throw.
+ */
+export class FakeOneClick implements OneClickApi {
+  readonly quotes: QuoteRequest[] = [];
+  readonly submitted: unknown[] = [];
+  readonly deposits: { depositAddress: string; txHash: string }[] = [];
+  readonly polled: string[] = [];
+  statuses = new Map<string, StatusResponse>();
+  fail: Error | null = null;
+  /** Changes a generated payload, to test the check. */
+  tamper: (intent: GeneratedIntent) => GeneratedIntent = (intent) => intent;
+  private readonly byAddress = new Map<string, QuoteRequest>();
+  private n = 0;
+
+  private check(): void {
+    if (this.fail) throw this.fail;
+  }
+
+  async quote(request: QuoteRequest): Promise<QuoteResponse> {
+    this.check();
+    this.quotes.push(request);
+    // EXACT_OUTPUT asks a bit more in; EXACT_INPUT gives a bit less out.
+    const amount = BigInt(request.amount);
+    const amountIn = request.swapType === "EXACT_OUTPUT" ? ((amount * 1005n) / 1000n).toString() : request.amount;
+    const amountOut = request.swapType === "EXACT_OUTPUT" ? request.amount : ((amount * 999n) / 1000n).toString();
+    const quote = { amountIn, minAmountIn: request.amount, amountOut, minAmountOut: ((BigInt(amountOut) * 99n) / 100n).toString(), timeEstimate: 25 };
+    if (request.dry) return { quote };
+    const depositAddress = `${(++this.n).toString(16).padStart(64, "0")}`;
+    this.byAddress.set(depositAddress, request);
+    const deadline = new Date(Date.parse(request.deadline) + 3 * 86_400_000).toISOString();
+    return { quote: { ...quote, depositAddress, deadline }, signature: "ed25519:quote", correlationId: `c${this.n}` };
+  }
+
+  async generateIntent(request: { standard: "erc191" | "nep413"; signerId: string; depositAddress: string }): Promise<GeneratedIntent> {
+    this.check();
+    const quote = this.byAddress.get(request.depositAddress);
+    if (!quote) throw new Error("unknown deposit address");
+    const intents = [{ intent: "transfer", receiver_id: request.depositAddress, tokens: { [quote.originAsset]: quote.amount } }];
+    const deadline = new Date(Date.parse(quote.deadline) + 3 * 86_400_000).toISOString();
+    const intent: GeneratedIntent =
+      request.standard === "erc191"
+        ? {
+            standard: "erc191",
+            payload: JSON.stringify({ signer_id: request.signerId, verifying_contract: "intents.near", deadline, nonce: "bm9uY2U=", intents }),
+          }
+        : {
+            standard: "nep413",
+            payload: { message: JSON.stringify({ deadline, intents, signer_id: request.signerId }), nonce: "bm9uY2U=", recipient: "intents.near" },
+          };
+    return this.tamper(intent);
+  }
+
+  async submitIntent(signed: unknown): Promise<{ intentHash: string }> {
+    this.check();
+    this.submitted.push(signed);
+    return { intentHash: `intent${this.submitted.length}` };
+  }
+
+  async submitDeposit(depositAddress: string, txHash: string): Promise<void> {
+    this.check();
+    this.deposits.push({ depositAddress, txHash });
+  }
+
+  async status(depositAddress: string): Promise<StatusResponse> {
+    this.check();
+    this.polled.push(depositAddress);
+    return this.statuses.get(depositAddress) ?? { status: "PENDING_DEPOSIT" };
   }
 }
