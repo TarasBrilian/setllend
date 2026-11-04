@@ -40,6 +40,12 @@ const untilReload = (inputs: string, height: number) => `${inputs}@${height}`;
 
 const pairKey = (bid: U64, ask: U64) => `${bid}:${ask}`;
 
+/** Whether every feed in `before` has a newer `publish_time` in `now`. */
+export function allNewer(before: ReadonlyMap<string, number>, now: ReadonlyMap<string, number>): boolean {
+  for (const [feed, at] of before) if ((now.get(feed) ?? -Infinity) <= at) return false;
+  return true;
+}
+
 export class Parking {
   private readonly pairs = new Map<string, string>();
   private readonly asks = new Map<U64, string>();
@@ -81,9 +87,7 @@ export class Parking {
   /** Whether `borrow` asks may be matched with prices published at `publishTime`. */
   pricesUsable(publishTime: ReadonlyMap<string, number>): boolean {
     if (this.priceBlock === null) return true;
-    for (const [feed, at] of this.priceBlock) {
-      if ((publishTime.get(feed) ?? -Infinity) <= at) return false;
-    }
+    if (!allNewer(this.priceBlock, publishTime)) return false;
     this.priceBlock = null;
     return true;
   }

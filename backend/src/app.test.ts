@@ -176,7 +176,7 @@ describe("POST /api/intents", () => {
     expect(await json(await post(app, "not json"))).toMatchObject({ status: 503, body: { ok: false, error: { code: "not_ready" } } });
     const status = (await json(await health(app))).body;
     expect(status.relayer).toEqual({ intents: false, matcher: false });
-    expect(status.matcher).toEqual({ in_flight: null, last_batch: null });
+    expect(status.matcher).toEqual({ in_flight: null, last_batch: null, fill_limit: 10, paused: false });
   });
 
   it("limits each client IP, keyed on the entry the proxy appended", async () => {

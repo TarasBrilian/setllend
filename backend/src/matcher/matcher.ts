@@ -10,8 +10,8 @@ import type { PriceSnapshot, Prices } from "../prices.ts";
 import { readOutcome } from "../relayer/outcome.ts";
 import type { Relayer } from "../relayer/relayer.ts";
 import type { U64 } from "../shared/encoding.ts";
-import { buildFills, openOrderIds } from "./fills.ts";
-import { Parking, type Planned } from "./parking.ts";
+import { MAX_FILLS, buildFills, openOrderIds } from "./fills.ts";
+import { Parking, type Planned, allNewer } from "./parking.ts";
 
 /** Internal settings (SOT/backend.md#building-fills). */
 export const MATCHER = {
@@ -46,6 +46,13 @@ export class Matcher {
   /** Hash of the batch in flight. */
   inFlight: string | null = null;
   lastBatch: BatchReport | null = null;
+  /**
+   * Fills per batch now: halved after a failed call (10 → 5 → 2 → 1) and back to `MAX_FILLS`
+   * after a batch that went through, so a batch over the gas limit can't fail again and again (D58).
+   */
+  fillLimit = MAX_FILLS;
+  /** After a failed 1-fill batch: nothing is sent until every feed has a newer price. */
+  pausedAt: Map<string, number> | null = null;
   readonly parking: Parking;
   private readonly o: MatcherOptions;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -108,6 +115,10 @@ export class Matcher {
       this.log(`matcher: no oracle prices, borrow asks wait: ${messageOf(error)}`);
     }
     const publishTime = snapshot?.publishTime ?? new Map<string, number>();
+    if (this.pausedAt) {
+      if (!snapshot || !allNewer(this.pausedAt, publishTime)) return [];
+      this.pausedAt = null;
+    }
     const usable = snapshot && this.parking.pricesUsable(publishTime) ? snapshot.byFeed : null;
     this.parking.prune(openOrderIds(market.books.values()));
     const planned = buildFills({
@@ -118,6 +129,7 @@ export class Matcher {
       prices: usable,
       loans: market.loans,
       parking: this.parking,
+      maxFills: this.fillLimit,
       log: this.log,
     });
     if (planned.length === 0) return [];
@@ -166,9 +178,16 @@ export class Matcher {
         // The call itself failed: no fill executed. Borrow asks wait as for no_price (D58).
         submissions.update(hash, "failed", read.error);
         if (planned === null || planned.some((p) => p.askKind === "borrow")) this.parking.blockPrices(publishTime);
-        this.log(`matcher: batch ${hash} failed: ${read.error?.reason}`);
+        if (fills <= 1) {
+          this.pausedAt = new Map(publishTime);
+          this.log(`matcher: a 1-fill batch ${hash} failed (${read.error?.reason}); paused until newer prices`);
+        } else {
+          this.log(`matcher: batch ${hash} failed (${read.error?.reason}); next batches take fewer fills`);
+        }
+        this.fillLimit = Math.max(1, Math.floor(Math.min(this.fillLimit, fills) / 2));
       } else {
         submissions.update(hash, "ok");
+        this.fillLimit = MAX_FILLS;
         for (const event of read.events) {
           if (event.event !== "fill_skipped") continue;
           skipped++;

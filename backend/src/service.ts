@@ -137,7 +137,7 @@ export class Service {
     height: number;
     follower: FollowerStatus;
     relayer: { intents: boolean; matcher: boolean };
-    matcher: { in_flight: string | null; last_batch: BatchReport | null };
+    matcher: { in_flight: string | null; last_batch: BatchReport | null; fill_limit: number; paused: boolean };
   } {
     const follower = this.follower.status();
     return {
@@ -146,7 +146,12 @@ export class Service {
       height: this.market.height,
       follower,
       relayer: { intents: this.relayer.canRelay, matcher: this.relayer.canMatch },
-      matcher: { in_flight: this.matcher.inFlight, last_batch: this.matcher.lastBatch },
+      matcher: {
+        in_flight: this.matcher.inFlight,
+        last_batch: this.matcher.lastBatch,
+        fill_limit: this.matcher.fillLimit,
+        paused: this.matcher.pausedAt !== null,
+      },
     };
   }
 }

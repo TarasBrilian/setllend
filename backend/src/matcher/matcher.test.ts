@@ -117,6 +117,44 @@ describe("Matcher.round", () => {
     expect(await matcher.round()).toHaveLength(1);
   });
 
+  it("takes fewer fills after a failed call, and all of them again after a batch that went through", async () => {
+    const { tx, matcher, state, service } = await setup();
+    state.pools = { [M]: { redemption_pool: "0", total_value: "1000000000", total_shares: "1000000000", bad_debt_total: "0" } };
+    state.orders = [
+      state.orders[0]!,
+      order({ order_id: "3", owner: "s3.near", kind: "sell_note", rate_bps: 800, remaining: "10000000" }),
+      order({ order_id: "4", owner: "s4.near", kind: "sell_note", rate_bps: 800, remaining: "10000000" }),
+    ];
+    await service.market.refresh([M], false, 101);
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt(CONTRACT, [], { panic: "Exceeded the prepaid gas" })] });
+    expect(await matcher.round()).toHaveLength(2);
+    expect(matcher.fillLimit).toBe(1);
+    expect(matcher.pausedAt).toBeNull();
+    tx.onStatus = (hash) => landed(hash);
+    expect(await matcher.round()).toHaveLength(1);
+    expect(matcher.fillLimit).toBe(10);
+  });
+
+  it("pauses everything after a failed 1-fill batch until every feed has a newer price", async () => {
+    const { tx, matcher, state, service } = await setup();
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt(CONTRACT, [], { panic: "Exceeded the prepaid gas" })] });
+    await matcher.round();
+    expect(matcher.pausedAt).not.toBeNull();
+    // A sell_note ask that would need no price is held too.
+    state.pools = { [M]: { redemption_pool: "0", total_value: "1000000000", total_shares: "1000000000", bad_debt_total: "0" } };
+    state.orders.push(order({ order_id: "3", owner: "s3.near", kind: "sell_note", rate_bps: 800, remaining: "10000000" }));
+    await service.market.refresh([M], false, 200);
+    expect(await matcher.round()).toEqual([]);
+    state.oracle = {
+      eth: { price: "200000000000", conf: "0", expo: -8, publish_time: 101 },
+      usdc: { price: "100000000", conf: "0", expo: -8, publish_time: 101 },
+    };
+    (service.prices as unknown as { cached: null }).cached = null;
+    tx.onStatus = (hash) => landed(hash);
+    expect(await matcher.round()).toHaveLength(1);
+    expect(matcher.pausedAt).toBeNull();
+  });
+
   it("follows a pending batch by re-sending it until it resolves", async () => {
     const { tx, matcher, service } = await setup();
     // Receipts still run past 30 s; they finish once the matcher has re-sent the batch.
