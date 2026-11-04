@@ -60,10 +60,14 @@ export function nextPollAt(
   return now + (now - row.created_at < POLL.pendingFastForMs ? POLL.pendingMs : POLL.slowMs);
 }
 
+/**
+ * `null` until 1Click reports something: it sends `swapDetails` with only nulls and empty lists
+ * while a quote is pending (✅ 2026-11-04), which must not count as a change.
+ */
 function detailsOf(status: StatusResponse): Details | null {
   const d = status.swapDetails;
   if (!d) return null;
-  return {
+  const details: Details = {
     amount_in: d.amountIn ?? null,
     amount_out: d.amountOut ?? null,
     refunded_amount: d.refundedAmount ?? null,
@@ -72,6 +76,7 @@ function detailsOf(status: StatusResponse): Details | null {
     destination_tx_hashes: (d.destinationChainTxHashes ?? []).map((tx) => tx.hash),
     near_tx_hashes: d.nearTxHashes ?? [],
   };
+  return Object.values(details).some((v) => (Array.isArray(v) ? v.length > 0 : v !== null)) ? details : null;
 }
 
 const dryQuote = (q: Quote): DryQuote => ({
@@ -213,19 +218,24 @@ export class OneClick {
     const api = this.api;
     if (!api) return;
     const failures: string[] = [];
-    for (const { row, depositTxAt } of this.store.due(this.now(), POLL.perTick)) {
-      let status: StatusResponse;
+    for (const due of this.store.due(this.now(), POLL.perTick)) {
+      let status: StatusResponse | null = null;
+      let error: unknown;
       try {
-        status = await api.status(row.id);
-      } catch (error) {
+        status = await api.status(due.row.id);
+      } catch (e) {
+        error = e;
+      }
+      // Read again: a submit or deposit hash may have landed while the request was out.
+      const { row, depositTxAt } = this.store.get(due.row.id) ?? due;
+      const now = this.now();
+      if (!status) {
         failures.push(`${row.id}: ${error instanceof Error ? error.message : error}`);
-        const now = this.now();
         this.store.update(row.id, { nextPollAt: nextPollAt(row, depositTxAt, now) }, now, false);
         continue;
       }
       const details = detailsOf(status) ?? row.details;
       const changed = status.status !== row.status || JSON.stringify(details) !== JSON.stringify(row.details);
-      const now = this.now();
       const next = nextPollAt({ ...row, status: status.status }, depositTxAt, now);
       this.store.update(row.id, { status: status.status, details, nextPollAt: next }, now, changed);
       if (changed) this.onChange(this.row(row.id));

@@ -241,6 +241,30 @@ describe("polling", () => {
     expect(api.polled).toHaveLength(2);
   });
 
+  it("doesn't count 1Click's empty swap details as a change", async () => {
+    const { api, oneclick, pushes, clock } = setup();
+    const row = (await oneclick.quote(deposit)) as OneClickRow;
+    // What 1Click sent for a pending quote on 2026-11-04.
+    api.statuses.set(row.id, { status: "PENDING_DEPOSIT", swapDetails: { intentHashes: [], nearTxHashes: [], originChainTxHashes: [], destinationChainTxHashes: [] } });
+    clock.now += POLL.pendingMs;
+    await oneclick.pollOnce();
+    expect(pushes).toEqual([]);
+    expect(oneclick.row(row.id)).toMatchObject({ details: null, updated_at: T0 });
+  });
+
+  it("schedules from the row as it is after the request, so a submit made meanwhile polls fast", async () => {
+    const { api, oneclick, clock } = setup();
+    const row = (await oneclick.quote(withdraw)) as OneClickRow;
+    clock.now += POLL.pendingMs;
+    const status = api.status.bind(api);
+    api.status = async (id) => {
+      await oneclick.submit(row.id, { signature: "ed25519:sig", public_key: "ed25519:key" });
+      return status(id);
+    };
+    await oneclick.pollOnce();
+    expect(oneclick.store.get(row.id)!.nextPollAt).toBe(clock.now + POLL.fastMs);
+  });
+
   it("sends at most perTick requests per tick, the longest-waiting first", async () => {
     const { api, oneclick, clock } = setup();
     const ids: string[] = [];
