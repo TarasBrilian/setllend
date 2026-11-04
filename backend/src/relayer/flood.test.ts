@@ -23,6 +23,12 @@ describe("FloodGuard", () => {
     expect(guard.allow("a")).toBe(true);
   });
 
+  it("takes its own limit per minute", () => {
+    const guard = new FloodGuard(() => 0, FLOOD.dryQuotesPerMinute);
+    for (let i = 0; i < FLOOD.dryQuotesPerMinute; i++) expect(guard.allow("a")).toBe(true);
+    expect(guard.allow("a")).toBe(false);
+  });
+
   it("forgets IPs that went quiet", () => {
     let now = 0;
     const guard = new FloodGuard(() => now);

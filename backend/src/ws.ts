@@ -66,6 +66,11 @@ export class Hub {
     this.publish(`account:${account}`, { type: "intent", account, ...outcome });
   }
 
+  /** A change of one of the account's 1Click quotes (SOT/backend.md#status-polling). */
+  oneclick(row: { account: string }): void {
+    this.publish(`account:${row.account}`, { type: "oneclick", ...row });
+  }
+
   book(sides: BookSides): void {
     this.publish(`book:${sides.maturity}`, { type: "book", ...sides });
   }

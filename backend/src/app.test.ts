@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
 import { Service } from "./service.ts";
-import { CONTRACT, ETH, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
+import { CONTRACT, ETH, FakeExplorer, FakeOneClick, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
 import { Hub } from "./ws.ts";
 
 const M = "1795766400000000000";
@@ -253,6 +253,81 @@ describe("POST /api/intents", () => {
     for (let i = 0; i < 30; i++) expect((await post(app, "{}")).status).toBe(503);
     expect(await json(await post(app, "{}"))).toMatchObject({ status: 429, body: { error: { code: "rate_limited" } } });
     expect((await post(app, "{}", "5.5.5.5")).status).toBe(503);
+  });
+});
+
+describe("1Click endpoints", () => {
+  const EVM = "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf";
+  function oneclickApp(withKey = true) {
+    const api = new FakeOneClick();
+    const rpc = serve(new FakeRpc(), fakeState());
+    const service = new Service({ db: openDb(":memory:"), rpc, source: new FakeExplorer(), contractId: CONTRACT, oneClick: withKey ? api : undefined, log: () => {} });
+    // Before the deploy on purpose: 1Click doesn't wait for the contract.
+    service.contractState = "not_deployed";
+    return { api, service, app: createApp(service) };
+  }
+  const post = (app: ReturnType<typeof createApp>, path: string, body: unknown, ip = "1.2.3.4") =>
+    app.request(path, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", "x-forwarded-for": ip } });
+  const deposit = { account: EVM, direction: "deposit", asset: "ETH", chain: "arbitrum", amount: "10000000000000000" };
+
+  it("quotes, reads, and lists, before the contract is deployed", async () => {
+    const { api, service, app } = oneclickApp();
+    const dry = await json(await post(app, "/api/oneclick/quote", { ...deposit, dry: true }));
+    expect(dry).toMatchObject({ status: 200, body: { quote: { amount_in: "10000000000000000" } } });
+    const quoted = await json(await post(app, "/api/oneclick/quote", deposit));
+    expect(quoted).toMatchObject({ status: 200, body: { account: EVM, status: "PENDING_DEPOSIT", asset_in: ETH } });
+    const id = quoted.body.id as string;
+    expect(await json(await app.request(`/api/oneclick/${id}`))).toEqual({ status: 200, body: quoted.body });
+    expect(await json(await app.request("/api/oneclick/nope"))).toEqual({ status: 404, body: { error: "Unknown 1Click quote" } });
+    expect((await json(await app.request(`/api/accounts/${EVM}/oneclick`))).body).toEqual({ items: [], next: null });
+
+    const hash = `0x${"cd".repeat(32)}`;
+    expect(await json(await post(app, `/api/oneclick/${id}/deposit-tx`, { tx_hash: hash }))).toMatchObject({ status: 200, body: { deposit_tx: hash } });
+    expect(api.deposits).toEqual([{ depositAddress: id, txHash: hash }]);
+    // Listed once 1Click sees the deposit, not on the hash alone.
+    expect((await json(await app.request(`/api/accounts/${EVM}/oneclick`))).body.items).toEqual([]);
+    api.statuses.set(id, { status: "KNOWN_DEPOSIT_TX" });
+    await service.oneclick.pollOnce();
+    const list = (await json(await app.request(`/api/accounts/${EVM}/oneclick?limit=1`))).body;
+    expect(list.items.map((r: { id: string }) => r.id)).toEqual([id]);
+    expect(list.next).toMatch(/^\d+$/);
+    expect((await json(await app.request(`/api/accounts/${EVM}/oneclick?before=x`))).status).toBe(400);
+    expect((await json(await app.request("/api/accounts/0xABC/oneclick"))).status).toBe(400);
+    expect((await json(await health(app))).body.oneclick).toEqual({ enabled: true, open: 1 });
+    expect(service.oneclick.openCount).toBe(1);
+  });
+
+  it("submits a withdrawal's signature and pushes the change to the account", async () => {
+    const { api, service, app } = oneclickApp();
+    const sent: string[] = [];
+    service.hub.message({ send: (d) => sent.push(d) }, JSON.stringify({ subscribe: ["account:alice.near"] }));
+    const quoted = await json(await post(app, "/api/oneclick/quote", { account: "alice.near", direction: "withdraw", asset: "NEAR", chain: "base", to: "USDC", amount: "2000000000000000000000000", address: EVM }));
+    expect(quoted.body.intent.standard).toBe("nep413");
+    const submitted = await json(await post(app, `/api/oneclick/${quoted.body.id}/submit`, { signature: "ed25519:sig", public_key: "ed25519:key" }));
+    expect(submitted).toMatchObject({ status: 200, body: { intent_hash: "intent1" } });
+    expect(api.submitted).toHaveLength(1);
+    expect(JSON.parse(sent[0]!)).toMatchObject({ type: "oneclick", account: "alice.near", intent_hash: "intent1" });
+    expect((await post(app, `/api/oneclick/${quoted.body.id}/submit`, { signature: "ed25519:sig", public_key: "ed25519:key" })).status).toBe(409);
+  });
+
+  it("answers 400 for a bad request, and 503 without a key", async () => {
+    const { app } = oneclickApp(false);
+    expect(await json(await post(app, "/api/oneclick/quote", { ...deposit, chain: "bitcoin" }))).toMatchObject({ status: 400, body: { error: /no 1Click route/ } });
+    expect(await json(await post(app, "/api/oneclick/quote", deposit))).toEqual({ status: 503, body: { error: "1Click is not configured" } });
+    expect((await json(await health(app))).body.oneclick).toEqual({ enabled: false, open: 0 });
+  });
+
+  it("limits each client IP, dry quotes apart from the rest, and both apart from POST /api/intents", async () => {
+    const { app } = oneclickApp();
+    const dry = { ...deposit, dry: true };
+    for (let i = 0; i < 60; i++) expect((await post(app, "/api/oneclick/quote", dry)).status).toBe(200);
+    expect(await json(await post(app, "/api/oneclick/quote", dry))).toEqual({ status: 429, body: { error: "Too many requests; try again in a minute" } });
+    expect((await post(app, "/api/oneclick/quote", dry, "5.5.5.5")).status).toBe(200);
+    // The previews used up their own bucket only.
+    for (let i = 0; i < 30; i++) expect((await post(app, "/api/oneclick/quote", deposit)).status).toBe(200);
+    expect((await post(app, "/api/oneclick/quote", deposit)).status).toBe(429);
+    expect((await post(app, "/api/oneclick/x/deposit-tx", {})).status).toBe(429);
+    expect((await post(app, "/api/intents", {})).status).toBe(503);
   });
 });
 

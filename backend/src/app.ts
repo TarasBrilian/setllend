@@ -1,7 +1,6 @@
-// REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain. The 1Click endpoints
-// come with the 1Click wrapper.
+// REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain.
 import { getConnInfo } from "@hono/node-server/conninfo";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { NotDeployedError } from "./chain/rpc.ts";
 import type { HistoryCursor, StoredEvent } from "./chain/store.ts";
 import { bookSides } from "./matcher/book.ts";
@@ -9,7 +8,8 @@ import type { Service } from "./service.ts";
 import { ASSETS } from "./shared/assets.ts";
 import { type AccountId, isAccountId } from "./shared/encoding.ts";
 import { MathError, type Price, healthFactor, valuation } from "./shared/math.ts";
-import { FloodGuard, clientIp } from "./relayer/flood.ts";
+import { OneClickFailure } from "./oneclick/oneclick.ts";
+import { FLOOD, FloodGuard, clientIp } from "./relayer/flood.ts";
 
 /** Internal settings (SOT/backend.md#api): page sizes and cache times, none user-facing (D24). */
 export const API = { defaultLimit: 100, maxLimit: 1_000, saltCacheMs: 60_000 };
@@ -17,11 +17,22 @@ export const API = { defaultLimit: 100, maxLimit: 1_000, saltCacheMs: 60_000 };
 const MATURITY = /^(0|[1-9][0-9]*)$/;
 
 class HttpError extends Error {
-  readonly status: 400 | 404 | 503;
-  constructor(status: 400 | 404 | 503, message: string) {
+  readonly status: 400 | 404 | 429 | 503;
+  constructor(status: 400 | 404 | 429 | 503, message: string) {
     super(message);
     this.status = status;
   }
+}
+
+/** The flood guards' key (SOT/backend.md#flood-guard). */
+function ipOf(c: Context): string {
+  let socket: string | undefined;
+  try {
+    socket = getConnInfo(c).remote.address;
+  } catch {
+    // No Node socket (tests): the header alone decides.
+  }
+  return clientIp(c.req.header("x-forwarded-for"), socket);
 }
 
 function limitOf(value: string | undefined): number {
@@ -44,8 +55,11 @@ function eventJson(row: StoredEvent) {
 
 export function createApp(service: Service) {
   const app = new Hono();
-  const { market, store, contract, prices, relayer } = service;
+  const { market, store, contract, prices, relayer, oneclick } = service;
   const flood = new FloodGuard();
+  // Counted apart from the relayer's: they guard the 1Click key's quota, not gas (D61).
+  const oneclickFlood = new FloodGuard();
+  const dryQuoteFlood = new FloodGuard(Date.now, FLOOD.dryQuotesPerMinute);
   let salt: { at: number; value: Promise<string> } | null = null;
 
   const ready = () => {
@@ -55,7 +69,7 @@ export function createApp(service: Service) {
   };
 
   app.onError((error, c) => {
-    if (error instanceof HttpError) return c.json({ error: error.message }, error.status);
+    if (error instanceof HttpError || error instanceof OneClickFailure) return c.json({ error: error.message }, error.status);
     if (error instanceof NotDeployedError) return c.json({ error: "The Setllend contract is not deployed yet" }, 503);
     console.error(error);
     return c.json({ error: "Upstream error" }, 502);
@@ -114,13 +128,7 @@ export function createApp(service: Service) {
   });
 
   app.post("/api/intents", async (c) => {
-    let socket: string | undefined;
-    try {
-      socket = getConnInfo(c).remote.address;
-    } catch {
-      // No Node socket (tests): the header alone decides.
-    }
-    if (!flood.allow(clientIp(c.req.header("x-forwarded-for"), socket))) {
+    if (!flood.allow(ipOf(c))) {
       const error = { code: "rate_limited", reason: "Too many requests; try again in a minute" };
       return c.json({ tx_hash: null, ok: false, actions: [], events: [], error }, 429);
     }
@@ -128,6 +136,37 @@ export function createApp(service: Service) {
     const body: unknown = await c.req.json().catch(() => undefined);
     const result = await relayer.submit(body);
     return c.json(result.body, result.status);
+  });
+
+  // 1Click (SOT/backend.md#1click-d49-d61). Independent of the contract, so it works before the deploy.
+  const oneclickGuard = (c: Context, guard = oneclickFlood) => {
+    if (!guard.allow(ipOf(c))) throw new HttpError(429, "Too many requests; try again in a minute");
+  };
+  const bodyOf = (c: Context): Promise<unknown> => c.req.json().catch(() => undefined);
+
+  app.post("/api/oneclick/quote", async (c) => {
+    const body = await bodyOf(c);
+    oneclickGuard(c, (body as { dry?: unknown } | undefined)?.dry === true ? dryQuoteFlood : oneclickFlood);
+    return c.json(await oneclick.quote(body));
+  });
+
+  app.post("/api/oneclick/:id/submit", async (c) => {
+    oneclickGuard(c);
+    return c.json(await oneclick.submit(c.req.param("id"), await bodyOf(c)));
+  });
+
+  app.post("/api/oneclick/:id/deposit-tx", async (c) => {
+    oneclickGuard(c);
+    return c.json(await oneclick.depositTx(c.req.param("id"), await bodyOf(c)));
+  });
+
+  app.get("/api/oneclick/:id", (c) => c.json(oneclick.row(c.req.param("id"))));
+
+  app.get("/api/accounts/:account/oneclick", (c) => {
+    const account = accountOf(c.req.param("account"));
+    const before = c.req.query("before");
+    if (before !== undefined && !/^[1-9][0-9]*$/.test(before)) throw new HttpError(400, "before must be the `next` value of a previous page");
+    return c.json(oneclick.list(account, { before: before === undefined ? undefined : Number(before), limit: limitOf(c.req.query("limit")) }));
   });
 
   app.get("/api/accounts/:account", async (c) => {

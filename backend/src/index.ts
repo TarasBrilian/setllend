@@ -5,6 +5,7 @@ import { createExplorer } from "./chain/explorer.ts";
 import { createRpc } from "./chain/rpc.ts";
 import { config } from "./config.ts";
 import { openDb } from "./db.ts";
+import { createOneClickApi } from "./oneclick/client.ts";
 import { Service } from "./service.ts";
 import type { Client } from "./ws.ts";
 
@@ -19,6 +20,7 @@ const service = new Service({
   contractId: config.contractId,
   startBlock: config.startBlock,
   mmSigningKey: config.mmSigningKey,
+  oneClick: config.oneClickKey ? createOneClickApi(config.oneClickKey) : undefined,
   keys: config.nearAccountId
     ? {
         accountId: config.nearAccountId,

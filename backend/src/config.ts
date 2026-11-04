@@ -15,6 +15,8 @@ export const config = {
   keeperSigningKey: process.env.NEAR_KEEPER_SIGNING_KEY || undefined,
   // The market-maker agent's ed25519 key; its Intents account is the key's implicit account (D60).
   mmSigningKey: process.env.MM_SIGNING_KEY || undefined,
+  // The 1Click partner key, sent as X-API-Key; it never reaches the browser (D61).
+  oneClickKey: process.env.ONE_CLICK_JWT || undefined,
 };
 
 function blockHeight(value: string | undefined): number | undefined {
