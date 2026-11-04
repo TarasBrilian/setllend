@@ -174,7 +174,9 @@ describe("POST /api/intents", () => {
   it("answers with the relayer's status and body: 503 while it has no key", async () => {
     const { app } = await ready();
     expect(await json(await post(app, "not json"))).toMatchObject({ status: 503, body: { ok: false, error: { code: "not_ready" } } });
-    expect((await json(await health(app))).body.relayer).toEqual({ intents: false, matcher: false });
+    const status = (await json(await health(app))).body;
+    expect(status.relayer).toEqual({ intents: false, matcher: false });
+    expect(status.matcher).toEqual({ in_flight: null, last_batch: null });
   });
 
   it("limits each client IP, keyed on the entry the proxy appended", async () => {
