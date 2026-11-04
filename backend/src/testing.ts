@@ -1,6 +1,6 @@
 // Test doubles for the chain (SOT/backend.md#tests): an in-memory RPC and block source.
 import { type AccountTx, type EventRecord, type TxDetail, type TxReceipt, type TxSource, setllendEvents } from "./chain/explorer.ts";
-import type { FinalBlock, Rpc } from "./chain/rpc.ts";
+import type { FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc } from "./chain/rpc.ts";
 import { NotDeployedError } from "./chain/rpc.ts";
 import { EVENT_STANDARD, EVENT_VERSION } from "./shared/events.ts";
 import type { CollateralToken, Config, LoanEntryView, OracleResponse, OrderView, PoolView } from "./shared/views.ts";
@@ -186,4 +186,54 @@ export function order(o: Partial<OrderView> & { order_id: string }): OrderView {
     expires_at: null,
     ...o,
   };
+}
+
+/** A receipt of a transaction outcome; `panic` makes it fail as a contract panic does. */
+export function outcomeReceipt(executorId: string, logs: string[] = [], opts: { panic?: string; id?: string } = {}): ReceiptOutcome {
+  return {
+    id: opts.id ?? `receipt-${Math.random().toString(36).slice(2)}`,
+    executorId,
+    status:
+      opts.panic === undefined
+        ? { SuccessValue: "" }
+        : { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: `Smart contract panicked: ${opts.panic}` } } } } },
+    logs,
+    blockHash: "block-hash",
+  };
+}
+
+type SendHandler = (signedTxBase64: string, call: number) => TxOutcome | Promise<TxOutcome>;
+type StatusHandler = (hash: string, call: number) => TxOutcome | Promise<TxOutcome>;
+
+/**
+ * Transaction calls for `Sender` tests. `onSend` and `onStatus` answer each call (they may throw a
+ * `TxError` or any error); the default lands every transaction with no receipts.
+ */
+export class FakeTxRpc implements TxRpc {
+  final: FinalBlock = { height: 100, hash: "11111111111111111111111111111111", timestampNs: 100_000_000_000n };
+  keyNonce = 41n;
+  readonly sent: string[] = [];
+  readonly looked: string[] = [];
+  onSend: SendHandler = () => ({ hash: "", executed: true, receipts: [] });
+  onStatus: StatusHandler = () => {
+    throw new Error("unknown transaction");
+  };
+
+  async finalBlock(): Promise<FinalBlock> {
+    return this.final;
+  }
+
+  async accessKeyNonce(): Promise<bigint> {
+    return this.keyNonce;
+  }
+
+  async sendTx(signedTxBase64: string): Promise<TxOutcome> {
+    this.sent.push(signedTxBase64);
+    return this.onSend(signedTxBase64, this.sent.length);
+  }
+
+  async txStatus(hash: string): Promise<TxOutcome> {
+    this.looked.push(hash);
+    return this.onStatus(hash, this.looked.length);
+  }
 }
