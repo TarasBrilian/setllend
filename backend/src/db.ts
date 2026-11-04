@@ -23,6 +23,19 @@ const MIGRATIONS = [
    );
    CREATE INDEX events_by_maturity ON events (event, maturity, block_height);
    CREATE INDEX events_by_height ON events (block_height);`,
+  `CREATE TABLE submissions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     tx_hash TEXT NOT NULL UNIQUE,
+     kind TEXT NOT NULL,
+     signer TEXT NOT NULL,
+     request TEXT NOT NULL,
+     signed_tx TEXT NOT NULL,
+     status TEXT NOT NULL,
+     error TEXT,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   );
+   CREATE INDEX submissions_by_status ON submissions (kind, status);`,
 ];
 
 export function openDb(path: string): Database.Database {
