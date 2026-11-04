@@ -19,7 +19,7 @@ setllend/
 │       │                 # testing.ts (in-memory RPC and explorer for tests)
 │       ├── chain/        # NEAR RPC client, typed views, event follower on the FastNear explorer, SQLite store (D40, D55),
 │       │                 # sender.ts (signed transactions: nonce queue per access key, retries, status by hash)
-│       ├── matcher/      # in-memory order book (book.ts), later the fill builder
+│       ├── matcher/      # order book levels (book.ts), fill builder (fills.ts), parking (parking.ts), batch loop (matcher.ts)
 │       ├── relayer/      # POST /api/intents: payload checks, simulate, execute_intents, outcome reading; match_orders
 │       ├── keeper/       # liquidation + maturity settlement
 │       ├── mm-agent/     # market-maker agent

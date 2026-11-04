@@ -65,12 +65,15 @@ export class Matcher {
   async run(): Promise<void> {
     await this.recover();
     while (!this.stopped) {
+      let sent = false;
       try {
-        await this.round();
+        sent = (await this.round()).length > 0 && this.lastBatch?.error === null;
       } catch (error) {
         this.log(`matcher round failed: ${messageOf(error)}`);
       }
       if (this.stopped) break;
+      // After a batch that went through, the reloaded books may cross again: go on at once.
+      if (sent) continue;
       await Promise.race([this.sleep(MATCHER.intervalMs), new Promise<void>((resolve) => (this.wake = resolve))]);
       this.wake = null;
     }

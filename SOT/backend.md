@@ -57,7 +57,7 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 
 ### Building `fills`
 
-Runs when a book changes, when new oracle prices arrive, and every 5 s, if no batch is in flight. `now` is the timestamp of the latest final block from RPC (the keeper uses the same clock).
+Runs when a book changes, when new oracle prices arrive, and every 5 s, if no batch is in flight, and again at once after a batch that went through, since its reload may leave more pairs crossing. `now` is the timestamp of the latest final block from RPC (the keeper uses the same clock).
 
 ```
 for each maturity m with m > now, in ascending order:

@@ -6,12 +6,12 @@ import { openDb } from "../db.ts";
 import { Relayer } from "../relayer/relayer.ts";
 import { Service } from "../service.ts";
 import { CONTRACT, ETH, FakeExplorer, FakeRpc, FakeTxRpc, eventLine, fakeState, order, outcomeReceipt, serve } from "../testing.ts";
-import { Matcher } from "./matcher.ts";
+import { MATCHER, Matcher } from "./matcher.ts";
 
 const M = "1795766400000000000";
 const ACCOUNT = "backend.setllend.near";
 
-async function setup() {
+async function setup(opts: { onSleep?: (ms: number) => void } = {}) {
   const state = fakeState();
   state.maturities = [M];
   state.orders = [
@@ -31,6 +31,7 @@ async function setup() {
   let now = 0;
   const sleep = async (ms: number) => {
     now += ms;
+    opts.onSleep?.(ms);
   };
   const sender = new Sender({
     rpc: {
@@ -152,6 +153,38 @@ describe("Matcher.round", () => {
     const relayer = new Relayer({ contract: service.contract, market: service.market, submissions: service.submissions, intents: null, matcher: null });
     const idle = new Matcher({ market: service.market, prices: service.prices, relayer, submissions: service.submissions, rpc, contractId: CONTRACT, log: () => {} });
     expect(await idle.round()).toEqual([]);
+  });
+});
+
+describe("Matcher.run", () => {
+  it("recovers first, goes on at once after a batch, and waits when nothing crosses", async () => {
+    const waits: number[] = [];
+    const { tx, service, state, matcher } = await setup({
+      onSleep: (ms) => {
+        if (ms !== MATCHER.intervalMs) return;
+        waits.push(ms);
+        matcher.stop();
+      },
+    });
+    service.submissions.add({ txHash: "old", kind: "match", signer: ACCOUNT, request: { fills: [] }, signedTx: "b2xk" });
+    let batches = 0;
+    tx.onStatus = (hash) => {
+      if (hash === "old") return landed(hash);
+      // The first batch leaves a new borrow ask crossing; the second leaves only the lend order.
+      batches++;
+      const lendOrder = state.orders[0]!;
+      state.orders =
+        batches === 1
+          ? [lendOrder, order({ order_id: "3", owner: "c.near", kind: "borrow", rate_bps: 900, remaining: "10000000", collateral: { [ETH]: String(10n ** 18n) } })]
+          : [lendOrder];
+      return landed(hash);
+    };
+    await matcher.run();
+    expect(tx.sent[0]).toBe("b2xk");
+    // Both batches go out before the loop first waits.
+    expect(tx.sent).toHaveLength(3);
+    expect(sentFills(tx, 2)).toEqual({ fills: [{ bid: "1", ask: "3", principal: "10000000" }] });
+    expect(waits).toEqual([MATCHER.intervalMs]);
   });
 });
 
