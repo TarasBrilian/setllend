@@ -1,6 +1,6 @@
 # Backend: matcher, relayer, keeper
 
-> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md); D55 (2026-11-04) replaced the block source of D40 with the FastNear explorer. D57 (approved 2026-11-04) adds the relayer's implementation details. v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
+> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md); D55 (2026-11-04) replaced the block source of D40 with the FastNear explorer. D57 (approved 2026-11-04) adds the relayer's implementation details, D58 (2026-11-04, pending review) the matcher's. v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
 One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, an event follower, and three components that share them. The market-maker agent and the 1Click wrapper are out of scope here (scheduled 2026-11-11 and 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what they will use.
 
@@ -81,7 +81,9 @@ for each maturity m with m > now, in ascending order:
 ```
 
 - **Why the `can_open` search is sound:** ignoring rounding, collateral and debt face both grow linearly with `p`, so the principals that pass form an interval that starts at 0 (when 1 unit passes) or ends at the full size (when it doesn't). Only the first case has a boundary below the full size worth searching. The chosen `p` is checked again exactly, with the contract's rounding (a fill that completes the order moves all remaining collateral).
-- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with each token's `max_ltv` (frozen tokens left out, D53) and conservative prices, and the loan after the fill exactly as `fill_borrow` builds it (existing loan from `get_loan`, plus each escrowed token pro rata, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). The pool comes from the book's last reload ([Book](#book), step 1). Loans are not part of the book, so `get_loan` is read for each `borrow` ask when a batch is built.
+- **Pre-checks mirror the contract** with `shared/math.ts` (a port of `math.rs`, tested against its vectors): `face`, `shares_for`, `value_of`, `can_open` with each token's `max_ltv` (frozen tokens left out, D53) and conservative prices, and the loan after the fill exactly as `fill_borrow` builds it (the existing loan, plus each escrowed token pro rata, plus debt face rounded up; netting happens after the check, so it is ignored, as in the contract). The pool comes from the book's last reload ([Book](#book), step 1).
+- **Loans come from the market's loan list** (D58): `get_loans` read at the book's height, reloaded on loan events and after each batch, not a `get_loan` call per `borrow` ask per round, which would spend the free RPC's budget every 5 s. `netted` doesn't reload the loans, so a loan's debt can be overstated until the next reload, which only makes `can_open` stricter.
+- **The pool is not updated within a batch** (D58). A fill mints shares rounded down and netting burns them rounded up, so `V / S` only rises during a batch. Shares computed from the reloaded pool are therefore at least the shares the contract computes, and a size that fits here fits there; at worst a fill the matcher sized at 1 share is skipped as `zero_shares`. The copies of order amounts, escrow, and loans are updated fill by fill.
 - **Prices for pre-checks** come from the same oracle call the contract makes (`list_prices_no_older_than` on `oracle_contract`, `age = oracle_max_age`), validated with the contract's rules at the latest block time. Without usable prices, `borrow` asks are left out and `sell_note` fills still go ahead.
 - **Timing is safe in one direction:** execution happens after `now`, so `dt` only shrinks. A smaller `dt` means a smaller face and fewer shares, so a `sell_note` size that fits at `now` still fits. For `can_open`, a later block only lowers the debt face, which helps.
 - **No safety margins** (D24): the matcher submits whatever passes the pre-checks at current prices. If prices move and the contract skips a fill, the matcher parks it instead of retrying at once.
@@ -93,6 +95,12 @@ for each maturity m with m > now, in ascending order:
 | Fills per `match_orders` | 10 | [risk-params.md](risk-params.md). `borrow` and `sell_note` fills may share a batch, and a batch may span maturities |
 | Gas attached | 300 Tgas | Sandbox 2026-11-03 (contract v0.6): 10 `borrow` fills burn 62.2 Tgas and need about 170 Tgas attached, 10 `sell_note` fills about 165 Tgas. Unused gas is refunded. The headroom covers the real `intents.near` and oracle costing more ⚠️ |
 | Batches in flight | 1 | The next batch is built only after the previous batch's transaction is final and the books of its maturities are reloaded at a final height past its last receipt, so no fill is computed from stale amounts |
+
+**After a batch** (D58): the matcher takes the height of the block of the batch's last receipt (from its block hash), waits until the final height reaches it, and reloads the batch's maturities, and the loans if it had a `borrow` fill, at that final height. The follower reloads the same books on the batch's events; the market never replaces a book or the loans with a read at a lower height than the one it holds, so the two can run in any order.
+
+**A batch still pending** (no outcome within 30 s, [Nonces and retries](#nonces-and-retries)) is followed until it resolves: the matcher re-sends the same signed transaction and asks by hash. It never landed only if a re-send is refused (expired block hash, or its nonce used by another transaction) and the hash is unknown; then its submission is closed as an error and the next batch is built. **At startup**, before the first batch, every `match` submission still open (`sent` or `pending`) is resolved the same way, oldest first, and its skips are handled.
+
+**A batch whose `match_orders` call failed** (its first receipt or the price callback panicked, e.g. an oracle response that doesn't parse, [contract-interface.md](contract-interface.md#matching)) executed no fill. Its `borrow` asks wait as for `no_price`; its `sell_note` fills are built again in the next round.
 
 Raise the fill count only after measuring on mainnet.
 
@@ -113,6 +121,14 @@ After each batch the matcher reads `fill_skipped` events from the transaction ou
 | `bid_not_lend`, `ask_is_lend`, `maturity_mismatch`, `self_trade`, `not_crossed`, `zero_principal` | The matcher's own checks should prevent these. Log an error with the batch and park the pair |
 
 Parked pairs and orders are kept in memory only; a restart clears them, which costs at most one more skipped fill each.
+
+**How parking works** (D58): a park remembers the inputs it was made from and holds while they are unchanged, so it needs no timer:
+
+- A pair's inputs are both orders' remaining amounts, the ask's escrow, and the pool's `V` and `S`. "Until the pool changes" (`zero_shares`) and the reasons that should not happen use these.
+- "Until the reload after the batch" (`bid_not_found`, `ask_not_found`, a first `*_oversize`) adds the book's height, so the next reload of the maturity lifts it. Oversize again with the same pair inputs logs an error and parks on the inputs alone.
+- An ask's inputs for `cannot_open` are its remaining amount and escrow, the owner's loan, and the prices of the feeds involved, so a new price, a change to the order, or a change to the loan lifts it.
+- `bid_expired`, `ask_expired`, `matured`, and `notes_wiped_out` need no park: the matcher's own checks leave those orders and maturities out once its clock (the latest final block) or the reloaded pool shows them.
+- `no_price` blocks `borrow` asks until every feed of the oracle read has a newer `publish_time` than at the skip.
 
 ## Relayer (D42)
 
@@ -254,7 +270,7 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); later the last batch, last keeper scan, and storage alert |
+| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch}`, the hash of a batch in flight and the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error); later the last keeper scan and storage alert |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |
