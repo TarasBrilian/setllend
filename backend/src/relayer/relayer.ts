@@ -2,6 +2,7 @@
 // submits it with `execute_intents` from the intents key, and reads what happened. It also sends
 // the matcher's `match_orders` batches from the matcher key. Without a key, that half is off.
 import type { Contract } from "../chain/contract.ts";
+import type { TxOutcome } from "../chain/rpc.ts";
 import { SendError, type SendResult, type Sender } from "../chain/sender.ts";
 import type { Submissions } from "../chain/submissions.ts";
 import type { Market } from "../market.ts";
@@ -133,6 +134,18 @@ export class Relayer {
     const read = readOutcome(sent.outcome, contract.id);
     submissions.update(sent.hash, read.ok ? "ok" : "failed", read.error);
     return { status: 200, body: { tx_hash: sent.hash, ok: read.ok, actions, events: read.events, error: read.error } };
+  }
+
+  /**
+   * Resolves a `match_orders` transaction signed before (pending, or open after a restart) by
+   * re-sending its stored bytes: the outcome, `never_landed`, or null while still unknown.
+   */
+  async resumeMatch(hash: string): Promise<TxOutcome | "never_landed" | null> {
+    const { matcher, submissions } = this.o;
+    if (!matcher) throw new Error("The matcher has no key and runs read-only");
+    const row = submissions.get(hash);
+    if (!row) throw new Error(`No submission ${hash}`);
+    return matcher.resume(hash, row.signed_tx);
   }
 
   /** Reads a pending intent's outcome once known, records it, and hands it to `onSettled`. */
