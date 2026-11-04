@@ -123,7 +123,7 @@ export class Sender {
         return outcome.executed ? outcome : await this.lookup(hash, sentAt);
       } catch (error) {
         if (!(error instanceof TxError)) {
-          if (attempt >= SENDER.resends) return await this.lookup(hash, sentAt);
+          if (attempt >= SENDER.resends || this.now() - sentAt >= SENDER.pendingAfterMs) return await this.lookup(hash, sentAt);
           await this.sleep(SENDER.backoffMs * 2 ** attempt);
           continue;
         }

@@ -72,6 +72,18 @@ describe("Sender", () => {
     expect(result.outcome).not.toBeNull();
   });
 
+  it("stops re-sending once 30 s have passed and reports the transaction as pending", async () => {
+    const { rpc, sender, advance } = setup();
+    rpc.onSend = () => {
+      advance(SENDER.pendingAfterMs);
+      throw new Error("fetch failed");
+    };
+    const result = await sender.send(request);
+    expect(rpc.sent).toHaveLength(1);
+    expect(rpc.looked).toHaveLength(1);
+    expect(result.outcome).toBeNull();
+  });
+
   it("signs anew with a higher nonce when the first send is refused for its nonce", async () => {
     const { rpc, submissions, sender } = setup();
     rpc.onSend = (_b, call) => {
