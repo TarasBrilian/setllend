@@ -25,6 +25,7 @@ This folder is the single source of truth for building Setllend. The root `READM
 | [intents-primitives.md](intents-primitives.md) | NEAR Intents primitives we use and their verified status |
 | [user-actions.md](user-actions.md) | Every user action, its mechanism, and an end-to-end flow |
 | [contract-interface.md](contract-interface.md) | `msg` formats and contract methods. **Contract between all components** |
+| [dry-run.md](dry-run.md) | Local dry run: sandbox at mainnet account IDs, mock `intents.near`, backend dry-run mode, fake 1Click, controls, smoke test (D62) |
 | [backend.md](backend.md) | Matcher, relayer, keeper, market-maker agent, 1Click wrapper: chain access, book, fills, retries, liquidation, API, persistence |
 | [frontend.md](frontend.md) | Pages, look, and how the UI gets its data |
 | [risk-params.md](risk-params.md) | LTV, liquidation threshold, bonus, grace, maturities, oracle guards |
