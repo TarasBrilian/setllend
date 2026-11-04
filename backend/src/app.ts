@@ -1,5 +1,6 @@
-// REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain. Write endpoints
-// (`POST /api/intents`, 1Click) come with the relayer and the 1Click wrapper.
+// REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain. The 1Click endpoints
+// come with the 1Click wrapper.
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono } from "hono";
 import { NotDeployedError } from "./chain/rpc.ts";
 import type { HistoryCursor, StoredEvent } from "./chain/store.ts";
@@ -8,6 +9,7 @@ import type { Service } from "./service.ts";
 import { ASSETS } from "./shared/assets.ts";
 import { type AccountId, isAccountId } from "./shared/encoding.ts";
 import { MathError, type Price, healthFactor, valuation } from "./shared/math.ts";
+import { FloodGuard, clientIp } from "./relayer/flood.ts";
 
 /** Internal settings (SOT/backend.md#api): page sizes and cache times, none user-facing (D24). */
 export const API = { defaultLimit: 100, maxLimit: 1_000, saltCacheMs: 60_000 };
@@ -42,7 +44,8 @@ function eventJson(row: StoredEvent) {
 
 export function createApp(service: Service) {
   const app = new Hono();
-  const { market, store, contract, prices } = service;
+  const { market, store, contract, prices, relayer } = service;
+  const flood = new FloodGuard();
   let salt: { at: number; value: Promise<string> } | null = null;
 
   const ready = () => {
@@ -108,6 +111,23 @@ export function createApp(service: Service) {
       });
     }
     return c.json({ salt: await salt.value });
+  });
+
+  app.post("/api/intents", async (c) => {
+    let socket: string | undefined;
+    try {
+      socket = getConnInfo(c).remote.address;
+    } catch {
+      // No Node socket (tests): the header alone decides.
+    }
+    if (!flood.allow(clientIp(c.req.header("x-forwarded-for"), socket))) {
+      const error = { code: "rate_limited", reason: "Too many requests; try again in a minute" };
+      return c.json({ tx_hash: null, ok: false, actions: [], events: [], error }, 429);
+    }
+    // A body that isn't JSON reaches the checks as undefined and is answered as invalid_payload.
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const result = await relayer.submit(body);
+    return c.json(result.body, result.status);
   });
 
   app.get("/api/accounts/:account", async (c) => {

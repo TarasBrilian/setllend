@@ -1,6 +1,6 @@
 // Test doubles for the chain (SOT/backend.md#tests): an in-memory RPC and block source.
 import { type AccountTx, type EventRecord, type TxDetail, type TxReceipt, type TxSource, setllendEvents } from "./chain/explorer.ts";
-import type { FinalBlock, Rpc } from "./chain/rpc.ts";
+import type { FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc, ViewAt } from "./chain/rpc.ts";
 import { NotDeployedError } from "./chain/rpc.ts";
 import { EVENT_STANDARD, EVENT_VERSION } from "./shared/events.ts";
 import type { CollateralToken, Config, LoanEntryView, OracleResponse, OrderView, PoolView } from "./shared/views.ts";
@@ -79,13 +79,13 @@ export class FakeExplorer implements TxSource {
   }
 }
 
-type Handler = (args: Record<string, unknown>, height: number | undefined) => unknown;
+type Handler = (args: Record<string, unknown>, height: ViewAt | undefined) => unknown;
 
 /** Views answered by handlers per `contract.method`; a contract with no handler has no code. */
 export class FakeRpc implements Rpc {
   final: FinalBlock = { height: 100, hash: "hash-100", timestampNs: 100_000_000_000n };
   readonly handlers = new Map<string, Handler>();
-  readonly calls: { method: string; args: Record<string, unknown>; height: number | undefined }[] = [];
+  readonly calls: { method: string; args: Record<string, unknown>; height: ViewAt | undefined }[] = [];
   deployed = true;
 
   on(contractAndMethod: string, handler: Handler | unknown): this {
@@ -97,7 +97,7 @@ export class FakeRpc implements Rpc {
     return this.final;
   }
 
-  async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: number): Promise<T> {
+  async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T> {
     this.calls.push({ method, args, height });
     if (contractId === CONTRACT && !this.deployed) throw new NotDeployedError(`${contractId} has no contract code`);
     const handler = this.handlers.get(`${contractId}.${method}`);
@@ -186,4 +186,61 @@ export function order(o: Partial<OrderView> & { order_id: string }): OrderView {
     expires_at: null,
     ...o,
   };
+}
+
+/** A receipt of a transaction outcome; `panic` makes it fail as a contract panic does. */
+export function outcomeReceipt(executorId: string, logs: string[] = [], opts: { panic?: string; id?: string } = {}): ReceiptOutcome {
+  return {
+    id: opts.id ?? `receipt-${Math.random().toString(36).slice(2)}`,
+    executorId,
+    status:
+      opts.panic === undefined
+        ? { SuccessValue: "" }
+        : { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: `Smart contract panicked: ${opts.panic}` } } } } },
+    logs,
+    blockHash: "block-hash",
+  };
+}
+
+type SendHandler = (signedTxBase64: string, call: number) => void | Promise<void>;
+type IncludedHandler = (hash: string, call: number) => void | Promise<void>;
+type StatusHandler = (hash: string, call: number) => TxOutcome | Promise<TxOutcome>;
+
+/**
+ * Transaction calls for `Sender` tests. `onSend`, `onIncluded`, and `onStatus` answer each call
+ * (they may throw a `TxError` or any error); by default every transaction lands with no receipts.
+ * `active` counts sends in flight, so tests can see that one key sends one at a time.
+ */
+export class FakeTxRpc implements TxRpc {
+  final: FinalBlock = { height: 100, hash: "11111111111111111111111111111111", timestampNs: 100_000_000_000n };
+  keyNonce = 41n;
+  readonly sent: string[] = [];
+  readonly included: string[] = [];
+  readonly looked: string[] = [];
+  onSend: SendHandler = () => {};
+  onIncluded: IncludedHandler = () => {};
+  onStatus: StatusHandler = (hash) => ({ hash, executed: true, receipts: [] });
+
+  async finalBlock(): Promise<FinalBlock> {
+    return this.final;
+  }
+
+  async accessKeyNonce(): Promise<bigint> {
+    return this.keyNonce;
+  }
+
+  async sendTx(signedTxBase64: string): Promise<void> {
+    this.sent.push(signedTxBase64);
+    await this.onSend(signedTxBase64, this.sent.length);
+  }
+
+  async txIncluded(hash: string): Promise<void> {
+    this.included.push(hash);
+    await this.onIncluded(hash, this.included.length);
+  }
+
+  async txStatus(hash: string): Promise<TxOutcome> {
+    this.looked.push(hash);
+    return this.onStatus(hash, this.looked.length);
+  }
 }

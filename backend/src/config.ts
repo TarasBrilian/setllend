@@ -7,6 +7,10 @@ export const config = {
   fastnearTxUrl: process.env.FASTNEAR_TX_URL || "https://tx.main.fastnear.com",
   contractId: process.env.SETLLEND_CONTRACT || "setllend.near",
   startBlock: blockHeight(process.env.SETLLEND_START_BLOCK),
+  // The backend account and its function-call keys (D43). Without them the relayer runs read-only.
+  nearAccountId: process.env.NEAR_ACCOUNT_ID || undefined,
+  intentsPrivateKey: process.env.NEAR_INTENTS_PRIVATE_KEY || undefined,
+  matcherPrivateKey: process.env.NEAR_MATCHER_PRIVATE_KEY || undefined,
 };
 
 function blockHeight(value: string | undefined): number | undefined {

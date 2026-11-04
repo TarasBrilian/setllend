@@ -17,9 +17,10 @@ setllend/
 │   └── src/              # index.ts starts the server, app.ts the REST API, service.ts wires the chain parts,
 │       │                 # market.ts (books, loans, totals), prices.ts, ws.ts (WebSocket hub), config.ts, db.ts,
 │       │                 # testing.ts (in-memory RPC and explorer for tests)
-│       ├── chain/        # NEAR RPC client, typed views, event follower on the FastNear explorer, SQLite store (D40, D55)
+│       ├── chain/        # NEAR RPC client, typed views, event follower on the FastNear explorer, SQLite store (D40, D55),
+│       │                 # sender.ts (signed transactions: nonce queue per access key, retries, status by hash)
 │       ├── matcher/      # in-memory order book (book.ts), later the fill builder
-│       ├── relayer/      # execute_intents, match_orders
+│       ├── relayer/      # POST /api/intents: payload checks, simulate, execute_intents, outcome reading; match_orders
 │       ├── keeper/       # liquidation + maturity settlement
 │       ├── mm-agent/     # market-maker agent
 │       ├── oneclick/     # 1Click wrapper (quote, deposit, withdraw, status)

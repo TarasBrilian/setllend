@@ -167,6 +167,26 @@ describe("API", () => {
   });
 });
 
+describe("POST /api/intents", () => {
+  const post = (app: Awaited<ReturnType<typeof ready>>["app"], body: string, ip = "1.2.3.4") =>
+    app.request("/api/intents", { method: "POST", body, headers: { "content-type": "application/json", "x-forwarded-for": `6.6.6.6, ${ip}` } });
+
+  it("answers with the relayer's status and body: 503 while it has no key", async () => {
+    const { app } = await ready();
+    expect(await json(await post(app, "not json"))).toMatchObject({ status: 503, body: { ok: false, error: { code: "not_ready" } } });
+    expect((await json(await health(app))).body.relayer).toEqual({ intents: false, matcher: false });
+  });
+
+  it("limits each client IP, keyed on the entry the proxy appended", async () => {
+    const { app } = await ready();
+    for (let i = 0; i < 30; i++) expect((await post(app, "{}")).status).toBe(503);
+    expect(await json(await post(app, "{}"))).toMatchObject({ status: 429, body: { error: { code: "rate_limited" } } });
+    expect((await post(app, "{}", "5.5.5.5")).status).toBe(503);
+  });
+});
+
+const health = (app: Awaited<ReturnType<typeof ready>>["app"]) => app.request("/health");
+
 describe("Hub", () => {
   it("validates subscriptions and routes pushes", async () => {
     const { service } = await ready();
@@ -182,6 +202,9 @@ describe("Hub", () => {
     hub.round(records(81, [fill], "f"), service.store);
     expect(sent.map((s) => JSON.parse(s).type)).toEqual(["trade", "event"]);
     expect(JSON.parse(sent[1]!)).toMatchObject({ account: LENDER, event: { event: "order_filled", block_height: 81 } });
+    hub.intent(LENDER, { tx_hash: "h", ok: true, actions: ["lend"], events: [], error: null });
+    expect(JSON.parse(sent.at(-1)!)).toEqual({ type: "intent", account: LENDER, tx_hash: "h", ok: true, actions: ["lend"], events: [], error: null });
+    sent.pop();
     hub.close(client);
     hub.round(records(82, [fill], "g"), service.store);
     expect(sent).toHaveLength(2);
