@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
 import { Service } from "./service.ts";
-import { CONTRACT, ETH, FakeExplorer, FakeRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
+import { CONTRACT, ETH, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
 import { Hub } from "./ws.ts";
 
 const M = "1795766400000000000";
@@ -76,6 +76,27 @@ describe("API before the contract is loaded", () => {
     expect(s.market.books.has(M)).toBe(true);
     expect(service.contractState).toBe("checking");
   });
+
+  it("runs the keeper once loaded, only with the backend account (D59)", async () => {
+    for (const keys of [false, true]) {
+      const { rpc } = setup();
+      const s = new Service({
+        db: openDb(":memory:"),
+        rpc,
+        source: new FakeExplorer(),
+        contractId: CONTRACT,
+        keys: keys ? { accountId: "backend.setllend.near", txRpc: new FakeTxRpc() } : undefined,
+        log: () => {},
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      });
+      await s.start();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      s.keeper.stop();
+      s.follower.stop();
+      expect(s.keeper.lastScan !== null).toBe(keys);
+      expect(s.keeper.signing).toBe(false);
+    }
+  });
 });
 
 describe("API", () => {
@@ -98,6 +119,24 @@ describe("API", () => {
     const prices = (await json(await app.request("/api/prices"))).body;
     expect(prices[ETH]).toEqual({ price: "200000000000", conf: "0", expo: -8, usd: 2000, age_s: 0 });
     expect(prices[USDC].usd).toBe(1);
+  });
+
+  it("reports the keeper on /health, amounts as strings", async () => {
+    const { app, service, rpc } = await ready();
+    expect((await json(await app.request("/health"))).body.keeper).toEqual({
+      signing: false,
+      in_flight: null,
+      capital: null,
+      last_scan: null,
+      last_liquidation: null,
+      storage: null,
+    });
+    rpc.accounts.set(CONTRACT, { amount: 5n * 10n ** 24n, storageUsage: 100_000 });
+    await service.keeper.round();
+    expect((await json(await app.request("/health"))).body.keeper).toMatchObject({
+      last_scan: { height: 100, loans: 1, eligible: 0, unpriced: 0, top: [], error: null },
+      storage: { free: String(4n * 10n ** 24n), alert: false },
+    });
   });
 
   it("serves an account with health, deposits, and fill totals", async () => {

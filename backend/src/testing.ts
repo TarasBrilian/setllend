@@ -1,6 +1,6 @@
 // Test doubles for the chain (SOT/backend.md#tests): an in-memory RPC and block source.
 import { type AccountTx, type EventRecord, type TxDetail, type TxReceipt, type TxSource, setllendEvents } from "./chain/explorer.ts";
-import type { FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc, ViewAt } from "./chain/rpc.ts";
+import type { AccountState, FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc, ViewAt } from "./chain/rpc.ts";
 import { NotDeployedError } from "./chain/rpc.ts";
 import { EVENT_STANDARD, EVENT_VERSION } from "./shared/events.ts";
 import type { CollateralToken, Config, LoanEntryView, OracleResponse, OrderView, PoolView } from "./shared/views.ts";
@@ -102,6 +102,15 @@ export class FakeRpc implements Rpc {
 
   async blockHeight(hash: string): Promise<number> {
     return this.blocks.get(hash) ?? this.final.height;
+  }
+
+  /** `view_account` answers by account ID. */
+  readonly accounts = new Map<string, AccountState>();
+
+  async account(accountId: string, _height: number): Promise<AccountState> {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new Error(`Account ${accountId} does not exist`);
+    return account;
   }
 
   async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T> {

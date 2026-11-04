@@ -85,8 +85,8 @@ export class Contract {
   }
 
   /** The account's Intents balance per token (`mt_batch_balance_of` on intents.near). */
-  async intentsBalances(account: AccountId, tokens: TokenId[]): Promise<Record<TokenId, U128>> {
-    const amounts = await this.rpc.view<U128[]>(this.intents, "mt_batch_balance_of", { account_id: account, token_ids: tokens });
+  async intentsBalances(account: AccountId, tokens: TokenId[], height?: number): Promise<Record<TokenId, U128>> {
+    const amounts = await this.rpc.view<U128[]>(this.intents, "mt_batch_balance_of", { account_id: account, token_ids: tokens }, height);
     return Object.fromEntries(tokens.map((token, i) => [token, amounts[i] ?? "0"]));
   }
 

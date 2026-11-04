@@ -11,6 +11,8 @@ export const config = {
   nearAccountId: process.env.NEAR_ACCOUNT_ID || undefined,
   intentsPrivateKey: process.env.NEAR_INTENTS_PRIVATE_KEY || undefined,
   matcherPrivateKey: process.env.NEAR_MATCHER_PRIVATE_KEY || undefined,
+  // The keeper's NEP-413 signing key, registered on intents.near; not a NEAR access key (D43).
+  keeperSigningKey: process.env.NEAR_KEEPER_SIGNING_KEY || undefined,
 };
 
 function blockHeight(value: string | undefined): number | undefined {

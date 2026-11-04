@@ -26,6 +26,14 @@ One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client,
 | Contract events | FastNear explorer API (`FASTNEAR_TX_URL`, default `https://tx.main.fastnear.com`, D55): `POST /v0/account` lists the transactions that touch the contract, `POST /v0/transactions` returns each one's receipts with logs | ✅ 2026-11-04 on mainnet: an account reached only through cross-contract calls is indexed (e.g. `aggregate-oracle.near` called by `v2.ref-finance.near`), and the index was 0 blocks behind the final height. `from_tx_block_height` is inclusive, `desc: false` lists oldest first, pages hold up to 200 with a `resume_token`, and `/v0/transactions` takes at most 20 hashes. Receipts carry `id`, `block_height`, `block_hash`, `block_timestamp` (a JSON number, exact to about a microsecond), and `outcome` with `executor_id`, `status`, and `logs`. No key; about 30 requests per minute passed and a burst of 15 got a 429. Not FastNear neardata: its free tier allows 30 blocks per minute (429 message, 2026-11-04; its README still says 180 requests), against mainnet's ~103 blocks per minute |
 | Results of our own transactions | The `send_tx` result (all receipt outcomes) | Used only to answer the caller (relayer response, matcher skips). The book changes only through reloads at a final height, so an outcome seen early can't be overwritten by an older state |
 
+**Free RPC limit** (`free.rpc.fastnear.com`, the default `NEAR_RPC_URL`), measured 2026-11-04 from one IP with `block`, view calls, and `view_account` (all counted alike):
+
+- A 429 carries the JSON-RPC error `{"code": -429, "message": "Rate limits exceeded. For higher rate limits get a subscription at https://fastnear.com"}`. No rate-limit headers are sent: `x-rate-limit-score` is listed in `access-control-expose-headers` but never set.
+- **Burst:** 47 to 105 back-to-back requests pass before the first 429, depending on how rested the limit is.
+- **Sustained:** 1.5 requests per second for 120 s all passed (180 of 180). 3 per second for 90 s passed 175, then 95 were refused. The refill is therefore about 1.5 to 2 requests per second (roughly 100 per minute).
+- **Recovery:** after stopping, the next request passes about 1 s later, and 10 s idle lets another 17 to 20 through. Sending on while limited keeps the limit hit: at 2.5 per second, started before the limit had refilled, 64 passed and then only 5 of the next 236.
+- **What it means for the backend:** its steady load is about 1.5 requests per second (matcher 12 per minute, prices up to 24, keeper about 30, follower and reloads on top), so it runs near the limit, and a burst of book reloads or relayed intents can reach it. If `/health` shows RPC errors on Railway, set `NEAR_RPC_URL` to a keyed endpoint first ([pitfalls.md](pitfalls.md#off-chain)).
+
 **Follower rules** (`chain/follower.ts`):
 
 - **Poll** every 5 s: read the final block from RPC, then list the contract's transactions from `min(cursor + 1, final − 50)` up, oldest first, at most 5 pages per poll while catching up. The cursor is the transaction height read up to, stored in SQLite.
@@ -195,28 +203,44 @@ From the contract's state, on every scan: `get_loan_count()`, then `get_loans(fr
 
 ### Scan
 
-Every 10 s (the oracle updates about every 20 s, [oracle.md](oracle.md)):
+Every 10 s (the oracle updates about every 20 s, [oracle.md](oracle.md)), at one final block `B` (D59):
 
-1. **Prices:** one `list_prices_no_older_than` view call for the debt feed and every collateral feed, validated exactly like `validate_prices`: `price > 0`, `conf × 10^4 ≤ price × oracle_max_conf`, and `|now − publish_time| ≤ oracle_max_age`, with `now` the latest final block time in seconds. A feed that fails is unusable, and so is every loan holding a token on it (the contract would panic with `No price`, even for overdue debt).
-2. **Loans:** every loan, read as in [Finding loans](#finding-loans), and the token list with `get_collateral_tokens` (reloaded on its events, see [D48 changes](#d48-changes)).
+1. **Prices:** one `list_prices_no_older_than` view call for the debt feed and every collateral feed, validated exactly like `validate_prices`: `price > 0`, `conf × 10^4 ≤ price × oracle_max_conf`, and `|now − publish_time| ≤ oracle_max_age`, with `now` the latest final block time in seconds. A feed that fails is unusable, and so is every loan holding a token on it (the contract would panic with `No price`, even for overdue debt). The keeper shares the API's price snapshot (cached 5 s, [API](#rest)), so it adds no oracle calls.
+2. **Loans:** every loan, read as in [Finding loans](#finding-loans) at `B`, and the token list with `get_collateral_tokens` (reloaded on its events, see [D48 changes](#d48-changes)). Overdue is checked against `B`'s time. Capital is read at `B` too.
 3. **Eligible** when `debt_face > 0` and, checked in this order as the contract does:
    1. overdue: `now ≥ maturity + grace`, or
    2. unhealthy: `can_open` over all the loan's tokens, each at its `liq_threshold`, frozen ones included, is false, with conservative prices (`price − conf` for collateral, `price + conf` for debt).
 4. **Seizure estimate at mid prices** (D39, D53): `repay = min(debt_face, capital)`, then `seize(loan, repay)` exactly as `math.rs` computes it: the same fraction of every token, rounded down per token, capped at all of it with `repay = repay_for(all)`. Nothing seized in any token means the contract would panic (`Nothing to seize`), so the keeper leaves it.
-5. **Order:** overdue loans first, then by lowest health. Bad-debt loans (collateral worth less than debt plus bonus) are liquidated like any other; the contract realizes the rest.
+5. **Order:** overdue loans first, then by lowest health, then in index order. Bad-debt loans (collateral worth less than debt plus bonus) are liquidated like any other; the contract realizes the rest.
+6. **Skips:** an eligible loan that can't be sent now is reported with a reason and checked again on the next scan. A loan that isn't overdue and whose health can't be computed (`no_price`, `unknown_token`, or an overflow in the health check) isn't known to be eligible; it is only counted as `unpriced`:
+
+   | Reason | When |
+   |---|---|
+   | `no_price` | A feed of the loan (debt or any of its tokens, frozen ones too) is unusable |
+   | `unknown_token` | The loan holds a token the keeper's token list doesn't have yet (it reloads on the `collateral_token_*` event) |
+   | `nothing_to_seize` | The seizure estimate rounds to 0 in every token ([contract-interface.md](contract-interface.md#math)) |
+   | `math_overflow` | The estimate overflows 512 bits, where the contract would panic too |
+   | `held` | Its last liquidation failed; held until every feed it uses has a newer price (D59) |
+   | `no_capital` | The keeper has no USDC on `intents.near` |
+
+The first eligible loan without a skip is liquidated. Once that liquidation resolves and the final height has passed its last receipt, the next scan runs at once instead of after 10 s.
 
 ### Liquidating
 
 - One liquidation in flight at a time, so capital is never counted twice.
 - Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the keeper's signing key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 payload comes from the shared builder in `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); `keeper/` signs its hash with the signing key. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
 - **Partial liquidation:** with less capital than the debt, the keeper liquidates what its capital covers. If the loan is still eligible afterwards, a later scan picks it up once capital is back.
-- **Capital** = the backend account's USDC balance on `intents.near` (`mt_balance_of`), minus the amount of the liquidation in flight. With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible loans left. Seized collateral, one or more tokens, lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized collateral is moved out by hand until the 1Click wrapper turns it back into USDC.
+- **Capital** = the backend account's USDC balance on `intents.near` (`mt_batch_balance_of`, as for the account endpoint), read at the scan's block. No liquidation is in flight then, since the next one waits for the last to resolve and for the final height to pass it (D59). With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible loans left. Seized collateral, one or more tokens, lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized collateral is moved out by hand until the 1Click wrapper turns it back into USDC.
 - **Dust:** every eligible loan is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
-- **Failure:** a panic refunds the keeper in full. The reason (`Loan is not liquidatable`, `No price`, `Nothing to seize`) is logged and the loan is checked again on the next scan.
+- **The intent (D59):** signer `NEAR_ACCOUNT_ID`, deadline 2 minutes ahead, nonce from a fresh `current_salt`. It goes through `relayer.submit(body, {kind: "liquidate"})`, so the relayer's checks and its `simulate_intents` run first and catch a bad signature, an unregistered key, a used nonce, or too little USDC without gas. The contract's own checks (liquidatable, prices, seizure) need the oracle, so they run only on chain. ✅ 2026-11-04 on mainnet: a `liquidate` transfer signed the keeper's way with a throwaway key as its implicit account reached the balance check (`insufficient balance or overflow`), and the same payload with one signature bit flipped failed with `invalid signature`.
+- **In flight** until its outcome is known. A pending one is followed for up to 10 minutes like any relayed intent ([Submitting user intents](#submitting-user-intents)); its 2-minute deadline means `intents.near` can no longer execute it once the keeper stops following. After the outcome, the next liquidation waits until the final height is at or past the block of its last receipt, so the loans and capital it reads include the result ([D58](decisions.md) uses the same rule for batches).
+- **Failure:** a panic refunds the keeper in full. The reason (`Loan is not liquidatable`, `No price`, `Nothing to seize`) is logged and the loan is held (`held`) until every feed it uses has published a newer price, since a new price is what changes the verdict. A failed simulation holds the loan the same way, so a keeper whose key isn't registered retries about once per oracle update, not every scan. A transaction that could not be sent (`submit_failed`), and any other refusal before sending (`not_ready`, or a payload the relayer rejects, which would be a keeper bug), is not held and is tried again on the next scan.
+- **Payout failed:** a liquidation whose seized-token payout failed (`payout_failed`, [Submitting user intents](#submitting-user-intents)) did happen. The keeper counts it as done and logs the reason; that token is in the backend account's free balance on the contract, and is withdrawn by hand like other seized collateral.
+- **Read-only:** without `NEAR_ACCOUNT_ID` the keeper doesn't run, since its capital is that account's balance. With the account but without `NEAR_KEEPER_SIGNING_KEY` or the relayer's intents key, it scans and reports in `/health`, and sends nothing.
 
 ### Storage alert
 
-Each scan also reads the contract's `view_account`: free NEAR = `amount − storage_usage × 10^19` yocto. Below 1 NEAR the keeper logs an alert and `/health` shows it ([pitfalls.md](pitfalls.md#contract), D38). Ops-only setting.
+Each scan also reads the contract's `view_account`: free NEAR = `amount − storage_usage × 10^19` yocto. Below 1 NEAR the keeper logs an alert and `/health` shows it ([pitfalls.md](pitfalls.md#contract), D38). The log is written when the balance crosses the line, not on every scan. Ops-only setting.
 
 ## Account and keys (D43)
 
@@ -258,10 +282,10 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `FASTNEAR_TX_URL` | `https://tx.main.fastnear.com` (D55) | No |
 | `SETLLEND_CONTRACT` | `setllend.near` | No |
 | `SETLLEND_START_BLOCK` | none: a fresh database reads events from the current final height on. Set it to the contract's deploy block in production, so a fresh database reads trade and account history from there. The book and the keeper don't need it | No |
-| `NEAR_ACCOUNT_ID` | none (read-only); `backend.setllend.near` in production | No |
+| `NEAR_ACCOUNT_ID` | none (read-only, and the keeper doesn't run); `backend.setllend.near` in production. Required when any key below is set | No |
 | `NEAR_INTENTS_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
-| `NEAR_KEEPER_SIGNING_KEY` | none (keeper read-only) | **Yes** |
+| `NEAR_KEEPER_SIGNING_KEY` | none (the keeper only scans, D59) | **Yes** |
 | `ONE_CLICK_JWT` | none (1Click endpoints off). Already in `.env.example` | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
@@ -272,7 +296,7 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; later the last keeper scan and storage alert |
+| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |

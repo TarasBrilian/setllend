@@ -40,6 +40,18 @@ export type RelayBody = {
 /** HTTP status per outcome (SOT/backend.md#submitting-user-intents). */
 export type RelayResult = { status: 200 | 202 | 400 | 502 | 503; body: RelayBody };
 
+/** A sent intent once every receipt executed, or null when it was followed without an answer. */
+export type Settled = { outcome: TxOutcome; body: RelayBody } | null;
+
+export type SubmitOptions = {
+  kind?: "intent" | "liquidate";
+  /**
+   * Called once for an intent that was sent (200 or 202): with its outcome, at once or after
+   * following a pending one, or with null if following gave up. The keeper waits on it (D59).
+   */
+  onSettled?: (settled: Settled) => void;
+};
+
 export type RelayerOptions = {
   contract: Contract;
   market: Market;
@@ -75,7 +87,7 @@ export class Relayer {
    * Relays one signed payload. The keeper's own `liquidate` intents come through here too, with
    * `kind: "liquidate"`, so `submissions` tells them apart from users' intents.
    */
-  async submit(body: unknown, opts: { kind?: "intent" | "liquidate" } = {}): Promise<RelayResult> {
+  async submit(body: unknown, opts: SubmitOptions = {}): Promise<RelayResult> {
     const { contract, market, submissions, intents } = this.o;
     const fail = (status: RelayResult["status"], code: RelayErrorCode, reason: string, extra: Partial<RelayBody> = {}): RelayResult => ({
       status,
@@ -128,12 +140,14 @@ export class Relayer {
       return fail(502, "submit_failed", error.message, { actions, tx_hash: error.hash });
     }
     if (sent.outcome === null) {
-      void this.follow(intents, sent.hash, actions, checked.signerId);
+      void this.follow(intents, sent.hash, actions, checked.signerId, opts.onSettled);
       return fail(202, "pending", "Not every receipt executed within 30 s; the result arrives over WebSocket", { actions, tx_hash: sent.hash });
     }
     const read = readOutcome(sent.outcome, contract.id);
     submissions.update(sent.hash, read.ok ? "ok" : "failed", read.error);
-    return { status: 200, body: { tx_hash: sent.hash, ok: read.ok, actions, events: read.events, error: read.error } };
+    const settled: RelayBody = { tx_hash: sent.hash, ok: read.ok, actions, events: read.events, error: read.error };
+    opts.onSettled?.({ outcome: sent.outcome, body: settled });
+    return { status: 200, body: settled };
   }
 
   /**
@@ -149,15 +163,20 @@ export class Relayer {
   }
 
   /** Reads a pending intent's outcome once known, records it, and hands it to `onSettled`. */
-  private async follow(sender: Sender, hash: string, actions: string[], account: string): Promise<void> {
+  private async follow(sender: Sender, hash: string, actions: string[], account: string, onSettled?: SubmitOptions["onSettled"]): Promise<void> {
+    let settled: Settled = null;
     try {
       const outcome = await sender.follow(hash);
       if (outcome === null) return; // Stays `pending` in submissions: it may never have landed.
       const read = readOutcome(outcome, this.o.contract.id);
       this.o.submissions.update(hash, read.ok ? "ok" : "failed", read.error);
-      this.o.onSettled?.(account, { tx_hash: hash, ok: read.ok, actions, events: read.events, error: read.error });
+      const body: RelayBody = { tx_hash: hash, ok: read.ok, actions, events: read.events, error: read.error };
+      settled = { outcome, body };
+      this.o.onSettled?.(account, body);
     } catch (error) {
       (this.o.log ?? console.error)(`following ${hash} failed: ${messageOf(error)}`);
+    } finally {
+      onSettled?.(settled);
     }
   }
 

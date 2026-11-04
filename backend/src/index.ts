@@ -9,7 +9,7 @@ import { Service } from "./service.ts";
 import type { Client } from "./ws.ts";
 
 const rpc = createRpc(config.nearRpcUrl);
-if ((config.intentsPrivateKey || config.matcherPrivateKey) && !config.nearAccountId) {
+if ((config.intentsPrivateKey || config.matcherPrivateKey || config.keeperSigningKey) && !config.nearAccountId) {
   throw new Error("NEAR_ACCOUNT_ID is required when a NEAR private key is set");
 }
 const service = new Service({
@@ -19,7 +19,13 @@ const service = new Service({
   contractId: config.contractId,
   startBlock: config.startBlock,
   keys: config.nearAccountId
-    ? { accountId: config.nearAccountId, txRpc: rpc, intents: config.intentsPrivateKey, matcher: config.matcherPrivateKey }
+    ? {
+        accountId: config.nearAccountId,
+        txRpc: rpc,
+        intents: config.intentsPrivateKey,
+        matcher: config.matcherPrivateKey,
+        keeper: config.keeperSigningKey,
+      }
     : undefined,
 });
 const app = createApp(service);
