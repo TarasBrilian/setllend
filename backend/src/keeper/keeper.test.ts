@@ -155,6 +155,29 @@ describe("Keeper.round", () => {
     expect(keeper.inFlight).toBeNull();
   });
 
+  it("reads loans, capital, and the contract's account at the scan's final block", async () => {
+    const { rpc, keeper } = await setup({ signing: false });
+    rpc.final = { ...rpc.final, height: 120 };
+    const before = rpc.calls.length;
+    await keeper.round();
+    const heights = rpc.calls.slice(before).filter((c) => ["get_loan_count", "get_loans", "mt_batch_balance_of"].includes(c.method)).map((c) => c.height);
+    expect(heights).toEqual([120, 120, 120]);
+  });
+
+  it("counts a liquidation whose payout failed as done, with the reason, and doesn't hold the loan", async () => {
+    const { tx, keeper, logs } = await setup();
+    const payoutFailed = eventLine("payout_failed", { account: ACCOUNT, token_id: ETH, amount: "1" });
+    tx.onStatus = (hash) => ({
+      hash,
+      executed: true,
+      receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [liquidated(usdc(1_700)), payoutFailed])],
+    });
+    expect(await keeper.round()).toBe(true);
+    expect(keeper.lastLiquidation).toMatchObject({ ok: true, repaid: String(usdc(1_700)), error: expect.stringMatching(/free balance/) });
+    expect(logs.some((l) => l.startsWith("keeper: liquidated") && l.includes("free balance"))).toBe(true);
+    expect(keeper.holds.size).toBe(0);
+  });
+
   it("reports the scan in /health terms", async () => {
     const { keeper } = await setup({ signing: false });
     await keeper.round();

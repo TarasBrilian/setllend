@@ -226,7 +226,8 @@ The first eligible loan without a skip is liquidated. Once that liquidation reso
 - **Dust:** every eligible loan is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
 - **The intent (D59):** signer `NEAR_ACCOUNT_ID`, deadline 2 minutes ahead, nonce from a fresh `current_salt`. It goes through `relayer.submit(body, {kind: "liquidate"})`, so the relayer's checks and its `simulate_intents` run first and catch a bad signature, an unregistered key, a used nonce, or too little USDC without gas. The contract's own checks (liquidatable, prices, seizure) need the oracle, so they run only on chain. ✅ 2026-11-04 on mainnet: a `liquidate` transfer signed the keeper's way with a throwaway key as its implicit account reached the balance check (`insufficient balance or overflow`), and the same payload with one signature bit flipped failed with `invalid signature`.
 - **In flight** until its outcome is known. A pending one is followed for up to 10 minutes like any relayed intent ([Submitting user intents](#submitting-user-intents)); its 2-minute deadline means `intents.near` can no longer execute it once the keeper stops following. After the outcome, the next liquidation waits until the final height is at or past the block of its last receipt, so the loans and capital it reads include the result ([D58](decisions.md) uses the same rule for batches).
-- **Failure:** a panic refunds the keeper in full. The reason (`Loan is not liquidatable`, `No price`, `Nothing to seize`) is logged and the loan is held (`held`) until every feed it uses has published a newer price, since a new price is what changes the verdict. A failed simulation holds the loan the same way, so a keeper whose key isn't registered retries about once per oracle update, not every scan. A transaction that could not be sent (`submit_failed`) is not held.
+- **Failure:** a panic refunds the keeper in full. The reason (`Loan is not liquidatable`, `No price`, `Nothing to seize`) is logged and the loan is held (`held`) until every feed it uses has published a newer price, since a new price is what changes the verdict. A failed simulation holds the loan the same way, so a keeper whose key isn't registered retries about once per oracle update, not every scan. A transaction that could not be sent (`submit_failed`), and any other refusal before sending (`not_ready`, or a payload the relayer rejects, which would be a keeper bug), is not held and is tried again on the next scan.
+- **Payout failed:** a liquidation whose seized-token payout failed (`payout_failed`, [Submitting user intents](#submitting-user-intents)) did happen. The keeper counts it as done and logs the reason; that token is in the backend account's free balance on the contract, and is withdrawn by hand like other seized collateral.
 - **Read-only:** without `NEAR_ACCOUNT_ID` the keeper doesn't run, since its capital is that account's balance. With the account but without `NEAR_KEEPER_SIGNING_KEY` or the relayer's intents key, it scans and reports in `/health`, and sends nothing.
 
 ### Storage alert
@@ -273,10 +274,10 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `FASTNEAR_TX_URL` | `https://tx.main.fastnear.com` (D55) | No |
 | `SETLLEND_CONTRACT` | `setllend.near` | No |
 | `SETLLEND_START_BLOCK` | none: a fresh database reads events from the current final height on. Set it to the contract's deploy block in production, so a fresh database reads trade and account history from there. The book and the keeper don't need it | No |
-| `NEAR_ACCOUNT_ID` | none (read-only); `backend.setllend.near` in production | No |
+| `NEAR_ACCOUNT_ID` | none (read-only, and the keeper doesn't run); `backend.setllend.near` in production. Required when any key below is set | No |
 | `NEAR_INTENTS_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
-| `NEAR_KEEPER_SIGNING_KEY` | none (keeper read-only) | **Yes** |
+| `NEAR_KEEPER_SIGNING_KEY` | none (the keeper only scans, D59) | **Yes** |
 | `ONE_CLICK_JWT` | none (1Click endpoints off). Already in `.env.example` | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).

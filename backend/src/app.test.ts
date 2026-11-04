@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
 import { Service } from "./service.ts";
-import { CONTRACT, ETH, FakeExplorer, FakeRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
+import { CONTRACT, ETH, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
 import { Hub } from "./ws.ts";
 
 const M = "1795766400000000000";
@@ -75,6 +75,27 @@ describe("API before the contract is loaded", () => {
     expect(s.contractState).toBe("ready");
     expect(s.market.books.has(M)).toBe(true);
     expect(service.contractState).toBe("checking");
+  });
+
+  it("runs the keeper once loaded, only with the backend account (D59)", async () => {
+    for (const keys of [false, true]) {
+      const { rpc } = setup();
+      const s = new Service({
+        db: openDb(":memory:"),
+        rpc,
+        source: new FakeExplorer(),
+        contractId: CONTRACT,
+        keys: keys ? { accountId: "backend.setllend.near", txRpc: new FakeTxRpc() } : undefined,
+        log: () => {},
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      });
+      await s.start();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      s.keeper.stop();
+      s.follower.stop();
+      expect(s.keeper.lastScan !== null).toBe(keys);
+      expect(s.keeper.signing).toBe(false);
+    }
   });
 });
 

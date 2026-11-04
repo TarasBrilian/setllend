@@ -136,7 +136,7 @@ export class Keeper {
     try {
       const [read, capital] = await Promise.all([
         contract.loans(block.height),
-        accountId ? contract.intentsBalances(accountId, [config.debt_token]) : null,
+        accountId ? contract.intentsBalances(accountId, [config.debt_token], block.height) : null,
         this.checkStorage(block.height),
       ]);
       loans = read;
@@ -260,7 +260,9 @@ export class Keeper {
     const event = events.find((e) => e.event === "liquidated");
     report({ tx_hash: outcome.body.tx_hash, ok, repaid: event?.event === "liquidated" ? event.data.repaid : null, error: error?.reason ?? null });
     if (ok) {
-      this.log(`keeper: liquidated ${c.account_id} ${c.maturity}, repaid ${this.lastLiquidation!.repaid} (${outcome.body.tx_hash})`);
+      // A failed payout still liquidated: that token sits in the backend account's free balance on the contract.
+      const note = error ? `; ${error.reason}` : "";
+      this.log(`keeper: liquidated ${c.account_id} ${c.maturity}, repaid ${this.lastLiquidation!.repaid} (${outcome.body.tx_hash})${note}`);
     } else {
       this.log(`keeper: liquidation of ${c.account_id} ${c.maturity} failed: ${error?.reason} (${outcome.body.tx_hash})`);
       this.holds.hold(c.account_id, c.maturity, publishTime);
