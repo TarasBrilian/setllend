@@ -1,7 +1,7 @@
 // Parked pairs and asks (SOT/backend.md#skips, D58). A park remembers the inputs it was made from
 // and holds while they are unchanged, so "until the pool, the order, or the loan changes" needs no
 // timer. Kept in memory only; a restart clears it, costing at most one more skipped fill each.
-import type { U64 } from "../shared/encoding.ts";
+import type { U128, U64 } from "../shared/encoding.ts";
 import type { SkipReason } from "../shared/events.ts";
 import type { LoanView, OrderView, PoolView } from "../shared/views.ts";
 
@@ -9,6 +9,8 @@ import type { LoanView, OrderView, PoolView } from "../shared/views.ts";
 export type Planned = {
   bid: U64;
   ask: U64;
+  /** USDC the bid pays (the `match_orders` fill). */
+  principal: U128;
   maturity: U64;
   askKind: "borrow" | "sell_note";
   /** `pairInputs` of the pair when the batch was built. */

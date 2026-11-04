@@ -8,7 +8,7 @@ const ask = order({ order_id: "2", kind: "borrow", owner: "b.near", rate_bps: 90
 const pool = { redemption_pool: "0", total_value: "100", total_shares: "100", bad_debt_total: "0" };
 
 function planned(over: Partial<Planned> = {}): Planned {
-  return { bid: "1", ask: "2", maturity: M, askKind: "borrow", pairFp: pairInputs(bid, ask, pool), askFp: "ask-fp", height: 10, ...over };
+  return { bid: "1", ask: "2", principal: "100", maturity: M, askKind: "borrow", pairFp: pairInputs(bid, ask, pool), askFp: "ask-fp", height: 10, ...over };
 }
 
 describe("fingerprints", () => {
