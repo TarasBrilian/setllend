@@ -1,8 +1,8 @@
 # Backend: matcher, relayer, keeper
 
-> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md); D55 (2026-11-04) replaced the block source of D40 with the FastNear explorer. D57 (approved 2026-11-04) adds the relayer's implementation details, D58 (approved 2026-11-04) the matcher's. v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
+> **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md); D55 (2026-11-04) replaced the block source of D40 with the FastNear explorer. D57 (approved 2026-11-04) adds the relayer's implementation details, D58 (approved 2026-11-04) the matcher's, D61 (approved 2026-11-04) the [1Click endpoints](#1click-d49-d61). v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
-One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, an event follower, and the components that share them: matcher, relayer, keeper, and the [market-maker agent](#market-maker-agent-d35-d60). The 1Click wrapper is out of scope here (scheduled 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what it will use.
+One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, an event follower, and the components that share them: matcher, relayer, keeper, and the [market-maker agent](#market-maker-agent-d35-d60), plus the [1Click wrapper](#1click-d49-d61) behind the deposit and withdrawal endpoints.
 
 ```
    FastNear explorer (contract's txs)          NEAR RPC (views, oracle, send_tx)
@@ -268,7 +268,7 @@ SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the boo
 | `cursor` | `live`: the transaction height the follower has read up to (D55) | Follower restart |
 | `events` | Every Setllend event: `block_height`, `receipt_id`, `log_index`, `tx_hash`, `block_timestamp`, `event`, `data` (JSON), unique by `(receipt_id, log_index)`, plus the `maturity`, `accounts`, and `order_ids` the event names (JSON arrays), so history is a plain query. A fill names only order IDs; its accounts come from the `order_placed` events of those orders at query time, so a fill and its orders can be stored in any order. History is ordered by `(block_height, seq)` | Trade history, rate chart, account history, the market-maker agent's fill feed (D35) |
 | `submissions` | Every transaction we send: `tx_hash` (unique), `kind` (`intent`, `match`, `liquidate`, `mm`), `signer` (the intent's `signer_id` for `intent` and `liquidate`, the backend account for `match`), `request` (the arguments, JSON), `signed_tx` (base64 of the signed transaction, D57), `status` (`sent`, `ok`, `failed`, `pending`, `error`), `error` (JSON `{code, reason}`), `created_at` and `updated_at` (ms) | In-flight batch recovery, relayer audit, keeper history |
-| `oneclick` | Every 1Click quote made through the API (D49): id, account, direction (`deposit`, `withdraw`), asset in and out, chain, amount, deposit address, 1Click status, timestamps | The user's history, status polling |
+| `oneclick` | Every 1Click quote made through the API, dry quotes left out (D49, D61): the deposit address (unique), account, direction (`deposit`, `withdraw`), route, swap type, slippage, amounts, the address on the other chain, 1Click's deadline, the full 1Click quote response (its `signature` settles disputes 📄), a withdrawal's generated payload and intent hash, a deposit's transaction hash and when it was given, the last status and swap details, when it is polled next, and `created_at` and `updated_at` (ms) | The user's 1Click list, status polling |
 
 Schema changes run as numbered migrations at startup.
 
@@ -287,7 +287,7 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_KEEPER_SIGNING_KEY` | none (the keeper only scans, D59) | **Yes** |
 | `MM_SIGNING_KEY` | none (the market-maker agent doesn't run). Its implicit account is the hex of the public key (D60) | **Yes** |
-| `ONE_CLICK_JWT` | none (1Click endpoints off). Already in `.env.example` | **Yes** |
+| `ONE_CLICK_JWT` | none (the 1Click endpoints answer 503). The partner key, sent as `X-API-Key`; it never reaches the browser | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
 
@@ -297,17 +297,20 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag; `mm` as in [Market-maker agent](#health) |
+| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag; `mm` as in [Market-maker agent](#health); `oneclick: {enabled, open}`: whether `ONE_CLICK_JWT` is set, and how many quotes are still polled |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |
 | GET | `/api/book/:maturity` | `{bids, asks}`: price levels `{rate_bps, size, orders}` plus the order list. Level sizes are USDC principal; a `sell_note` ask's principal is its `remaining_value` discounted at its own rate to `now` (display only), and its order entry also carries `remaining_value` |
 | GET | `/api/trades/:maturity?since=&limit=` | `order_filled` events, each with its block time as `timestamp` (ns), newest first, from the `events` table. `since` (ns) bounds the rate chart's range. `limit` defaults to 100, at most 1,000 per page |
 | GET | `/api/accounts/:account` | Open orders, loans with `health_factor` (D54: `healthFactor` at each token's `liq_threshold` with conservative prices, the keeper's test, so below 1 means liquidatable; overdue loans are liquidatable at any health; `null` without debt or without a usable price, or for a moment after an owner adds a token, until the list reloads), notes, free balances (views plus `shared/math.ts`); deposits, the Intents balance of every known token (`mt_batch_balance_of` on `intents.near`); and `fill_totals` per maturity and side: principal, face, and principal-weighted rate (`avg_rate_bps`, rounded down). Fills are attributed through the `order_placed` owner of each order, since `order_filled` names only order IDs (D49). `lend` counts fills of the account's `lend` bids (new or bought notes), `borrow` fills of its `borrow` asks; its `sell_note` sales are left out, since they close a lend position rather than open one. Fills before `SETLLEND_START_BLOCK` aren't in the database, so in production that is the deploy block |
-| GET | `/api/accounts/:account/history?before=&limit=` | `{events, next}`: every event that names the account (orders, fills through their orders, repay, redeem, withdrawals, liquidation), each with `seq`, `block_height`, `timestamp`, and `tx_hash`, newest first, and later its 1Click deposits and withdrawals from `oneclick`. `next` is the `before` of the next page (`<block_height>:<seq>`), `null` on the last. The UI maps events to its history rows |
+| GET | `/api/accounts/:account/history?before=&limit=` | `{events, next}`: every event that names the account (orders, fills through their orders, repay, redeem, withdrawals, liquidation), each with `seq`, `block_height`, `timestamp`, and `tx_hash`, newest first. 1Click deposits and withdrawals have their own list (D61), which the UI merges by time. `next` is the `before` of the next page (`<block_height>:<seq>`), `null` on the last. The UI maps events to its history rows |
 | GET | `/api/collateral-tokens` | Collateral tokens with their parameters and frozen flag, from `get_collateral_tokens` (D48) |
-| POST | `/api/oneclick/quote` | `{account, direction, asset, chain, amount, to?, address?}` → a 1Click quote with its deposit address, stored in `oneclick`. `address` is the refund address of a deposit or the recipient of a withdrawal on `chain`: required for Bitcoin (D52) and for a NEAR account on Arbitrum or Base (D51); an EVM account defaults to its own address. `to` buys another asset, such as NEAR from USDC (D48). Uses `ONE_CLICK_JWT`, which never reaches the browser |
-| GET | `/api/oneclick/:id` | Status of a stored quote. The backend also polls every open one until 1Click reports a final status |
+| POST | `/api/oneclick/quote` | `{account, direction, asset, chain, amount, to?, address?, swap_type?, slippage_bps?, dry?}` → a 1Click quote, stored in `oneclick` unless `dry`; a withdrawal's also carries the payload to sign. See [Quotes](#quotes) |
+| POST | `/api/oneclick/:id/submit` | `{signature, public_key?}` → submits a withdrawal's stored payload to 1Click. See [Withdrawals](#withdrawals) |
+| POST | `/api/oneclick/:id/deposit-tx` | `{tx_hash}` → tells 1Click the deposit was sent, so it is seen sooner. See [Deposits](#deposits) |
+| GET | `/api/oneclick/:id` | A stored quote by its deposit address, as in [Rows](#rows). The backend polls every open one ([Status polling](#status-polling)), so this reads the database only |
+| GET | `/api/accounts/:account/oneclick?before=&limit=` | `{items, next}`: the account's started 1Click quotes, newest first ([Rows](#rows)) |
 | GET | `/api/prices` | Validated oracle prices by token: the raw `price`, `conf`, and `expo`, so the UI can preview with `shared/math.ts` at the same conservative prices, plus `usd` (mid) and the age. One oracle call per 5 s at most, shared with the account endpoint's health |
 | GET | `/api/intents/salt` | `{salt}` from `current_salt` |
 | POST | `/api/intents` | See [Relayer](#submitting-user-intents) |
@@ -323,7 +326,7 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 - `{"type": "event", "account", "event"}`: every event that names the account, the fills of its orders included (owners from `order_placed`), with `block_height`, `timestamp`, and `tx_hash`.
 - `{"type": "intent", "account", "tx_hash", "ok", "actions", "events", "error"}`: the outcome of an intent the account signed that `POST /api/intents` answered `pending`, once every receipt executed. The same shape as the HTTP response ([Submitting user intents](#submitting-user-intents)). Only pending intents are pushed; the others are answered over HTTP.
 - `{"type": "error", "error"}` for a bad subscribe message. A socket holds at most 50 subscriptions (an internal setting).
-- `{"type": "oneclick", "account", ...}`: a status change of one of the account's 1Click quotes.
+- `{"type": "oneclick", "account", ...row}`: a change of one of the account's 1Click quotes (status, intent hash, or deposit hash), the row as in [Rows](#rows).
 
 ## D48 changes
 
@@ -398,12 +401,96 @@ Constants in `mm-agent/config.ts` (D24: agent settings, not user-facing limits).
 
 `mm: {account, bases, orders, in_flight, last_action}`: the agent's account ID (null when it doesn't run), the base per maturity (bps, one decimal), its order IDs per maturity and side, the hash of the payload in flight, and the last payload (`tx_hash`, `actions`, `ok`, `error`).
 
-## Interfaces for later components
+## 1Click (D49, D61)
 
-- **1Click wrapper** (`oneclick/`, D11): `quoteDeposit`, `quoteWithdraw`, `status`. Behind the API's 1Click endpoints (D49). The keeper calls it later to sell seized collateral for USDC; until then that is manual.
+`backend/src/oneclick/` is the only code that talks to 1Click (D11): `client.ts` for its HTTP API, `routes.ts` for the routes and addresses we allow, `intent.ts` for the payload check and the signed envelope, `store.ts` for the `oneclick` table, and `oneclick.ts` for the endpoints' logic (`quote`, `submit`, `depositTx`, the row and the account list) and the polling loop. Without `ONE_CLICK_JWT` every 1Click endpoint answers 503 and nothing is polled. Requests carry `X-API-Key` and a `User-Agent`, since Cloudflare refuses scripts without one ([assets-and-flows.md](assets-and-flows.md#asset-ids-from-1click-get-v0tokens-rechecked--2026-11-02)).
+
+### Routes
+
+The request names the asset that leaves (`asset`), the other chain (`chain`), and, for a swap, what arrives (`to`). Every other combination is refused with 400. `slippage_bps` defaults per route; the request can set any integer from 0 to 10,000, the bound 1Click itself enforces (D61).
+
+| Direction | `asset` | `chain` | `to` | 1Click origin → destination | Default slippage |
+|---|---|---|---|---|---|
+| `deposit` | USDC | `arbitrum`, `base` | none | that chain's USDC → NEAR USDC | 50 bps |
+| `deposit` | ETH | `arbitrum`, `base` | none | that chain's ETH → the same ETH in Intents | 50 bps |
+| `deposit` | BTC | `bitcoin` | none | `btc.omft.near` → the same | 50 bps |
+| `deposit` | USDC, ETH | `arbitrum`, `base` | NEAR | that chain's asset → `wrap.near` | 100 bps |
+| `withdraw` | USDC | `arbitrum`, `base` | none | NEAR USDC → that chain's USDC | 50 bps |
+| `withdraw` | ETH | `arbitrum`, `base` | none | that chain's ETH in Intents → the same, so ETH(arb) leaves only to Arbitrum and ETH(base) only to Base | 50 bps |
+| `withdraw` | BTC | `bitcoin` | none | `btc.omft.near` → the same | 50 bps |
+| `withdraw` | NEAR | `arbitrum`, `base` | USDC (required) | `wrap.near` → that chain's USDC | 100 bps |
+
+Asset IDs are those of [assets-and-flows.md](assets-and-flows.md) (`shared/assets.ts`). A withdrawal to the user's NEAR account is not a 1Click route: it is an `ft_withdraw` or `native_withdraw` intent through the relayer, in the PR after this one (D61).
+
+**Addresses.** `address` is the refund address of a deposit or the recipient of a withdrawal, on `chain`. On Arbitrum and Base an EVM account (a `0x` account) defaults to its own address, and a NEAR account must give one (D51); for Bitcoin every account gives one (D52). A `0x` address is 20 bytes of hex in any case: 1Click accepts a checksummed address on the chain side. A Bitcoin address is checked only loosely (`bc1…`, `1…`, or `3…`); 1Click checks the rest. On the Intents side (the deposit's recipient, the withdrawal's refund) the account is used as it is, always lowercase ([pitfalls.md](pitfalls.md#off-chain)).
+
+### Quotes
+
+`POST /api/oneclick/quote` takes `{account, direction, asset, chain, amount, to?, address?, swap_type?, slippage_bps?, dry?}`:
+
+- `amount` is in base units: of `asset` for `EXACT_INPUT` (the default), of what arrives for `EXACT_OUTPUT`. `EXACT_OUTPUT` is for deposits only: the UI uses it when a deposit funds an order, so the Intents balance receives exactly the order's amount, and the user sends `amount_in`, which includes the slippage buffer; 1Click refunds any excess to the refund address after the swap 📄 (D61). Withdrawals are always `EXACT_INPUT`: the user withdraws an amount of their balance.
+- The 1Click request: a deposit has `depositType` and `refundType` `ORIGIN_CHAIN`, `refundTo` the address, `recipientType` `INTENTS`, and `recipient` the account. A withdrawal has `depositType` and `refundType` `INTENTS`, `refundTo` the account, `recipientType` `DESTINATION_CHAIN`, and `recipient` the address. `deadline` is one hour from now, an internal setting: 1Click requires one, then answers with a deadline three days after it ✅ 2026-11-04, and that answer is what is stored and shown. No `appFees` (D61).
+- `dry: true` forwards a dry quote for the form's preview and returns `{quote}` without an ID or deposit address. Nothing is stored.
+- Otherwise the quote is stored with 1Click's whole response and returned as a [row](#rows), status `PENDING_DEPOSIT`. A withdrawal first goes through [the payload check](#withdrawals); if that fails nothing is stored.
+
+### Deposits
+
+The user sends `amount_in` of the asset to `deposit_address` on `chain` from their own wallet. `POST /api/oneclick/:id/deposit-tx` with `{tx_hash}` forwards the transaction hash to 1Click's `/v0/deposit/submit`, which is optional and only makes 1Click see the deposit sooner 📄. 1Click accepts any hash, a made-up one included, and the status stays `PENDING_DEPOSIT` ✅ 2026-11-04, so a hash proves nothing: it is stored and shown, and it polls the row at the fast rate for 30 minutes from when it was given (a repeated hash doesn't restart that), but it doesn't count as a started quote ([Rows](#rows)). Only for deposits.
+
+### Withdrawals
+
+After the quote, the backend calls `/v0/generate-intent` with `type: swap_transfer`, `standard` `erc191` for a `0x` account and `nep413` for any other account (named or implicit NEAR), and `signerId` the account. It hands the payload to the user only after checking it:
+
+- `erc191`: the payload string parses to `{signer_id, verifying_contract, deadline, nonce, intents}`; `nep413`: `recipient` is `intents.near` and `message` parses to `{signer_id, deadline, intents}`, beside a `nonce`. ✅ 2026-11-04 for `nep413` with a named account; the `erc191` shape is the one of the real-funds test ✅ 2026-11-03 ([assets-and-flows.md](assets-and-flows.md#real-funds-test-2026-11-03-)).
+- `signer_id` is the account, `verifying_contract` is `intents.near`, and the deadline is in the future.
+- `intents` is exactly one `{intent: "transfer", receiver_id: <deposit address>, tokens: {<asset in>: <amount in>}}`, with no other field.
+
+Anything else answers 502 (1Click returned an unexpected payload) and stores nothing, so the user never signs a payload we didn't check. So does a withdrawal quote whose `amount_in` isn't the amount asked for.
+
+`POST /api/oneclick/:id/submit` takes `{signature, public_key?}`: for `erc191` the wallet's `0x` signature (65 bytes, `v` normalized as in `shared/intents.ts`) or `secp256k1:` base58; for `nep413` an `ed25519:` signature and `public_key`. The envelope is built around the stored payload, so only the checked payload can be submitted, then sent to `/v0/submit-intent`. On success the intent hash is stored and the row is polled at the fast rate. A row that already has an intent hash, or whose submission is still in flight, answers 409; a payload past its deadline answers 400. When 1Click refuses the signed payload (a bad signature, or a balance too low), the answer is 400 with its message and the row stays unsubmitted, so the user can sign again.
+
+### Status polling
+
+Every open row is polled with `/v0/status?depositAddress=…`. Statuses are 1Click's (`PENDING_DEPOSIT`, `KNOWN_DEPOSIT_TX`, `PROCESSING`, `INCOMPLETE_DEPOSIT`, `SUCCESS`, `REFUNDED`, `FAILED`, [assets-and-flows.md](assets-and-flows.md#1click-notes)); `SUCCESS`, `REFUNDED`, and `FAILED` are final. Internal settings:
+
+| Row | Polled every |
+|---|---|
+| `KNOWN_DEPOSIT_TX`, `PROCESSING`, `INCOMPLETE_DEPOSIT`, a row with an intent hash, or a deposit hash given in the last 30 minutes | 5 s |
+| `PENDING_DEPOSIT`, the first hour after the quote | 15 s |
+| `PENDING_DEPOSIT` after that | 10 min |
+
+- Polling stops at a final status, or one hour after 1Click's deadline: the row keeps its last status, and the UI shows a `PENDING_DEPOSIT` row past its deadline as expired.
+- The loop ticks every 5 s and sends at most 20 status requests per tick, the rows that have waited longest first. 1Click shows 1,200 requests per minute for unkeyed calls ([open-questions.md](open-questions.md) #2).
+- A failed status request is retried at the row's next turn. The rows still open are picked up again after a restart.
+- A change of status, intent hash, or deposit hash updates the row and is pushed to `account:<account>` as `{type: "oneclick", account, ...row}`.
+
+### Rows
+
+What `/api/oneclick/quote`, `/api/oneclick/:id`, the account list, and the push return:
+
+`{id, account, direction, asset_in, asset_out, chain, swap_type, slippage_bps, amount_in, min_amount_in, amount_out, min_amount_out, address, deposit_address, deadline, time_estimate, status, intent, intent_hash, deposit_tx, details, created_at, updated_at}`
+
+- `id` and `deposit_address` are the same: the deposit address is unique per quote, and 1Click's status is keyed on it.
+- `amount_in` is what the user sends (for `EXACT_OUTPUT`, the slippage buffer included), `min_amount_in` the least 1Click accepts; `amount_out` is the quote's estimate, `min_amount_out` the least that arrives. Decimal strings in base units, as everywhere.
+- `deadline` is 1Click's (ISO 8601), `time_estimate` its estimate in seconds.
+- `intent` is a withdrawal's payload to sign, `{standard, payload}`; `null` for deposits.
+- `details` holds 1Click's swap details once it reports them: `amount_in`, `amount_out`, `refunded_amount`, `refund_reason`, `origin_tx_hashes`, `destination_tx_hashes`, `near_tx_hashes`. `null` before that.
+
+`GET /api/accounts/:account/oneclick?before=&limit=` lists only quotes that started, as 1Click shows it: the status has left `PENDING_DEPOSIT` (1Click saw the deposit), or the row has an intent hash (1Click accepted the account's signature). Anyone can create a quote for any account and give it any deposit hash, so neither puts it in that account's list (D61). `next` is the `before` of the next page, `null` on the last; `limit` as for the other lists.
+
+### Errors and flood guard
+
+- 1Click answers 4xx: 400 `{error: "1Click: <its message>"}`, for example a pair that can't be quoted or an amount too small. A 401 or 403 means our key was refused: 502, logged.
+- 1Click answers 429 (it is limiting us) or 5xx, times out (30 s), or can't be reached: 503 `{error: "1Click is temporarily unavailable"}`, the text the UI shows ([pitfalls.md](pitfalls.md#off-chain)). Orders, cancels, and repayments don't depend on 1Click.
+- An unknown `id` answers 404, a malformed request 400.
+- The 1Click endpoints have flood guards of their own, counted apart from `POST /api/intents` ([Flood guard](#flood-guard)), per IP per minute, then 429: dry quotes 60, since a form previews on every change; stored quotes, submits, and deposit hashes 30 together. They protect the partner key's quota and the table, not users (D24).
+
+### Later
+
+The keeper sells seized collateral for USDC by hand for now (D61). A later version can use the same wrapper: an `INTENTS` → `INTENTS` quote and a `generate-intent` payload signed with the keeper's NEP-413 key.
 
 ## Tests
 
-- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing, the market-maker agent's base moves, quote plans (sizes, collateral rounding, replace rules, stops, health gate), and its loop.
+- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing, the market-maker agent's base moves, quote plans (sizes, collateral rounding, replace rules, stops, health gate), and its loop, and the 1Click wrapper against a fake 1Click (route table, addresses, the payload check, submit and deposit forwarding, the polling schedule, error mapping, and the pushes).
 - `shared/math.ts` reproduces the `math` vectors the contract writes into the golden fixture ([repo-structure.md](repo-structure.md)): `face` and share rounding, the exact `can_open` boundary over one to three tokens (largest debt that passes, and one unit more), and `seize` and `repay_for` with partial, capped, and dust cases. The unit tests of `math.rs` and the price validation and valuation rules of `oracle.rs` are ported too.
 - **No sandbox end-to-end test.** The explorer doesn't exist for a sandbox, so the follower, the riskiest part, couldn't be tested that way anyway, and the contract's flows are already covered by the Rust sandbox tests. Instead, a scripted **mainnet smoke test with small amounts** right after the deploy (AGENTS.md): place a `lend` and a `borrow`, see them matched, `repay`, `cancel` a leftover order, and check every step in the book, the events table, and the WebSocket feed.

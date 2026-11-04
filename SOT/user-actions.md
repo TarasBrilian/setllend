@@ -11,7 +11,8 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Cancel order | `auth_call` → `cancel{order_id}`, remaining escrow returns to the Intents balance | 1 signature | No |
 | Withdraw free balance (failed payouts) | `auth_call` → `withdraw{token_id, amount}` | 1 signature | No |
 | Match | `match_orders(fills)` by any matcher. Fill rate = maker's limit rate. Contract checks crossing and, for borrow fills, collateral | – | **Yes** (borrow fills) |
-| Payout to Arbitrum/Base | Contract `mt_transfer`s USDC to the borrower's Intents balance at fill, then the user signs 1Click `INTENTS → DESTINATION_CHAIN` | 1 signature | No |
+| Payout or withdrawal to Arbitrum, Base, or Bitcoin | The contract `mt_transfer`s USDC to the borrower's Intents balance at fill. To leave it, the user signs the payload of a 1Click `INTENTS → DESTINATION_CHAIN` quote (from `generate-intent`), which the backend submits to 1Click (D61): USDC and NEAR (as USDC) to Arbitrum or Base, ETH to its own chain, BTC to Bitcoin | 1 signature | No |
+| Withdrawal to the user's NEAR account | `ft_withdraw` (USDC) or `native_withdraw` (NEAR) intent through the relayer, no 1Click (D61, next PR) | 1 signature | No |
 | Repay | `transfer` USDC, `msg = repay{maturity}`. Collateral stays until withdrawn | 1 signature | No |
 | Repay early, cheaper | Place a lend order in the same maturity. Bought notes net against the debt automatically | 1 signature | No |
 | Withdraw collateral | `auth_call` → `withdraw_collateral{maturity, collateral_token, amount}`, one token at a time | 1 signature | **Yes** (if debt remains) |

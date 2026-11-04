@@ -67,12 +67,37 @@ Payout path as it ran:
 3. The user signs the payload string unchanged with `personal_sign`.
 4. `POST /v0/submit-intent` with `signedData: { standard: "erc191", payload, signature }`. `signature` is `secp256k1:` + base58 of the 65 bytes `r ‖ s ‖ v`, with `v` normalized from 27/28 to 0/1. No `public_key` field. Returns `intentHash`. Track with `GET /v0/status?depositAddress=…`, as with any swap.
 
+## Exit and EXACT_OUTPUT quotes (2026-11-04) ✅
+
+Keyed quotes for D61, no funds moved. Exits are `depositType: INTENTS`, `EXACT_INPUT`, slippage 1%:
+
+| Exit | In | Out | Est. time |
+|---|---|---|---|
+| ETH(arb) in Intents → Arbitrum ETH | 0.01 ETH | 0.0099988 ETH | about 9 s |
+| BTC in Intents → Bitcoin | 0.001 BTC | 0.000985 BTC | about 455 s |
+| NEAR USDC in Intents → a NEAR account | 5 USDC | 4.994985 USDC | about 10 s |
+| wNEAR in Intents → a NEAR account | 2 NEAR | 2 wNEAR (not unwrapped) | about 10 s |
+| wNEAR in Intents → Base USDC | 2 NEAR | 8.001714 USDC | about 12 s |
+
+`EXACT_OUTPUT` deposits, slippage 0.5% (1% for the swap to NEAR), non-dry with a deposit address: Base USDC → 5 NEAR USDC asks 5.02569 USDC (at least 5.000561); Arbitrum ETH → 0.01 ETH(arb) asks 0.01005 ETH; BTC → 0.001 BTC asks 0.00100526 BTC; Arbitrum ETH → 1 wNEAR quoted too. Dry quotes of 1,000 USDC from Base and from Arbitrum ask about 1,005.12 USDC.
+
+`generate-intent` with `standard: nep413` and a named `signerId` (`setllend.near`) returned `{standard: "nep413", payload: {message, nonce, recipient: "intents.near"}}`, `message` = `{deadline, intents: [one transfer of the full amount to the deposit address], signer_id}`.
+
+Seen on the way:
+
+- `deadline` is required (400 without it), and 1Click answers with its own, three days after the one asked for (asked +20 min, +1 h, and +1 day; each came back three days later).
+- `slippageTolerance` above 10,000 is refused (400); 0 is accepted.
+- `/v0/deposit/submit` accepts a made-up transaction hash: it answers with the quote's status, still `PENDING_DEPOSIT`. A hash proves nothing (D61).
+- A deposit address on an EVM chain comes back checksummed (mixed case, for example `0x9f8d81ad0Cf5…`); use it exactly as returned.
+- 25 status requests in a row all passed, still with only the `x-ratelimit-limit-unauth: 1200` header.
+- The dummy address `0x1111…1111` as recipient and refund address makes every non-dry swap fail with 400 "Failed to get quote", while dry quotes and same-asset routes pass. Random addresses work, so test with one.
+
 ## 1Click notes
 
 - Since 2026-10-27 all 1Click swaps are confidential (settled on the NEAR Private Shard). `recipientType: INTENTS` still lands in the **public** `intents.near` balance that the contract can use.
 - `POST /v0/generate-intent` and `POST /v0/submit-intent` (used for payouts from an Intents balance) **require a partner API key** 📄, and accept ours ✅ 2026-11-03 ([real-funds test](#real-funds-test-2026-11-03-)).
 - Swap statuses: `PENDING_DEPOSIT`, `KNOWN_DEPOSIT_TX`, `PROCESSING`, `SUCCESS`, `INCOMPLETE_DEPOSIT`, `REFUNDED`, `FAILED`. Show all of them in the UI, including `REFUNDED` and `FAILED`.
-- For same-asset withdrawals without a swap, the Intents SDK has `processWithdrawal` via bridge (Omni / PoA, both support Base and Arbitrum). This is the 1Click-independent exit path for ETH collateral, and for BTC (`btc.omft.near`, a PoA token) to a Bitcoin address (D52, not tested by us ⚠️, [open-questions.md](open-questions.md) #10). It does not cover native NEAR USDC, which has no same-asset route to Base/Arbitrum (D10).
+- For same-asset withdrawals without a swap, the Intents SDK has `processWithdrawal` via bridge (Omni / PoA, both support Base and Arbitrum). This is the 1Click-independent fallback for ETH collateral, and for BTC (`btc.omft.near`, a PoA token) to a Bitcoin address (not tested by us ⚠️). Since D61 the UI sends ETH and BTC out through 1Click, so this path is not built. It does not cover native NEAR USDC, which has no same-asset route to Base/Arbitrum (D10).
 - Partner key (type "Distribution Channel") obtained 2026-11-02. Stored only in backend env as `ONE_CLICK_JWT`, sent as `X-API-Key: <key>` (recommended; `Authorization: Bearer` is the legacy form and also works). Never in the frontend or git.
 - The Explorer API (`explorer.near-intents.org/api/v0`) needs a separate key with `key_type: explorer`. Our distribution-channel key gets 400 `INVALID_TOKEN` there ✅ 2026-11-02. Not needed for the MVP: track our swaps with `GET /v0/status`.
 - Solver Relay `quote` (`POST https://solver-relay-v2.chaindefuser.com/rpc`) returned prices for Base USDC → NEAR USDC and Arbitrum USDC → NEAR USDC on 2026-11-02, with and without a key ✅. This is the D10 fallback route if 1Click quoting stays down.

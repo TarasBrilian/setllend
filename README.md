@@ -61,7 +61,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 
 - **No custody by the operator.** Every fund movement comes from a user-signed intent verified by `intents.near`.
 - **Permissionless matching.** Orders are escrowed on-chain, so anyone can rebuild the book and run a matcher.
-- **Exit without the operator.** Cancel and withdraw work through `auth_call` from any relayer, and ETH collateral returns to its origin chain through the bridge directly.
+- **Exit without the operator.** Cancel and withdraw work through `auth_call` from any relayer, and ETH collateral can return to its origin chain through the bridge without us (the app itself uses 1Click).
 - **No admin pause.** If the oracle is stale, new loans, liquidations, and collateral withdrawals against open debt stop, while repay, adding collateral, cancel, note sales, redeem, and other withdrawals keep working.
 - **Owner-managed collateral.** The contract owner adds collateral tokens, can freeze one (no new deposits of it into loans and no borrowing power from it, while open loans run on), and can change a token's max LTV, liquidation threshold, and liquidation bonus. **Changes apply at once, to open loans too:** lowering a threshold can make a loan liquidatable without warning.
 
