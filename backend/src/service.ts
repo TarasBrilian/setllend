@@ -5,6 +5,8 @@ import { Contract } from "./chain/contract.ts";
 import { Follower, FOLLOWER, type FollowerStatus, RequestBudget } from "./chain/follower.ts";
 import { Keeper, type LiquidationReport, type ScanReport } from "./keeper/keeper.ts";
 import { type MmActionReport, MmAgent } from "./mm-agent/agent.ts";
+import type { OneClickApi } from "./oneclick/client.ts";
+import { OneClick } from "./oneclick/oneclick.ts";
 import type { TxSource } from "./chain/explorer.ts";
 import { NotDeployedError, type Rpc, type TxRpc } from "./chain/rpc.ts";
 import { Sender } from "./chain/sender.ts";
@@ -36,6 +38,8 @@ export type ServiceOptions = {
   keys?: { accountId: string; txRpc: TxRpc; intents?: string; matcher?: string; keeper?: string };
   /** `MM_SIGNING_KEY`: the market-maker agent's own key; its account is implicit (D60). */
   mmSigningKey?: string;
+  /** The 1Click API with `ONE_CLICK_JWT`; without it the 1Click endpoints answer 503 (D61). */
+  oneClick?: OneClickApi;
   sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
 };
@@ -52,6 +56,7 @@ export class Service {
   readonly matcher: Matcher;
   readonly keeper: Keeper;
   readonly mm: MmAgent;
+  readonly oneclick: OneClick;
   contractState: ContractState = "checking";
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
@@ -120,6 +125,7 @@ export class Service {
       sleep: o.sleep,
       log: this.log,
     });
+    this.oneclick = new OneClick({ db: o.db, api: o.oneClick, onChange: (row) => this.hub.oneclick(row), sleep: o.sleep, log: this.log });
     this.follower = new Follower({
       store: this.store,
       source: o.source,
@@ -140,6 +146,8 @@ export class Service {
 
   /** Waits until the contract has code (it is deployed 2026-11-13), loads, and starts following. */
   async start(): Promise<void> {
+    // 1Click doesn't depend on the contract, so its polling starts before the deploy.
+    this.oneclick.run().catch((error: unknown) => this.log(`oneclick stopped: ${error instanceof Error ? error.message : error}`));
     for (;;) {
       try {
         await this.contract.config();
@@ -199,6 +207,7 @@ export class Service {
       in_flight: string | null;
       last_action: MmActionReport | null;
     };
+    oneclick: { enabled: boolean; open: number };
   } {
     const follower = this.follower.status();
     return {
@@ -228,6 +237,7 @@ export class Service {
         in_flight: this.mm.inFlight,
         last_action: this.mm.lastAction,
       },
+      oneclick: { enabled: this.oneclick.enabled, open: this.oneclick.openCount },
     };
   }
 }

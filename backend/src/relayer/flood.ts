@@ -1,8 +1,11 @@
 // Flood guard of `POST /api/intents` (SOT/backend.md#flood-guard, D42): infrastructure protection
 // for the gas the relayer pays, not a user limit. Anyone can still call `execute_intents` directly.
 
-/** Internal setting: requests per IP per sliding minute. */
-export const FLOOD = { perMinute: 30, windowMs: 60_000 };
+/**
+ * Internal settings: requests per IP per sliding minute. Dry 1Click quotes (form previews, D61)
+ * are counted apart, with more room, so typing in a form can't use up the real quote.
+ */
+export const FLOOD = { perMinute: 30, dryQuotesPerMinute: 60, windowMs: 60_000 };
 
 /**
  * Behind Railway's proxy the socket address is the proxy's, so the key is the last
@@ -17,10 +20,12 @@ export function clientIp(forwardedFor: string | undefined, socketAddress: string
 export class FloodGuard {
   private readonly hits = new Map<string, number[]>();
   private readonly now: () => number;
+  private readonly perMinute: number;
   private lastSweep = 0;
 
-  constructor(now: () => number = Date.now) {
+  constructor(now: () => number = Date.now, perMinute: number = FLOOD.perMinute) {
     this.now = now;
+    this.perMinute = perMinute;
   }
 
   /** Counts the request and says whether it may go ahead. A refused request isn't counted. */
@@ -29,7 +34,7 @@ export class FloodGuard {
     const since = now - FLOOD.windowMs;
     if (now - this.lastSweep >= FLOOD.windowMs) this.sweep(since, now);
     const recent = (this.hits.get(ip) ?? []).filter((at) => at > since);
-    if (recent.length >= FLOOD.perMinute) {
+    if (recent.length >= this.perMinute) {
       this.hits.set(ip, recent);
       return false;
     }
