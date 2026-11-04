@@ -62,6 +62,8 @@ export class Market {
   maturities: U64[] = [];
   readonly books = new Map<U64, MaturityBook>();
   loans: LoanEntryView[] = [];
+  /** Height the loans were read at. */
+  loansHeight = 0;
   /** Height of the last load or reload. */
   height = 0;
   /** Block time (ns) of the latest processed block, the clock for display values. */
@@ -92,6 +94,7 @@ export class Market {
     this.tokens = tokens;
     this.maturities = maturities;
     this.loans = loans;
+    this.loansHeight = height;
     this.books.clear();
     for (const book of books) this.books.set(book.maturity, book);
     this.height = height;
@@ -112,12 +115,44 @@ export class Market {
     const books = await Promise.all(stale.map((m) => this.readBook(m, height)));
     this.maturities = maturities;
     this.tokens = tokens;
-    this.loans = loans;
-    for (const book of books) this.books.set(book.maturity, book);
-    this.height = height;
-    this.nowNs = nowNs;
-    for (const book of books) this.emit(book);
+    if (marks.loans) this.setLoans(loans, height);
+    this.applyBooks(books);
+    this.height = Math.max(this.height, height);
+    this.nowNs = nowNs > this.nowNs ? nowNs : this.nowNs;
     return marks;
+  }
+
+  /**
+   * The matcher's reload after a batch (D58): `maturities`, and the loans if asked, at `height`,
+   * a final height at or past the batch's last receipt.
+   */
+  async refresh(maturities: U64[], loans: boolean, height: number): Promise<void> {
+    const known = maturities.filter((m) => this.maturities.includes(m));
+    const [books, loanList] = await Promise.all([
+      Promise.all(known.map((m) => this.readBook(m, height))),
+      loans ? this.contract.loans(height) : null,
+    ]);
+    if (loanList) this.setLoans(loanList, height);
+    this.applyBooks(books);
+  }
+
+  /**
+   * Follower and matcher reload concurrently, so a read at a lower height than the copy held is
+   * dropped: it could put back amounts a batch already used (D58).
+   */
+  private applyBooks(books: MaturityBook[]): void {
+    for (const book of books) {
+      const held = this.books.get(book.maturity);
+      if (held && held.height > book.height) continue;
+      this.books.set(book.maturity, book);
+      this.emit(book);
+    }
+  }
+
+  private setLoans(loans: LoanEntryView[], height: number): void {
+    if (height < this.loansHeight) return;
+    this.loans = loans;
+    this.loansHeight = height;
   }
 
   /** Maturity of an order in any book. */

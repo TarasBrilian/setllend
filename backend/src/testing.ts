@@ -97,6 +97,13 @@ export class FakeRpc implements Rpc {
     return this.final;
   }
 
+  /** Heights by block hash; `block-hash` (the default of `outcomeReceipt`) is the final block. */
+  readonly blocks = new Map<string, number>();
+
+  async blockHeight(hash: string): Promise<number> {
+    return this.blocks.get(hash) ?? this.final.height;
+  }
+
   async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T> {
     this.calls.push({ method, args, height });
     if (contractId === CONTRACT && !this.deployed) throw new NotDeployedError(`${contractId} has no contract code`);
