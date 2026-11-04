@@ -8,12 +8,19 @@ import { openDb } from "./db.ts";
 import { Service } from "./service.ts";
 import type { Client } from "./ws.ts";
 
+const rpc = createRpc(config.nearRpcUrl);
+if ((config.intentsPrivateKey || config.matcherPrivateKey) && !config.nearAccountId) {
+  throw new Error("NEAR_ACCOUNT_ID is required when a NEAR private key is set");
+}
 const service = new Service({
   db: openDb(config.databasePath),
-  rpc: createRpc(config.nearRpcUrl),
+  rpc,
   source: createExplorer(config.fastnearTxUrl),
   contractId: config.contractId,
   startBlock: config.startBlock,
+  keys: config.nearAccountId
+    ? { accountId: config.nearAccountId, txRpc: rpc, intents: config.intentsPrivateKey, matcher: config.matcherPrivateKey }
+    : undefined,
 });
 const app = createApp(service);
 

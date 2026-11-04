@@ -4,11 +4,14 @@ import type Database from "better-sqlite3";
 import { Contract } from "./chain/contract.ts";
 import { Follower, FOLLOWER, type FollowerStatus, RequestBudget } from "./chain/follower.ts";
 import type { TxSource } from "./chain/explorer.ts";
-import { NotDeployedError, type Rpc } from "./chain/rpc.ts";
+import { NotDeployedError, type Rpc, type TxRpc } from "./chain/rpc.ts";
+import { Sender } from "./chain/sender.ts";
 import { Store } from "./chain/store.ts";
+import { Submissions } from "./chain/submissions.ts";
 import { bookSides } from "./matcher/book.ts";
 import { Market } from "./market.ts";
 import { Prices } from "./prices.ts";
+import { Relayer } from "./relayer/relayer.ts";
 import { Hub } from "./ws.ts";
 
 /** Internal setting: how often a missing contract is checked again (before the deploy). */
@@ -23,6 +26,8 @@ export type ServiceOptions = {
   source: TxSource;
   contractId: string;
   startBlock?: number;
+  /** The backend account and its keys (D43); a key left out keeps its half of the relayer off. */
+  keys?: { accountId: string; txRpc: TxRpc; intents?: string; matcher?: string };
   sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
 };
@@ -34,6 +39,8 @@ export class Service {
   readonly prices: Prices;
   readonly hub = new Hub();
   readonly follower: Follower;
+  readonly submissions: Submissions;
+  readonly relayer: Relayer;
   contractState: ContractState = "checking";
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
@@ -46,6 +53,25 @@ export class Service {
     this.sleep = o.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = o.log ?? console.log;
     this.market.onBook((book) => this.hub.book(bookSides(book, this.market.nowNs)));
+    this.submissions = new Submissions(o.db);
+    const sender = (privateKey: string | undefined) => {
+      if (!o.keys || !privateKey) return null;
+      const tx = o.keys.txRpc;
+      const rpc = {
+        finalBlock: () => o.rpc.finalBlock(),
+        accessKeyNonce: (accountId: string, publicKey: string) => tx.accessKeyNonce(accountId, publicKey),
+        sendTx: (signed: string) => tx.sendTx(signed),
+        txStatus: (hash: string, senderId: string) => tx.txStatus(hash, senderId),
+      };
+      return new Sender({ rpc, accountId: o.keys.accountId, privateKey, submissions: this.submissions, sleep: o.sleep });
+    };
+    this.relayer = new Relayer({
+      contract: this.contract,
+      market: this.market,
+      submissions: this.submissions,
+      intents: sender(o.keys?.intents),
+      matcher: sender(o.keys?.matcher),
+    });
     this.follower = new Follower({
       store: this.store,
       source: o.source,
@@ -86,8 +112,14 @@ export class Service {
     void this.follower.run();
   }
 
-  health(): { ok: boolean; contract: ContractState; height: number; follower: FollowerStatus } {
+  health(): { ok: boolean; contract: ContractState; height: number; follower: FollowerStatus; relayer: { intents: boolean; matcher: boolean } } {
     const follower = this.follower.status();
-    return { ok: follower.error === null, contract: this.contractState, height: this.market.height, follower };
+    return {
+      ok: follower.error === null,
+      contract: this.contractState,
+      height: this.market.height,
+      follower,
+      relayer: { intents: this.relayer.canRelay, matcher: this.relayer.canMatch },
+    };
   }
 }

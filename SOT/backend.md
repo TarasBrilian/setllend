@@ -136,7 +136,7 @@ Parked pairs and orders are kept in memory only; a restart clears them, which co
    | payouts | — | A `payout_failed` event means the funds are in the contract's free balance; the response says so and `withdraw` recovers them |
 
    **One rule covers the table** (D57): the payload failed if the transaction's first receipt (`execute_intents` on `intents.near`) failed, for example because its nonce was used between simulation and execution, or if any receipt executed by the Setllend contract failed. Its `reason` is the panic message of that receipt, without nearcore's `Smart contract panicked: ` prefix (`ActionError.kind.FunctionCallError.ExecutionError` 📄 nearcore). Otherwise it succeeded. A failed Setllend receipt is always reverted and refunded in full by `intents.near` (`mt_on_transfer` and the price callbacks it returns; `on_auth` changes nothing when it panics), so the relayer never has to say what was kept. `events` are the Setllend events of the contract's successful receipts.
-6. **Respond** with `{tx_hash, ok, actions, events, error}` (D57): `actions` is the `msg` action of each intent in order (a payload may hold several), `error` is `null` or `{code, reason}`. A `payout_failed` event leaves `ok` true (the action happened) with `error.code = payout_failed`. The follower picks the same events up later, which triggers the book reload and the WebSocket push.
+6. **Respond** with `{tx_hash, ok, actions, events, error}` (D57): `actions` is the `msg` action of each intent in order (a payload may hold several), `error` is `null` or `{code, reason}`, and `ok` is true only when the action is known to have happened. A `payout_failed` event leaves `ok` true (the action happened) with `error.code = payout_failed`. The follower picks the same events up later, which triggers the book reload and the WebSocket push.
 
 **Error codes and HTTP status:**
 
@@ -254,7 +254,7 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; later the last batch, last keeper scan, and storage alert |
+| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); later the last batch, last keeper scan, and storage alert |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |

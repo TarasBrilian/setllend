@@ -58,10 +58,11 @@ export function readOutcome(outcome: TxOutcome, contractId: string): IntentOutco
 
 /**
  * The contract's message from a failed `simulate_intents` view: the text ends in
- * `GuestPanic { panic_msg: "<message>" }` (mainnet, 2026-11-04). Other errors pass through.
+ * `GuestPanic { panic_msg: "<message>" }` (mainnet, 2026-11-04). Null for any other error (network,
+ * RPC), which says nothing about the payload.
  */
-export function simulationReason(error: unknown): string {
+export function simulationReason(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error);
   const match = /panic_msg: "((?:[^"\\]|\\.)*)"/.exec(message);
-  return match ? match[1]!.replace(/\\(.)/g, "$1") : message;
+  return match ? match[1]!.replace(/\\(.)/g, "$1") : null;
 }

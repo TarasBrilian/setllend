@@ -62,11 +62,11 @@ describe("failureOf", () => {
 });
 
 describe("simulationReason", () => {
-  it("returns the panic message of a failed simulation", () => {
+  it("returns the panic message of a failed simulation, null for other errors", () => {
     // Text of the mainnet error, 2026-11-04.
     const error = new Error('wasm execution failed with error: HostError(GuestPanic { panic_msg: "insufficient balance or overflow" })');
     expect(simulationReason(error)).toBe("insufficient balance or overflow");
     expect(simulationReason(new Error('GuestPanic { panic_msg: "say \\"hi\\"" }'))).toBe('say "hi"');
-    expect(simulationReason(new Error("fetch failed"))).toBe("fetch failed");
+    expect(simulationReason(new Error("fetch failed"))).toBeNull();
   });
 });
