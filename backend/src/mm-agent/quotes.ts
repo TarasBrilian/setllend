@@ -3,7 +3,7 @@
 // holds. Pure: books, balances, prices, and loans come in; the agent sends the first action.
 import { type AccountId, BPS, type TokenId, type U64 } from "../shared/encoding.ts";
 import type { TransferMsg } from "../shared/msg.ts";
-import { type Price, healthFactor, valuation } from "../shared/math.ts";
+import { MathError, type Price, healthFactor, valuation } from "../shared/math.ts";
 import type { CollateralToken, LoanEntryView, OrderView } from "../shared/views.ts";
 import { MM, type MmSettings } from "./config.ts";
 
@@ -49,7 +49,9 @@ export function plan(input: PlanInput): Action[] {
   for (const maturity of [...input.maturities].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1))) {
     const here = mine.filter((o) => o.maturity === maturity);
     if (BigInt(maturity) - input.nowNs <= BigInt(s.stopBeforeMs) * MS) {
-      for (const order of here) stops.push({ maturity, side: order.kind as Side, reason: "stop", cancel: order.order_id, place: null });
+      for (const order of here) {
+        if (!input.held(maturity, order.kind as Side)) stops.push({ maturity, side: order.kind as Side, reason: "stop", cancel: order.order_id, place: null });
+      }
       continue;
     }
     for (const side of ["lend", "borrow"] as const) {
@@ -114,13 +116,21 @@ function borrowAction(input: PlanInput, s: MmSettings, maturity: U64, order: Ord
   return reason ? { maturity, side: "borrow", reason, cancel: order.order_id, place } : null;
 }
 
-/** No new `borrow` ask while the agent's loan here is below `minHealth` (conservative prices). */
+/**
+ * No new `borrow` ask while the agent's loan here is below `minHealth` (conservative prices), or
+ * while its health can't be computed (a missing price, or a token the list doesn't have yet).
+ */
 function healthyEnough(input: PlanInput, s: MmSettings, maturity: U64): boolean {
   const loan = input.loans.find((l) => l.account_id === input.account && l.maturity === maturity);
   if (!loan || BigInt(loan.debt_face) === 0n) return true;
-  const v = valuation(loan.collateral, input.tokens, input.prices!, input.debtFeedId, "liq_threshold");
-  if (!v) return false;
-  return (healthFactor(v.collateral, BigInt(loan.debt_face), v.debtPrice) ?? Infinity) >= s.minHealth;
+  try {
+    const v = valuation(loan.collateral, input.tokens, input.prices!, input.debtFeedId, "liq_threshold");
+    if (!v) return false;
+    return (healthFactor(v.collateral, BigInt(loan.debt_face), v.debtPrice) ?? Infinity) >= s.minHealth;
+  } catch (error) {
+    if (error instanceof MathError) return false;
+    throw error;
+  }
 }
 
 type Pick = { token: CollateralToken; price: Price };

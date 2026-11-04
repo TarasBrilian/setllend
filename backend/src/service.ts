@@ -172,6 +172,8 @@ export class Service {
     // The agent needs its own key and the relayer's intents key (D60).
     if (this.mm.running) {
       this.mm.run().catch((error: unknown) => this.log(`mm-agent stopped: ${error instanceof Error ? error.message : error}`));
+    } else if (this.mm.account) {
+      this.log("mm-agent off: MM_SIGNING_KEY is set, but the relayer has no intents key (NEAR_INTENTS_PRIVATE_KEY)");
     }
   }
 

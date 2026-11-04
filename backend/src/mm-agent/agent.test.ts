@@ -170,6 +170,20 @@ describe("MmAgent.round", () => {
   });
 });
 
+describe("MmAgent holds", () => {
+  it("doesn't resend a payload that failed on chain after reloading the book", async () => {
+    const { agent, tx, rpc } = await setup();
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [], { panic: "Maturity not listed" })] });
+    rpc.final = { ...rpc.final, height: 105 };
+    expect(await agent.round()).toBe(true);
+    expect(agent.lastAction).toMatchObject({ ok: false, error: "Maturity not listed" });
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT)] });
+    await agent.round();
+    // The reload moved the book to 105, but the lend side stays held: the borrow ask goes next.
+    expect(JSON.parse(sentPayload(tx.sent[1]!).message.intents[0].msg).action).toBe("borrow");
+  });
+});
+
 describe("MmAgent bases", () => {
   it("replays stored fills at startup and applies live ones once", async () => {
     const { agent, store } = await setup();

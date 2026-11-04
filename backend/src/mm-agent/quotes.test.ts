@@ -116,6 +116,11 @@ describe("plan: new quotes", () => {
   it("skips a held maturity and side", () => {
     expect(run({ held: (_m, side) => side === "lend" }).map((a) => a.side)).toEqual(["borrow"]);
   });
+
+  it("places no borrow ask while its loan holds a token the list doesn't have yet, and still quotes lend", () => {
+    const loan: LoanEntryView = { account_id: MM_ACCOUNT, maturity: String(M), collateral: { "nep141:new.near": "1" }, debt_face: "1" };
+    expect(run({ loans: [loan] }).map((a) => a.side)).toEqual(["lend"]);
+  });
 });
 
 describe("plan: orders held", () => {
@@ -162,6 +167,9 @@ describe("plan: orders held", () => {
       { maturity: near, side: "borrow", reason: "stop", cancel: "8", place: null },
     ]);
     expect(actions.slice(2).every((a) => a.maturity === String(M))).toBe(true);
+    // A held stop waits like any other action.
+    const held = run({ maturities: [near], orders: [lend({ order_id: "7", maturity: near })], held: () => true });
+    expect(held).toEqual([]);
   });
 
   it("keeps the newest order of a side and cancels the others", () => {

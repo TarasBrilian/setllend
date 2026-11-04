@@ -166,12 +166,11 @@ export class MmAgent {
     const { body: settled, outcome } = sent.settled;
     this.lastAction = { tx_hash: settled.tx_hash, actions: settled.actions, ok: settled.ok, error: settled.error?.reason ?? null };
     if (settled.ok) this.log(`mm-agent: ${what}: ${settled.actions.join(" + ")} (${settled.tx_hash})`);
-    else {
-      this.log(`mm-agent: ${what} failed: ${settled.error?.reason} (${settled.tx_hash})`);
-      this.hold(action.maturity, action.side);
-    }
+    else this.log(`mm-agent: ${what} failed: ${settled.error?.reason} (${settled.tx_hash})`);
     const height = await waitPast(this.o.rpc, outcome, this.sleep, () => this.stopped);
     await market.refresh([action.maturity], false, height);
+    // After the reload: a hold taken before it would lift at once, since the book is newer.
+    if (!settled.ok) this.hold(action.maturity, action.side);
     return true;
   }
 
