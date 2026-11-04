@@ -1,10 +1,18 @@
 [package]
 name = "mock-intents"
 version = "0.1.0"
-description = "Minimal mock of intents.near for the Setllend sandbox tests"
+description = "Minimal mock of intents.near for the Setllend sandbox tests and the local dry run"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+# Reproducible build for the dry run's prebuilt wasm in contracts/res (SOT/dry-run.md, D62),
+# with the same image as the Setllend contract.
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.22.0-rust-1.99.1"
+image_digest = "sha256:c9655eaf7436b90c87ea8b25739f91063032c5c30ba24cfeafe72c142943b5bb"
+passed_env = []
+container_build_command = ["cargo", "near", "build", "non-reproducible-wasm", "--locked"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -13,4 +21,14 @@ crate-type = ["cdylib", "rlib"]
 workspace = true
 
 [dependencies]
-near-sdk = { workspace = true }
+# `unstable` for env::ecrecover (ERC-191 signatures, SOT/dry-run.md).
+near-sdk = { workspace = true, features = ["unstable"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unstable", "unit-testing"] }
+ed25519-dalek = "2.2"
+secp256k1 = { version = "0.27", features = ["recovery"] }
+sha2 = "0.10"
+sha3 = "0.10"
