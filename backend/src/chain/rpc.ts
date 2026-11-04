@@ -28,7 +28,12 @@ export interface Rpc {
    * block. Throws `NotDeployedError` without code.
    */
   view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T>;
+  /** `view_account` at `height` (the keeper's storage alert, SOT/backend.md#storage-alert). */
+  account(accountId: string, height: number): Promise<AccountState>;
 }
+
+/** Balance in yoctoNEAR and storage in bytes. */
+export type AccountState = { amount: bigint; storageUsage: number };
 
 /** One receipt of a transaction's outcome, in the RPC's order: the first is the transaction's own. */
 export type ReceiptOutcome = {
@@ -156,6 +161,11 @@ export function createRpc(url: string): Rpc & TxRpc {
     async blockHeight(hash) {
       const { header } = await provider.viewBlock({ blockId: hash });
       return header.height;
+    },
+    // Checked on mainnet 2026-11-04: `amount` comes back as a bigint, `storage_usage` as a number.
+    async account(accountId, height) {
+      const account = await provider.viewAccount({ accountId, blockQuery: { blockId: height } });
+      return { amount: account.amount, storageUsage: account.storage_usage };
     },
     async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt) {
       try {

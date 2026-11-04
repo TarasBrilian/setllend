@@ -6,7 +6,7 @@ import { openDb } from "../db.ts";
 import { Service } from "../service.ts";
 import { TGAS, buildIntentPayload, setllendAuthCall, setllendTransfer } from "../shared/intents.ts";
 import { CONTRACT, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, outcomeReceipt, serve } from "../testing.ts";
-import { type RelayBody, Relayer } from "./relayer.ts";
+import { type RelayBody, Relayer, type Settled } from "./relayer.ts";
 
 const M = "1795766400000000000";
 const USER = "0x1111111111111111111111111111111111111111";
@@ -96,10 +96,32 @@ describe("Relayer.submit", () => {
     expect(service.submissions.get(result.body.tx_hash!)).toMatchObject({ status: "ok", kind: "intent", signer: USER });
   });
 
-  it("records the keeper's intents under their own kind", async () => {
+  it("records the keeper's intents under their own kind and hands it the outcome", async () => {
     const { relayer, service } = await setup();
-    const result = await relayer.submit(body(lend), { kind: "liquidate" });
+    const seen: Settled[] = [];
+    const result = await relayer.submit(body(lend), { kind: "liquidate", onSettled: (s) => seen.push(s) });
     expect(service.submissions.get(result.body.tx_hash!)?.kind).toBe("liquidate");
+    expect(seen).toEqual([{ outcome: expect.objectContaining({ hash: result.body.tx_hash }), body: result.body }]);
+  });
+
+  it("calls onSettled with null when following a pending intent gives up", async () => {
+    const { relayer, tx } = await setup();
+    tx.onSend = () => {
+      throw new TxError("timeout", "TIMEOUT_ERROR");
+    };
+    tx.onStatus = (hash) => ({ hash, executed: false, receipts: [] });
+    let resolve: (s: Settled) => void = () => {};
+    const settled = new Promise<Settled>((r) => (resolve = r));
+    const result = await relayer.submit(body(lend), { kind: "liquidate", onSettled: (s) => resolve(s) });
+    expect(result.status).toBe(202);
+    expect(await settled).toBeNull();
+  });
+
+  it("does not call onSettled when nothing was sent", async () => {
+    const { relayer } = await setup();
+    const seen: Settled[] = [];
+    await relayer.submit({}, { onSettled: (s) => seen.push(s) });
+    expect(seen).toEqual([]);
   });
 
   it("answers 200 with ok false when the contract panicked", async () => {
