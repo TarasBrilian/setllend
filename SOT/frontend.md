@@ -14,6 +14,15 @@ The frontend is `frontend/` (Next.js, `wagmi`, `viem`, see [tech-stack.md](tech-
 | Target | Desktop first. Mobile layout is deferred |
 | Number fields | Amounts and rates accept only digits and one decimal point. A comma is read as the decimal point, and any other keystroke or paste is ignored. Prefilled values (Max, balances) are plain decimals, never exponent notation such as `1e-7` |
 
+## Intro
+
+A logo animation over the Market page, about 4.8 s, that ends as the header logo.
+
+- **When:** only when the first page load of a browser tab is `/`. It does not replay on reload, on later visits to `/` in the same tab, or when the tab first opened another page. It never shows under the OS "reduce motion" setting. The dev server (`npm run dev`) replays it on every load of `/`, to make it easy to review.
+- **Skip:** a "Skip" button in the bottom-right corner, shown from 0.3 s until the pills start flying. It fades the intro out in 0.25 s and shows the page as it is after the intro.
+- **Sequence:** on the site's own background, which covers the header and page, the top (orange) pill of the mark slides in from the right edge and the bottom (light orange) pill from the left a moment later, meeting as the mark in the center. The mark moves left while "Setllend" slides out from behind it, keeping the pair centered. The letters then spread apart, "S" staying in place, and fade one by one, center first. The two pills then fly to the header logo in the top-left corner, shrinking to its size on smooth curves: the top pill rises and lands from above, the bottom pill a moment later dips and rises to land from below, while the background fades so the Market page shows behind them. They join as the header mark, which gives a small bounce. The header's "Setllend" slides out from behind it, then the "Demo data" badge fades in.
+- **Build:** CSS (`globals.css`) and the Web Animations API, no animation library. A small inline script in `<head>` turns it on before first paint, marks the tab session in `sessionStorage`, and animates the pills' flight, measuring the header logo's position once the mark and word have settled, about 1 s before the flight.
+
 ## Pages
 
 ### Header (every page)

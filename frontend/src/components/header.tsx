@@ -8,7 +8,7 @@ export function Header() {
       <div className="flex items-center gap-3">
         <Logo />
         {/* D47: every number is mock data until the backend API is up. */}
-        <span className="rounded-full border border-accent/40 px-2.5 py-0.5 text-xs font-medium text-accent-soft">
+        <span className="logo-badge rounded-full border border-accent/40 px-2.5 py-0.5 text-xs font-medium text-accent-soft">
           Demo data
         </span>
       </div>
