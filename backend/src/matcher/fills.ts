@@ -98,6 +98,14 @@ function matchBook(book: MaturityBook, input: BuildInput, planned: Planned[], ma
   const askFpOf = (ask: OrderView) =>
     ask.kind === "borrow" ? askInputs(ask, loanViews.get(ask.owner) ?? null, priceKey(ask)) : askInputs(ask, null, `${v}/${s}`);
 
+  // A park is kept across rounds as the book's inputs, so it may only come from sizes worked out
+  // on those inputs. Once an order (or a borrower's loan) has a fill in this batch, its copy
+  // differs from the book; if the batch then fails, a park made from the copy would never lift.
+  // Such pairs and asks are only passed over for this round.
+  const touched = new Set<string>();
+  const passed = new Set<string>();
+  const fresh = (...keys: string[]) => keys.every((key) => !touched.has(key));
+
   for (const bid of bids) {
     while (rem(bid) > 0n && planned.length < max) {
       let filled = false;
@@ -105,6 +113,7 @@ function matchBook(book: MaturityBook, input: BuildInput, planned: Planned[], ma
         if (ask.rate_bps < bid.rate_bps) break; // asks are sorted best first: no later ask crosses
         if (rem(ask) === 0n || ask.owner === bid.owner) continue;
         if (ask.kind === "borrow" && prices === null) continue;
+        if (passed.has(`${bid.order_id}:${ask.order_id}`) || passed.has(ask.order_id)) continue;
         if (parking.pairParked(bid, ask, pool, book.height) || parking.askParked(ask, askFpOf(ask))) continue;
         const rate = BigInt(bid.order_id) < BigInt(ask.order_id) ? bid.rate_bps : ask.rate_bps;
         const pairFp = pairInputs(bid, ask, pool);
@@ -117,12 +126,15 @@ function matchBook(book: MaturityBook, input: BuildInput, planned: Planned[], ma
           sized = "park_pair";
         }
         if (sized === "skip") continue;
+        const loanKey = `loan:${ask.owner}`;
         if (sized === "park_pair") {
-          parking.parkPair(bid.order_id, ask.order_id, pairFp);
+          if (fresh(bid.order_id, ask.order_id, loanKey)) parking.parkPair(bid.order_id, ask.order_id, pairFp);
+          else passed.add(`${bid.order_id}:${ask.order_id}`);
           continue;
         }
         if (sized === "park_ask") {
-          parking.parkAsk(ask.order_id, askFpOf(ask));
+          if (fresh(ask.order_id, loanKey)) parking.parkAsk(ask.order_id, askFpOf(ask));
+          else passed.add(ask.order_id);
           continue;
         }
         planned.push({
@@ -136,6 +148,8 @@ function matchBook(book: MaturityBook, input: BuildInput, planned: Planned[], ma
           height: book.height,
         });
         sized.apply();
+        touched.add(bid.order_id).add(ask.order_id);
+        if (ask.kind === "borrow") touched.add(loanKey);
         filled = true;
         break; // the bid's best ask may have changed; start again from the top
       }

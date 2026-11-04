@@ -161,6 +161,23 @@ describe("buildFills", () => {
     expect(build(books, { parking: dust.parking }).pairs).toEqual([["3", "2", "3"]]);
   });
 
+  it("passes over, without parking, an order whose dust comes from a fill earlier in the batch", () => {
+    // V / S = 0.5: one unit of value is two shares, so an ask of 3 shares fills 2 and leaves 1
+    // no principal reaches. That leftover exists only in this batch: if the batch fails, the book
+    // still shows 3 shares, and a park on the book's inputs would never lift.
+    const pool = { ...POOL, total_value: "1000", total_shares: "2000" };
+    const books = [book([lend("1", 0, "100"), sell("2", 0, "3")], pool)];
+    const { pairs, parking } = build(books);
+    expect(pairs).toEqual([["1", "2", "1"]]);
+    expect(parking.askParked(sell("2", 0, "3"), `3|-|-|1000/2000`)).toBe(false);
+    // Built again from the same book (the batch failed), it fills again.
+    expect(build(books, { parking }).pairs).toEqual([["1", "2", "1"]]);
+    // Dust in the book itself is parked: 1 share left, and 1 unit of value buys 2.
+    const dust = build([book([lend("1", 0, "100"), sell("2", 0, "1")], pool)]);
+    expect(dust.pairs).toEqual([]);
+    expect(dust.parking.askParked(sell("2", 0, "1"), `1|-|-|1000/2000`)).toBe(true);
+  });
+
   it("stops at the batch size, matching maturities in ascending order", () => {
     const asks = (maturity: bigint, from: number) =>
       Array.from({ length: 6 }, (_, i) => borrow(String(from + i), 800, USDC(1), ONE_ETH, { maturity: String(maturity) }));
