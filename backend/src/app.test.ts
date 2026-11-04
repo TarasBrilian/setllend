@@ -100,6 +100,24 @@ describe("API", () => {
     expect(prices[USDC].usd).toBe(1);
   });
 
+  it("reports the keeper on /health, amounts as strings", async () => {
+    const { app, service, rpc } = await ready();
+    expect((await json(await app.request("/health"))).body.keeper).toEqual({
+      signing: false,
+      in_flight: null,
+      capital: null,
+      last_scan: null,
+      last_liquidation: null,
+      storage: null,
+    });
+    rpc.accounts.set(CONTRACT, { amount: 5n * 10n ** 24n, storageUsage: 100_000 });
+    await service.keeper.round();
+    expect((await json(await app.request("/health"))).body.keeper).toMatchObject({
+      last_scan: { height: 100, loans: 1, eligible: 0, unpriced: 0, top: [], error: null },
+      storage: { free: String(4n * 10n ** 24n), alert: false },
+    });
+  });
+
   it("serves an account with health, deposits, and fill totals", async () => {
     const { app, service } = await ready();
     const lines = [

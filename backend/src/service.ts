@@ -3,6 +3,7 @@
 import type Database from "better-sqlite3";
 import { Contract } from "./chain/contract.ts";
 import { Follower, FOLLOWER, type FollowerStatus, RequestBudget } from "./chain/follower.ts";
+import { Keeper, type LiquidationReport, type ScanReport } from "./keeper/keeper.ts";
 import type { TxSource } from "./chain/explorer.ts";
 import { NotDeployedError, type Rpc, type TxRpc } from "./chain/rpc.ts";
 import { Sender } from "./chain/sender.ts";
@@ -27,8 +28,11 @@ export type ServiceOptions = {
   source: TxSource;
   contractId: string;
   startBlock?: number;
-  /** The backend account and its keys (D43); a key left out keeps its half of the relayer off. */
-  keys?: { accountId: string; txRpc: TxRpc; intents?: string; matcher?: string };
+  /**
+   * The backend account and its keys (D43); a key left out keeps its half of the relayer off, and
+   * without `keeper` (the NEP-413 signing key) the keeper only scans.
+   */
+  keys?: { accountId: string; txRpc: TxRpc; intents?: string; matcher?: string; keeper?: string };
   sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
 };
@@ -43,11 +47,14 @@ export class Service {
   readonly submissions: Submissions;
   readonly relayer: Relayer;
   readonly matcher: Matcher;
+  readonly keeper: Keeper;
   contractState: ContractState = "checking";
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
+  private readonly keys: boolean;
 
   constructor(o: ServiceOptions) {
+    this.keys = o.keys !== undefined;
     this.store = new Store(o.db);
     this.contract = new Contract(o.rpc, o.contractId);
     this.market = new Market(this.contract);
@@ -84,6 +91,17 @@ export class Service {
       submissions: this.submissions,
       rpc: o.rpc,
       contractId: o.contractId,
+      sleep: o.sleep,
+      log: this.log,
+    });
+    this.keeper = new Keeper({
+      market: this.market,
+      prices: this.prices,
+      contract: this.contract,
+      relayer: this.relayer,
+      rpc: o.rpc,
+      accountId: o.keys?.accountId,
+      signingKey: o.keys?.keeper,
       sleep: o.sleep,
       log: this.log,
     });
@@ -129,6 +147,10 @@ export class Service {
     if (this.relayer.canMatch) {
       this.matcher.run().catch((error: unknown) => this.log(`matcher stopped: ${error instanceof Error ? error.message : error}`));
     }
+    // The keeper needs the backend account for its capital; without the signing key it only scans (D59).
+    if (this.keys) {
+      this.keeper.run().catch((error: unknown) => this.log(`keeper stopped: ${error instanceof Error ? error.message : error}`));
+    }
   }
 
   health(): {
@@ -138,6 +160,14 @@ export class Service {
     follower: FollowerStatus;
     relayer: { intents: boolean; matcher: boolean };
     matcher: { in_flight: string | null; last_batch: BatchReport | null; fill_limit: number; paused: boolean };
+    keeper: {
+      signing: boolean;
+      in_flight: string | null;
+      capital: string | null;
+      last_scan: ScanReport | null;
+      last_liquidation: LiquidationReport | null;
+      storage: { free: string; alert: boolean } | null;
+    };
   } {
     const follower = this.follower.status();
     return {
@@ -151,6 +181,14 @@ export class Service {
         last_batch: this.matcher.lastBatch,
         fill_limit: this.matcher.fillLimit,
         paused: this.matcher.pausedAt !== null,
+      },
+      keeper: {
+        signing: this.keeper.signing,
+        in_flight: this.keeper.inFlight,
+        capital: this.keeper.capital?.toString() ?? null,
+        last_scan: this.keeper.lastScan,
+        last_liquidation: this.keeper.lastLiquidation,
+        storage: this.keeper.storage && { free: this.keeper.storage.free.toString(), alert: this.keeper.storage.alert },
       },
     };
   }
