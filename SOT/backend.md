@@ -167,7 +167,7 @@ The matcher hands a batch to the relayer, which calls `match_orders({fills})` (`
 
 `POST /api/intents` accepts at most 30 requests per minute per IP. Simulation (step 3) already makes invalid intents cost no gas; this protects the gas of valid but useless ones (for example `cancel` of a nonexistent order from a fresh key). It also slows dust-order storage spam through our relayer: every open order locks the contract's NEAR for storage, an accepted risk under D24 that the storage alert ([Keeper](#storage-alert)) watches. It limits our endpoint, not the protocol. The number is an internal setting.
 
-**Client IP:** behind Railway's proxy the socket address is the proxy's, so keying on it would turn the guard into one global limit for all users. The guard uses the last entry of `X-Forwarded-For`, the one the proxy appends; earlier entries come from the client and can be forged. Check the header Railway actually sets on the first deploy ⚠️.
+**Client IP:** behind Railway's proxy the socket address is the proxy's, so keying on it would turn the guard into one global limit for all users. The guard uses the last entry of `X-Forwarded-For`, the one the proxy appends; earlier entries come from the client and can be forged. Without the header (a local run) the socket address is used. Check the header Railway actually sets on the first deploy ⚠️.
 
 ## Keeper (D44)
 
