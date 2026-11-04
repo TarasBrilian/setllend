@@ -144,7 +144,7 @@ describe("Relayer.submit", () => {
   it("is not ready without a key or before the contract is loaded", async () => {
     const { relayer } = await setup({ keys: false });
     expect(await relayer.submit(body(lend))).toMatchObject({ status: 503, body: { error: { code: "not_ready", reason: expect.stringMatching(/read-only/) } } });
-    expect(() => relayer.matchOrders([{ bid: "1", ask: "2", principal: "5" }])).toThrow(/read-only/);
+    await expect(relayer.matchOrders([{ bid: "1", ask: "2", principal: "5" }])).rejects.toThrow(/read-only/);
     const fresh = await setup();
     fresh.service.market.config = null;
     expect((await fresh.relayer.submit(body(lend))).body.error?.code).toBe("not_ready");

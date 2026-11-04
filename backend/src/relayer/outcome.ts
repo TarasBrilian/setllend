@@ -23,7 +23,9 @@ export function failureOf(receipt: ReceiptOutcome): string | null {
 
 export function readOutcome(outcome: TxOutcome, contractId: string): IntentOutcome {
   const first = outcome.receipts[0];
-  const firstFailure = first ? failureOf(first) : null;
+  // An included transaction always becomes a receipt; without one, nothing is known to have run.
+  if (!first) return { ok: false, events: [], error: { code: "rejected", reason: "The transaction produced no receipts" } };
+  const firstFailure = failureOf(first);
   if (firstFailure !== null) return { ok: false, events: [], error: { code: "rejected", reason: firstFailure } };
 
   const events: SetllendEvent[] = [];

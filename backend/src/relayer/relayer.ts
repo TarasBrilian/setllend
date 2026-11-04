@@ -131,7 +131,7 @@ export class Relayer {
    * matcher reads its skips and the height to reload at from the receipts, and closes the
    * submission (it stays open until then, for recovery after a restart).
    */
-  matchOrders(fills: readonly Fill[]): Promise<SendResult> {
+  async matchOrders(fills: readonly Fill[]): Promise<SendResult> {
     const { contract, matcher } = this.o;
     if (!matcher) throw new Error("The matcher has no key and runs read-only");
     const args = encodeMatchOrdersArgs(fills);

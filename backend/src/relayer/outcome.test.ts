@@ -43,6 +43,10 @@ describe("readOutcome", () => {
     expect(out).toEqual({ ok: false, events: [], error: { code: "rejected", reason: "nonce was already used" } });
   });
 
+  it("fails when the transaction produced no receipts", () => {
+    expect(readOutcome(tx(), CONTRACT)).toMatchObject({ ok: false, error: { code: "rejected", reason: expect.stringMatching(/no receipts/) } });
+  });
+
   it("reports a failed payout while the action itself succeeded", () => {
     const failed = eventLine("payout_failed", { account: "0xabc", token_id: USDC, amount: "5" });
     const out = readOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [failed])), CONTRACT);
