@@ -36,6 +36,36 @@ const MIGRATIONS = [
      updated_at INTEGER NOT NULL
    );
    CREATE INDEX submissions_by_status ON submissions (kind, status);`,
+  `CREATE TABLE oneclick (
+     n INTEGER PRIMARY KEY AUTOINCREMENT,
+     id TEXT NOT NULL UNIQUE,
+     account TEXT NOT NULL,
+     direction TEXT NOT NULL,
+     asset_in TEXT NOT NULL,
+     asset_out TEXT NOT NULL,
+     chain TEXT NOT NULL,
+     swap_type TEXT NOT NULL,
+     slippage_bps INTEGER NOT NULL,
+     amount_in TEXT NOT NULL,
+     min_amount_in TEXT,
+     amount_out TEXT NOT NULL,
+     min_amount_out TEXT NOT NULL,
+     address TEXT NOT NULL,
+     deadline TEXT NOT NULL,
+     time_estimate INTEGER,
+     quote TEXT NOT NULL,
+     intent TEXT,
+     intent_hash TEXT,
+     deposit_tx TEXT,
+     deposit_tx_at INTEGER,
+     status TEXT NOT NULL,
+     details TEXT,
+     next_poll_at INTEGER,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   );
+   CREATE INDEX oneclick_by_account ON oneclick (account, n);
+   CREATE INDEX oneclick_by_poll ON oneclick (next_poll_at) WHERE next_poll_at IS NOT NULL;`,
 ];
 
 export function openDb(path: string): Database.Database {
