@@ -11,6 +11,7 @@ import { Submissions } from "./chain/submissions.ts";
 import { bookSides } from "./matcher/book.ts";
 import { Market } from "./market.ts";
 import { Prices } from "./prices.ts";
+import { type BatchReport, Matcher } from "./matcher/matcher.ts";
 import { Relayer } from "./relayer/relayer.ts";
 import { Hub } from "./ws.ts";
 
@@ -41,6 +42,7 @@ export class Service {
   readonly follower: Follower;
   readonly submissions: Submissions;
   readonly relayer: Relayer;
+  readonly matcher: Matcher;
   contractState: ContractState = "checking";
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
@@ -73,6 +75,16 @@ export class Service {
       intents: sender(o.keys?.intents),
       matcher: sender(o.keys?.matcher),
       onSettled: (account, body) => this.hub.intent(account, body),
+      log: this.log,
+    });
+    this.matcher = new Matcher({
+      market: this.market,
+      prices: this.prices,
+      relayer: this.relayer,
+      submissions: this.submissions,
+      rpc: o.rpc,
+      contractId: o.contractId,
+      sleep: o.sleep,
       log: this.log,
     });
     this.follower = new Follower({
@@ -113,9 +125,20 @@ export class Service {
     await this.follower.init();
     this.contractState = "ready";
     void this.follower.run();
+    // Without the matcher key the matcher stays off; the books and API still work (D43).
+    if (this.relayer.canMatch) {
+      this.matcher.run().catch((error: unknown) => this.log(`matcher stopped: ${error instanceof Error ? error.message : error}`));
+    }
   }
 
-  health(): { ok: boolean; contract: ContractState; height: number; follower: FollowerStatus; relayer: { intents: boolean; matcher: boolean } } {
+  health(): {
+    ok: boolean;
+    contract: ContractState;
+    height: number;
+    follower: FollowerStatus;
+    relayer: { intents: boolean; matcher: boolean };
+    matcher: { in_flight: string | null; last_batch: BatchReport | null; fill_limit: number; paused: boolean };
+  } {
     const follower = this.follower.status();
     return {
       ok: follower.error === null,
@@ -123,6 +146,12 @@ export class Service {
       height: this.market.height,
       follower,
       relayer: { intents: this.relayer.canRelay, matcher: this.relayer.canMatch },
+      matcher: {
+        in_flight: this.matcher.inFlight,
+        last_batch: this.matcher.lastBatch,
+        fill_limit: this.matcher.fillLimit,
+        paused: this.matcher.pausedAt !== null,
+      },
     };
   }
 }

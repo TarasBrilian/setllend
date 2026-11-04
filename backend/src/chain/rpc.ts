@@ -21,6 +21,8 @@ export type ViewAt = number | "optimistic";
 
 export interface Rpc {
   finalBlock(): Promise<FinalBlock>;
+  /** Height of the block with `hash` (a receipt's block). */
+  blockHeight(hash: string): Promise<number>;
   /**
    * A view call at `height`, at the latest optimistic block, or by default at the latest final
    * block. Throws `NotDeployedError` without code.
@@ -150,6 +152,10 @@ export function createRpc(url: string): Rpc & TxRpc {
     async finalBlock() {
       const { header } = await provider.viewBlock({ finality: "final" });
       return { height: header.height, hash: header.hash, timestampNs: BigInt(header.timestamp_nanosec) };
+    },
+    async blockHeight(hash) {
+      const { header } = await provider.viewBlock({ blockId: hash });
+      return header.height;
     },
     async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt) {
       try {

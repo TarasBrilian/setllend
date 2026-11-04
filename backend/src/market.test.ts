@@ -105,6 +105,28 @@ describe("Market", () => {
     expect(rpc.calls.every((c) => c.height === 60)).toBe(true);
     expect(market.height).toBe(60);
   });
+
+  it("refreshes the matcher's maturities and loans at a height, never going back to an older read", async () => {
+    const { market, rpc, state } = setup();
+    await market.load(50, 0n);
+    state.orders = state.orders.filter((o) => o.maturity !== M2);
+    state.loans = [];
+    await market.refresh([M2, "999"], true, 70);
+    expect(market.books.get(M2)).toMatchObject({ height: 70, orders: [] });
+    expect(market.loans).toEqual([]);
+    expect(market.loansHeight).toBe(70);
+    // A slower read at 60 arrives after the one at 70: it is dropped.
+    state.orders.push(order({ order_id: "501", maturity: M2, kind: "borrow", remaining: "1" }));
+    state.loans = [{ account_id: "b.near", maturity: M1, collateral: {}, debt_face: "1" }];
+    const pushed: number[] = [];
+    market.onBook((book) => pushed.push(book.height));
+    await market.refresh([M2], true, 60);
+    await market.reload([record({ event: "repaid", data: { borrower: "b.near", payer: "b.near", maturity: M2, amount: "1", debt_remaining: "0" } })], 65, 0n);
+    expect(market.books.get(M2)).toMatchObject({ height: 70, orders: [] });
+    expect(market.loans).toEqual([]);
+    expect(pushed).toEqual([]);
+    expect(rpc.calls.some((c) => c.method === "get_orders" && c.height === 60)).toBe(true);
+  });
 });
 
 describe("book", () => {

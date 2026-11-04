@@ -168,6 +168,27 @@ describe("Sender", () => {
     expect(rpc.looked.length - before).toBe(SENDER.followMs / SENDER.followPollMs + 1);
   });
 
+  it("resumes a transaction by re-sending the same bytes and asking by hash", async () => {
+    const { rpc, sender, submissions } = setup();
+    submissions.add({ txHash: "h", kind: "match", signer: ACCOUNT, request: {}, signedTx: "Ynl0ZXM=" });
+    expect(await sender.resume("h", "Ynl0ZXM=")).toMatchObject({ hash: "h", executed: true });
+    expect(rpc.sent).toEqual(["Ynl0ZXM="]);
+    // Refused, but known: it landed earlier.
+    rpc.onSend = () => {
+      throw new TxError("invalid_nonce", "InvalidNonce", 99n);
+    };
+    expect(await sender.resume("h", "Ynl0ZXM=")).toMatchObject({ hash: "h" });
+    // Refused and unknown: it never landed.
+    rpc.onStatus = () => {
+      throw new TxError("timeout", "TIMEOUT_ERROR");
+    };
+    expect(await sender.resume("h", "Ynl0ZXM=")).toBe("never_landed");
+    expect(submissions.get("h")).toMatchObject({ status: "error", error: { code: "never_landed" } });
+    // Not refused and unknown: still in doubt.
+    rpc.onSend = () => {};
+    expect(await sender.resume("h", "Ynl0ZXM=")).toBeNull();
+  });
+
   it("returns the outcome once the lookup sees every receipt executed", async () => {
     const { rpc, sender } = setup();
     rpc.onStatus = (hash, call) => {

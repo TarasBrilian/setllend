@@ -181,6 +181,26 @@ export class Sender {
     return this.lookup(hash, this.now(), SENDER.followMs, SENDER.followPollMs);
   }
 
+  /**
+   * Resolves a transaction signed before: one still pending, or open in `submissions` after a
+   * restart. Re-sends the same bytes (always safe: same hash, same nonce) and asks by hash for up
+   * to `followMs`. `never_landed` when the re-send was refused (expired block hash, or its nonce
+   * used by another transaction) and the hash stays unknown; null if it is still unknown.
+   */
+  async resume(hash: string, base64: string): Promise<TxOutcome | "never_landed" | null> {
+    let refused = false;
+    try {
+      await this.rpc.sendTx(base64);
+    } catch (error) {
+      refused = error instanceof TxError && (error.kind === "expired" || error.kind === "invalid_nonce");
+    }
+    const outcome = await this.lookup(hash, this.now(), refused ? SENDER.pendingAfterMs : SENDER.followMs, SENDER.followPollMs);
+    if (outcome !== null) return outcome;
+    if (!refused) return null;
+    this.submissions.update(hash, "error", { code: "never_landed", reason: "The node refused a re-send and has no record of the hash" });
+    return "never_landed";
+  }
+
   /** Asks for the outcome by hash until every receipt executed, or null after `limitMs`. */
   private async lookup(hash: string, since: number, limitMs = SENDER.pendingAfterMs, pollMs = SENDER.pollMs): Promise<TxOutcome | null> {
     for (;;) {
