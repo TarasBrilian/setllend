@@ -1,0 +1,5 @@
+# Reproducible builds (cargo near build reproducible-wasm) for the local dry run, SOT/dry-run.md (D62).
+# source ab75b05eec66f9282ad1ae1479dddc0032e4109c
+6855be8145b8a9c8a8618107fe6d270a8d1462d38fae1e65d39f7bce5c920e01  setllend.wasm
+126865344f5a37afc1d8ad7baeafa411278305588d341cd395ad4907e71c3fb5  mock_intents.wasm
+1dbe4297ae40a71cb774f136fe7f5d5dca7e2c6b8a33dbfdc08f809f77140586  mock_oracle.wasm
