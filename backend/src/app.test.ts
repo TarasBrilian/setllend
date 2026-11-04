@@ -1,3 +1,4 @@
+import { KeyPair } from "near-api-js";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
@@ -77,6 +78,24 @@ describe("API before the contract is loaded", () => {
     expect(service.contractState).toBe("checking");
   });
 
+  it("runs the market-maker agent only with its key and the relayer's intents key (D60)", () => {
+    const key = KeyPair.fromRandom("ed25519").toString();
+    const make = (o: { mm?: string; intents?: string }) =>
+      new Service({
+        db: openDb(":memory:"),
+        rpc: new FakeRpc(),
+        source: new FakeExplorer(),
+        contractId: CONTRACT,
+        keys: o.intents ? { accountId: "backend.setllend.near", txRpc: new FakeTxRpc(), intents: o.intents } : undefined,
+        mmSigningKey: o.mm,
+        log: () => {},
+      }).mm.running;
+    expect(make({})).toBe(false);
+    expect(make({ mm: key })).toBe(false);
+    expect(make({ intents: key })).toBe(false);
+    expect(make({ mm: key, intents: key })).toBe(true);
+  });
+
   it("runs the keeper once loaded, only with the backend account (D59)", async () => {
     for (const keys of [false, true]) {
       const { rpc } = setup();
@@ -136,6 +155,17 @@ describe("API", () => {
     expect((await json(await app.request("/health"))).body.keeper).toMatchObject({
       last_scan: { height: 100, loans: 1, eligible: 0, unpriced: 0, top: [], error: null },
       storage: { free: String(4n * 10n ** 24n), alert: false },
+    });
+  });
+
+  it("reports the market-maker agent on /health", async () => {
+    const { app } = await ready();
+    expect((await json(await app.request("/health"))).body.mm).toEqual({
+      account: null,
+      bases: { [M]: 600 },
+      orders: {},
+      in_flight: null,
+      last_action: null,
     });
   });
 

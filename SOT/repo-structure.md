@@ -20,9 +20,10 @@ setllend/
 │       ├── chain/        # NEAR RPC client, typed views, event follower on the FastNear explorer, SQLite store (D40, D55),
 │       │                 # sender.ts (signed transactions: nonce queue per access key, retries, status by hash)
 │       ├── matcher/      # order book levels (book.ts), fill builder (fills.ts), parking (parking.ts), batch loop (matcher.ts)
-│       ├── relayer/      # POST /api/intents: payload checks, simulate, execute_intents, outcome reading; match_orders
-│       ├── keeper/       # liquidation + maturity settlement
-│       ├── mm-agent/     # market-maker agent
+│       ├── relayer/      # POST /api/intents: payload checks, simulate, execute_intents, outcome reading; match_orders;
+│       │                 # own.ts (the backend's own NEP-413 intents, for the keeper and the agent)
+│       ├── keeper/       # liquidation + maturity settlement: scan (scan.ts), loop (keeper.ts)
+│       ├── mm-agent/     # market-maker agent: settings (config.ts), base rate (base.ts), quote planner (quotes.ts), loop (agent.ts)
 │       ├── oneclick/     # 1Click wrapper (quote, deposit, withdraw, status)
 │       └── shared/       # msg, view, and event types, intent payload builders, asset IDs (copied to the frontend)
 ├── frontend/             # Next.js + wagmi/viem

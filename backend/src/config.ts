@@ -13,6 +13,8 @@ export const config = {
   matcherPrivateKey: process.env.NEAR_MATCHER_PRIVATE_KEY || undefined,
   // The keeper's NEP-413 signing key, registered on intents.near; not a NEAR access key (D43).
   keeperSigningKey: process.env.NEAR_KEEPER_SIGNING_KEY || undefined,
+  // The market-maker agent's ed25519 key; its Intents account is the key's implicit account (D60).
+  mmSigningKey: process.env.MM_SIGNING_KEY || undefined,
 };
 
 function blockHeight(value: string | undefined): number | undefined {

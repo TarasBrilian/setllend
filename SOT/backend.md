@@ -2,7 +2,7 @@
 
 > **Status: APPROVED v0.2 (2026-11-03), with v0.3 additions agreed 2026-11-03 (D49, D50): the API the UI needs ([frontend.md](frontend.md#data)), 1Click endpoints, and the [D48 changes](#d48-changes) that follow the contract.** D40 to D46 in [decisions.md](decisions.md); D55 (2026-11-04) replaced the block source of D40 with the FastNear explorer. D57 (approved 2026-11-04) adds the relayer's implementation details, D58 (approved 2026-11-04) the matcher's. v0.2 applies the review of PR #4: the book is reloaded from views instead of built from events (D40), a separate key signs the keeper's intents (D43), and the keeper reads positions (loans since contract v0.6) from the contract (D45), so SQLite has three tables (D46). The contract side of every rule here is in [contract-interface.md](contract-interface.md), which wins on any conflict.
 
-One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, an event follower, and three components that share them. The market-maker agent and the 1Click wrapper are out of scope here (scheduled 2026-11-11 and 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what they will use.
+One Node process in `backend/` (D28): a Hono API with WebSocket, a chain client, an event follower, and the components that share them: matcher, relayer, keeper, and the [market-maker agent](#market-maker-agent-d35-d60). The 1Click wrapper is out of scope here (scheduled 2026-11-12); [Interfaces for later components](#interfaces-for-later-components) lists what it will use.
 
 ```
    FastNear explorer (contract's txs)          NEAR RPC (views, oracle, send_tx)
@@ -228,7 +228,7 @@ The first eligible loan without a skip is liquidated. Once that liquidation reso
 ### Liquidating
 
 - One liquidation in flight at a time, so capital is never counted twice.
-- Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the keeper's signing key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 payload comes from the shared builder in `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); `keeper/` signs its hash with the signing key. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
+- Sends a `transfer` intent of `amount = min(capital, debt_face)` USDC with `msg = liquidate` and `min_gas` 100 Tgas, signed with NEP-413 by the keeper's signing key ([D43](#account-and-keys-d43)) and submitted through the relayer's queue. The NEP-413 payload comes from the shared builder in `shared/intents.ts` ([intents-primitives.md](intents-primitives.md#payload-format)); `relayer/own.ts` signs its hash with the signing key, for the keeper and the market-maker agent alike. The contract caps what it takes at `repay_for(all collateral)` and refunds the rest in the same transaction.
 - **Partial liquidation:** with less capital than the debt, the keeper liquidates what its capital covers. If the loan is still eligible afterwards, a later scan picks it up once capital is back.
 - **Capital** = the backend account's USDC balance on `intents.near` (`mt_batch_balance_of`, as for the account endpoint), read at the scan's block. No liquidation is in flight then, since the next one waits for the last to resolve and for the final height to pass it (D59). With no capital nothing is sent (the contract rejects a zero amount); `/health` shows the eligible loans left. Seized collateral, one or more tokens, lands in the same Intents account. That account is a hot wallet ([D43](#account-and-keys-d43)), so capital stays small and seized collateral is moved out by hand until the 1Click wrapper turns it back into USDC.
 - **Dust:** every eligible loan is liquidated, even when gas costs more than the bonus ([contract-interface.md](contract-interface.md#bad-debt-d26)).
@@ -267,7 +267,7 @@ SQLite through `db.ts` (D28, D46). Everything here is a mirror or a log; the boo
 |---|---|---|
 | `cursor` | `live`: the transaction height the follower has read up to (D55) | Follower restart |
 | `events` | Every Setllend event: `block_height`, `receipt_id`, `log_index`, `tx_hash`, `block_timestamp`, `event`, `data` (JSON), unique by `(receipt_id, log_index)`, plus the `maturity`, `accounts`, and `order_ids` the event names (JSON arrays), so history is a plain query. A fill names only order IDs; its accounts come from the `order_placed` events of those orders at query time, so a fill and its orders can be stored in any order. History is ordered by `(block_height, seq)` | Trade history, rate chart, account history, the market-maker agent's fill feed (D35) |
-| `submissions` | Every transaction we send: `tx_hash` (unique), `kind` (`intent`, `match`, `liquidate`), `signer` (the intent's `signer_id` for `intent` and `liquidate`, the backend account for `match`), `request` (the arguments, JSON), `signed_tx` (base64 of the signed transaction, D57), `status` (`sent`, `ok`, `failed`, `pending`, `error`), `error` (JSON `{code, reason}`), `created_at` and `updated_at` (ms) | In-flight batch recovery, relayer audit, keeper history |
+| `submissions` | Every transaction we send: `tx_hash` (unique), `kind` (`intent`, `match`, `liquidate`, `mm`), `signer` (the intent's `signer_id` for `intent` and `liquidate`, the backend account for `match`), `request` (the arguments, JSON), `signed_tx` (base64 of the signed transaction, D57), `status` (`sent`, `ok`, `failed`, `pending`, `error`), `error` (JSON `{code, reason}`), `created_at` and `updated_at` (ms) | In-flight batch recovery, relayer audit, keeper history |
 | `oneclick` | Every 1Click quote made through the API (D49): id, account, direction (`deposit`, `withdraw`), asset in and out, chain, amount, deposit address, 1Click status, timestamps | The user's history, status polling |
 
 Schema changes run as numbered migrations at startup.
@@ -286,6 +286,7 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `NEAR_INTENTS_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_MATCHER_PRIVATE_KEY` | none | **Yes** |
 | `NEAR_KEEPER_SIGNING_KEY` | none (the keeper only scans, D59) | **Yes** |
+| `MM_SIGNING_KEY` | none (the market-maker agent doesn't run). Its implicit account is the hex of the public key (D60) | **Yes** |
 | `ONE_CLICK_JWT` | none (1Click endpoints off). Already in `.env.example` | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
@@ -296,7 +297,7 @@ Internal settings (fills per batch, gas, page size, poll intervals, flood guard,
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag |
+| GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` every other endpoint but the salt answers 503), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag; `mm` as in [Market-maker agent](#health) |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
 | GET | `/api/maturities` | `[{maturity, open, total_supplied, active_loans}]`, `open` = still in the future; the totals as in `/api/stats`, per maturity |
@@ -334,13 +335,75 @@ The contract implements D48 since contract-interface v0.6 (2026-11-03, D53), and
 - **Keeper:** as in [Keeper](#keeper-d44): `get_loans`, every collateral feed validated, eligibility at the summed threshold, seizure estimated per token with `seize`. Seized collateral can be several tokens; they stay on the backend account until sold by hand.
 - **Parameter updates:** an owner update to a token's parameters applies at once (D50). The book, keeper, and `/api/collateral-tokens` reload on the `collateral_token_*` events, and loans an update makes liquidatable are picked up by the next scan like any other.
 
+## Market-maker agent (D35, D60)
+
+An ordinary book participant run by us (D7), in `backend/src/mm-agent/`. It quotes both sides of every open maturity around a base rate that follows Setllend's own fills, with no external rate source (D35). Repaying its debt and redeeming its notes are done by hand (D60): its `borrow` asks stop a day before maturity so the debt can be repaid before maturity + grace, and short demo maturities get only its `lend` bids.
+
+### Account
+
+- Its own Intents account, separate from the keeper's (`backend.setllend.near`), so its capital stays apart and its orders never meet keeper flows: an **implicit account**, the hex of the public key of `MM_SIGNING_KEY` (ed25519). It needs no NEAR account, no NEAR balance, and no `add_public_key`, since `intents.near` accepts an implicit account's own key ✅ 2026-11-03 ([intents-primitives.md](intents-primitives.md#payload-format)); the relayer pays the gas. ✅ 2026-11-04 on mainnet: a payload signed by the agent's `IntentSigner` from a fresh implicit account passed `simulate_intents` as a lone `cancel`, and as `cancel` + `lend` failed only on balance (`insufficient balance or overflow`), so a mixed `auth_call` + `transfer` payload is accepted.
+- Funded by hand with USDC (for `lend` quotes) and collateral (for `borrow` quotes) on `intents.near`, for example an Intents `transfer` from the user's account. It is a hot wallet like the keeper's: small capital.
+- Without `MM_SIGNING_KEY`, or without the relayer's intents key, the agent doesn't run; with the key but not the relayer's, startup logs why.
+
+### Base rate
+
+- Each maturity starts at `initialBaseBps` (an agent setting, the same for every maturity).
+- After each `order_filled` in that maturity, any owner's (the agent's own included, since they are market fills too), the base moves toward the fill rate: `base += w × (rate_bps − base)` with `w = alpha × min(1, principal / quoteSize)`, and the move is bounded to `maxMoveBps` per fill. Weighting by size and bounding the move keep dust fills between two accounts of one attacker from dragging the base ([pitfalls.md](pitfalls.md#off-chain)).
+- The base is kept in memory and rebuilt at startup by replaying the stored `order_filled` events of each maturity in order (the `events` table), then follows the follower's rounds. No table of its own.
+
+### Quotes
+
+Per open maturity, at most one `lend` bid and one `borrow` ask owned by the agent:
+
+| Side | Rate | Size | Funds |
+|---|---|---|---|
+| `lend` | `min_rate_bps = round(base + spread)` | `quoteSize` USDC, less if the USDC balance has less, none below `minQuoteSize` | USDC from its Intents balance |
+| `borrow` | `max_rate_bps = round(base − spread)`, skipped below 1 bps | `quoteSize` USDC principal | Collateral escrowed so the fill opens at `targetLtv` at mid prices: the one collateral token, not frozen and with a usable price, of which the agent holds the most USD value |
+
+- The two never cross each other (`base + spread > base − spread`), and the contract blocks same-owner fills anyway.
+- A second order of the same side (left by a crash, or placed by hand) is cancelled; the newest is kept. A `borrow` ask held while `base − spread` falls below 1 bps is cancelled.
+- **Stops:** `borrow` asks stop `stopBorrowBeforeMs` (a day) before a maturity, `lend` bids `stopLendBeforeMs` (15 minutes) before; the agent's orders of that side there are cancelled. A `lend` bid carries no liquidation risk (its notes are redeemed by hand), so a demo maturity a couple of hours out ([risk-params.md](risk-params.md)) still gets a lender. Debt from `borrow` fills is repaid by hand before maturity + grace, or the keeper liquidates it like any other.
+- **No new `borrow` ask** while the agent's loan in that maturity has a health factor below `minHealth` (conservative prices, as `/api/accounts` shows it), or while that health can't be computed (a missing price, or a token the agent's list doesn't have yet). The loan is topped up by hand. This keeps the agent's own loan clear of the keeper.
+- Orders carry `expires_at = now + orderTtlMs`, so a quote left by a stopped agent can't fill at an old base for long.
+
+### Requoting
+
+A round runs every 30 s and on each book change of a maturity (the follower's rounds):
+
+1. Read the agent's Intents balances (`mt_batch_balance_of`, at the latest final block) and its orders from the books (`market.books`, owner = the agent).
+2. Per maturity and side, compare the order held with the quote wanted. Replace it when the rate differs by `requoteBps` or more, its `remaining` is below half the wanted size, or it expires within `renewBeforeMs`. Place one when none is held and the funds suffice; cancel one past its side's stop.
+3. A replacement is one payload: `cancel` of the old order (an `auth_call`) and the new order (a `transfer`), signed together with NEP-413. The old order's escrow comes back only after `execute_intents` has run, so the new order needs funds of its own; when the free balance can't cover it, only the `cancel` is sent and the new order follows in a later round.
+4. One payload in flight at a time, through `relayer.submit(body, {kind: "mm"})`, with a 2-minute deadline like the keeper (D59). After its outcome, the round waits until the final height has passed its last receipt (as the keeper does), so the books it reads include it.
+5. A payload that fails (in simulation or on chain, or without an outcome after following) is logged, and that maturity and side are left alone, cancels near maturity included, until the next book change of the maturity or `failureHoldMs`, whichever comes first. The agent's own reload after a payload that failed on chain doesn't count as a change: the hold is taken after it, or the same payload would go out again at once.
+
+### Agent settings
+
+Constants in `mm-agent/config.ts` (D24: agent settings, not user-facing limits). Starting values:
+
+| Setting | Value |
+|---|---|
+| `initialBaseBps` | 600 (6% APR) |
+| `spreadBps` | 50 each side (lend quotes at 6.5%, borrow quotes at 5.5%) |
+| `quoteSize` | 100 USDC per side per maturity |
+| `minQuoteSize` | 10 USDC: a smaller quote isn't placed, since dust orders only cost the contract storage |
+| `alpha`, `maxMoveBps` | 0.3, 25 bps per fill |
+| `requoteBps` | 5 |
+| `targetLtv` | 40% (the contract allows 70%; liquidation at 80%) |
+| `minHealth` | 1.5 |
+| `orderTtlMs`, `renewBeforeMs` | 24 h, 2 h: about 6 renewal payloads a day at roughly 0.001 NEAR each (10 to 15 Tgas at the mainnet gas price of 10^8 yocto per gas, 2026-11-04), so renewals use about 0.1 NEAR of the backend account's 0.5 NEAR up to 2026-11-25. At 6 h it would have been 0.25 to 0.5 NEAR |
+| `stopBorrowBeforeMs`, `stopLendBeforeMs` | 24 h, 15 min |
+| `intervalMs`, `failureHoldMs` | 30 s, 5 min |
+
+### `/health`
+
+`mm: {account, bases, orders, in_flight, last_action}`: the agent's account ID (null when it doesn't run), the base per maturity (bps, one decimal), its order IDs per maturity and side, the hash of the payload in flight, and the last payload (`tx_hash`, `actions`, `ok`, `error`).
+
 ## Interfaces for later components
 
-- **Market-maker agent** (`mm-agent/`, D35): reads the books from `Market` (`market.books`, levels with `bookSides`) and its fills from the follower's rounds (`order_filled` events). Places and cancels orders as an ordinary participant through the same intent builders and `relayer.submit`. It needs its own Intents account, separate from the keeper's, so its orders never self-trade against keeper flows and its capital stays apart.
 - **1Click wrapper** (`oneclick/`, D11): `quoteDeposit`, `quoteWithdraw`, `status`. Behind the API's 1Click endpoints (D49). The keeper calls it later to sell seized collateral for USDC; until then that is manual.
 
 ## Tests
 
-- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing.
+- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing, the market-maker agent's base moves, quote plans (sizes, collateral rounding, replace rules, stops, health gate), and its loop.
 - `shared/math.ts` reproduces the `math` vectors the contract writes into the golden fixture ([repo-structure.md](repo-structure.md)): `face` and share rounding, the exact `can_open` boundary over one to three tokens (largest debt that passes, and one unit more), and `seize` and `repay_for` with partial, capped, and dust cases. The unit tests of `math.rs` and the price validation and valuation rules of `oracle.rs` are ported too.
 - **No sandbox end-to-end test.** The explorer doesn't exist for a sandbox, so the follower, the riskiest part, couldn't be tested that way anyway, and the contract's flows are already covered by the Rust sandbox tests. Instead, a scripted **mainnet smoke test with small amounts** right after the deploy (AGENTS.md): place a `lend` and a `borrow`, see them matched, `repay`, `cancel` a leftover order, and check every step in the book, the events table, and the WebSocket feed.

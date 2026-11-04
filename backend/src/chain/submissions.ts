@@ -2,7 +2,7 @@
 // is sent, so a restart can re-send the same bytes or look it up by hash (D42, D57).
 import type Database from "better-sqlite3";
 
-export type SubmissionKind = "intent" | "match" | "liquidate";
+export type SubmissionKind = "intent" | "match" | "liquidate" | "mm";
 
 /** `sent` until the outcome is known; `pending` when receipts were still running after 30 s. */
 export type SubmissionStatus = "sent" | "ok" | "failed" | "pending" | "error";
