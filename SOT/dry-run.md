@@ -94,7 +94,14 @@ CI runs it on every PR next to the other checks. Expected run time about 3 to 4 
 
 ## Prebuilt wasm
 
-`contracts/res/` holds `setllend.wasm`, `mock_intents.wasm`, and `mock_oracle.wasm`, built with `cargo near build reproducible-wasm`. The mocks get the same `reproducible_build` metadata as Setllend (pinned Docker image), and `contracts/res/SHA256SUMS` lists the hashes. A CI job rebuilds the three in Docker and fails if a hash differs, so the files always match the source (D62, the user's choice). A reproducible build needs a clean, committed tree ([tech-stack.md](tech-stack.md)), so after a contract or mock change the wasm is rebuilt and committed in a follow-up commit of the same PR. Only the dry run loads them; the Rust sandbox tests keep building their own. The mainnet deploy builds Setllend the same reproducible way, so it gets the same bytes.
+`contracts/res/` holds `setllend.wasm`, `mock_intents.wasm`, and `mock_oracle.wasm`, built with `cargo near build reproducible-wasm`; the mocks have the same `reproducible_build` metadata as Setllend (pinned Docker image). Only the dry run loads them; the Rust sandbox tests keep building their own.
+
+A reproducible build embeds its source commit in the NEP-330 metadata (`contract_source_metadata`: `git+https://github.com/TarasBrilian/setllend?rev=<commit>`, the URL from `repository` in `Cargo.toml`) ✅ 2026-11-05, so its bytes depend on the commit it was built at, and it needs a clean, committed tree ([tech-stack.md](tech-stack.md)). Hence `contracts/res/SHA256SUMS` records that source commit next to the hashes, and CI (D62, the user's choice: the files must match the source):
+
+1. checks that nothing that goes into the wasm changed since that commit: `contracts/` except `res/` and `tests/`;
+2. clones the repo at that commit, rebuilds the three in Docker, and fails if a hash differs.
+
+After a contract or mock change, the wasm is rebuilt at the new commit and committed in a follow-up commit of the same PR, with the new source commit. A rebuild takes about 100 s per crate on an Apple Silicon Mac (amd64 image under Docker) ✅ 2026-11-05. The mainnet deploy builds Setllend the same reproducible way at the deploy commit.
 
 ## Limits
 
