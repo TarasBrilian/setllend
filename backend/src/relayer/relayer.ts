@@ -67,7 +67,11 @@ export class Relayer {
     return this.o.matcher !== null;
   }
 
-  async submit(body: unknown): Promise<RelayResult> {
+  /**
+   * Relays one signed payload. The keeper's own `liquidate` intents come through here too, with
+   * `kind: "liquidate"`, so `submissions` tells them apart from users' intents.
+   */
+  async submit(body: unknown, opts: { kind?: "intent" | "liquidate" } = {}): Promise<RelayResult> {
     const { contract, market, submissions, intents } = this.o;
     const fail = (status: RelayResult["status"], code: RelayErrorCode, reason: string, extra: Partial<RelayBody> = {}): RelayResult => ({
       status,
@@ -111,7 +115,7 @@ export class Relayer {
         method: "execute_intents",
         args: JSON.stringify(args),
         gas: RELAY_GAS,
-        kind: "intent",
+        kind: opts.kind ?? "intent",
         signer: checked.signerId,
         request: args,
       });

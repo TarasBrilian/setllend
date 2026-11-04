@@ -89,6 +89,12 @@ describe("Relayer.submit", () => {
     expect(service.submissions.get(result.body.tx_hash!)).toMatchObject({ status: "ok", kind: "intent", signer: USER });
   });
 
+  it("records the keeper's intents under their own kind", async () => {
+    const { relayer, service } = await setup();
+    const result = await relayer.submit(body(lend), { kind: "liquidate" });
+    expect(service.submissions.get(result.body.tx_hash!)?.kind).toBe("liquidate");
+  });
+
   it("answers 200 with ok false when the contract panicked", async () => {
     const { tx, relayer, service } = await setup();
     tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [], { panic: "Order not found" })] });
