@@ -16,10 +16,16 @@ import {
 
 export type FinalBlock = { height: number; hash: string; timestampNs: bigint };
 
+/** A block height, or `optimistic` for the latest block (a second or two ahead of final). */
+export type ViewAt = number | "optimistic";
+
 export interface Rpc {
   finalBlock(): Promise<FinalBlock>;
-  /** A view call at `height`, or at the latest final block. Throws `NotDeployedError` without code. */
-  view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: number): Promise<T>;
+  /**
+   * A view call at `height`, at the latest optimistic block, or by default at the latest final
+   * block. Throws `NotDeployedError` without code.
+   */
+  view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T>;
 }
 
 /** One receipt of a transaction's outcome, in the RPC's order: the first is the transaction's own. */
@@ -145,13 +151,14 @@ export function createRpc(url: string): Rpc & TxRpc {
       const { header } = await provider.viewBlock({ finality: "final" });
       return { height: header.height, hash: header.hash, timestampNs: BigInt(header.timestamp_nanosec) };
     },
-    async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: number) {
+    async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt) {
       try {
         const result = await provider.callFunction<T & object>({
           contractId,
           method,
           args,
-          blockQuery: height === undefined ? { finality: "final" } : { blockId: height },
+          blockQuery:
+            height === undefined ? { finality: "final" } : height === "optimistic" ? { finality: "optimistic" } : { blockId: height },
         });
         return result as T;
       } catch (error) {

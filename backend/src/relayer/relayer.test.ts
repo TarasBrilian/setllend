@@ -77,11 +77,12 @@ const call = (base64: string) => {
 
 describe("Relayer.submit", () => {
   it("simulates, submits execute_intents with 300 Tgas, and answers with the events", async () => {
-    const { tx, relayer, service, simulated } = await setup();
+    const { rpc, tx, relayer, service, simulated } = await setup();
     tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [placed])] });
     const b = body(lend);
     const result = await relayer.submit(b);
     expect(simulated).toEqual([{ signed: [b.signed] }]);
+    expect(rpc.calls.find((c) => c.method === "simulate_intents")?.height).toBe("optimistic");
     expect(call(tx.sent[0]!)).toEqual({ receiverId: "intents.near", method: "execute_intents", args: JSON.stringify({ signed: [b.signed] }), gas: 300n * TGAS });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true, actions: ["lend"], error: null, events: [{ event: "order_placed" }] });

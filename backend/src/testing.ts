@@ -1,6 +1,6 @@
 // Test doubles for the chain (SOT/backend.md#tests): an in-memory RPC and block source.
 import { type AccountTx, type EventRecord, type TxDetail, type TxReceipt, type TxSource, setllendEvents } from "./chain/explorer.ts";
-import type { FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc } from "./chain/rpc.ts";
+import type { FinalBlock, ReceiptOutcome, Rpc, TxOutcome, TxRpc, ViewAt } from "./chain/rpc.ts";
 import { NotDeployedError } from "./chain/rpc.ts";
 import { EVENT_STANDARD, EVENT_VERSION } from "./shared/events.ts";
 import type { CollateralToken, Config, LoanEntryView, OracleResponse, OrderView, PoolView } from "./shared/views.ts";
@@ -79,13 +79,13 @@ export class FakeExplorer implements TxSource {
   }
 }
 
-type Handler = (args: Record<string, unknown>, height: number | undefined) => unknown;
+type Handler = (args: Record<string, unknown>, height: ViewAt | undefined) => unknown;
 
 /** Views answered by handlers per `contract.method`; a contract with no handler has no code. */
 export class FakeRpc implements Rpc {
   final: FinalBlock = { height: 100, hash: "hash-100", timestampNs: 100_000_000_000n };
   readonly handlers = new Map<string, Handler>();
-  readonly calls: { method: string; args: Record<string, unknown>; height: number | undefined }[] = [];
+  readonly calls: { method: string; args: Record<string, unknown>; height: ViewAt | undefined }[] = [];
   deployed = true;
 
   on(contractAndMethod: string, handler: Handler | unknown): this {
@@ -97,7 +97,7 @@ export class FakeRpc implements Rpc {
     return this.final;
   }
 
-  async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: number): Promise<T> {
+  async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T> {
     this.calls.push({ method, args, height });
     if (contractId === CONTRACT && !this.deployed) throw new NotDeployedError(`${contractId} has no contract code`);
     const handler = this.handlers.get(`${contractId}.${method}`);

@@ -93,7 +93,8 @@ export class Relayer {
     const args = { signed: [checked.signed] };
 
     try {
-      const simulated = await contract.rpc.view<{ invariant_violated?: unknown }>(contract.intents, "simulate_intents", args);
+      // At the latest block, not the final one, so a deposit or order from the last seconds counts.
+      const simulated = await contract.rpc.view<{ invariant_violated?: unknown }>(contract.intents, "simulate_intents", args, "optimistic");
       if (simulated?.invariant_violated) {
         return fail(400, "simulation_failed", `invariant violated: ${JSON.stringify(simulated.invariant_violated)}`, { actions });
       }
