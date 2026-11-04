@@ -357,7 +357,7 @@ Per open maturity, at most one `lend` bid and one `borrow` ask owned by the agen
 
 | Side | Rate | Size | Funds |
 |---|---|---|---|
-| `lend` | `min_rate_bps = round(base + spread)` | `quoteSize` USDC, less if the USDC balance has less | USDC from its Intents balance |
+| `lend` | `min_rate_bps = round(base + spread)` | `quoteSize` USDC, less if the USDC balance has less, none below `minQuoteSize` | USDC from its Intents balance |
 | `borrow` | `max_rate_bps = round(base − spread)`, skipped below 1 bps | `quoteSize` USDC principal | Collateral escrowed so the fill opens at `targetLtv` at mid prices: the one collateral token, not frozen and with a usable price, of which the agent holds the most USD value |
 
 - The two never cross each other (`base + spread > base − spread`), and the contract blocks same-owner fills anyway.
@@ -384,12 +384,14 @@ Constants in `mm-agent/config.ts` (D24: agent settings, not user-facing limits).
 | `initialBaseBps` | 600 (6% APR) |
 | `spreadBps` | 50 each side (lend quotes at 6.5%, borrow quotes at 5.5%) |
 | `quoteSize` | 100 USDC per side per maturity |
+| `minQuoteSize` | 10 USDC: a smaller quote isn't placed, since dust orders only cost the contract storage |
 | `alpha`, `maxMoveBps` | 0.3, 25 bps per fill |
 | `requoteBps` | 5 |
 | `targetLtv` | 40% (the contract allows 70%; liquidation at 80%) |
 | `minHealth` | 1.5 |
 | `orderTtlMs`, `renewBeforeMs` | 6 h, 1 h |
 | `stopBeforeMs` | 24 h |
+| `intervalMs`, `failureHoldMs` | 30 s, 5 min |
 
 ### `/health`
 
