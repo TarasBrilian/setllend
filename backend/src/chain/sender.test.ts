@@ -158,6 +158,16 @@ describe("Sender", () => {
     expect(submissions.get(result.hash)?.status).toBe("pending");
   });
 
+  it("follows a pending transaction for up to followMs", async () => {
+    const { rpc, sender } = setup();
+    rpc.onStatus = (hash, call) => (call === 4 ? landed(hash) : { hash, executed: false, receipts: [] });
+    expect((await sender.follow("h"))?.hash).toBe("h");
+    rpc.onStatus = (hash) => ({ hash, executed: false, receipts: [] });
+    const before = rpc.looked.length;
+    expect(await sender.follow("h")).toBeNull();
+    expect(rpc.looked.length - before).toBe(SENDER.followMs / SENDER.followPollMs + 1);
+  });
+
   it("returns the outcome once the lookup sees every receipt executed", async () => {
     const { rpc, sender } = setup();
     rpc.onStatus = (hash, call) => {

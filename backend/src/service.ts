@@ -72,6 +72,8 @@ export class Service {
       submissions: this.submissions,
       intents: sender(o.keys?.intents),
       matcher: sender(o.keys?.matcher),
+      onSettled: (account, body) => this.hub.intent(account, body),
+      log: this.log,
     });
     this.follower = new Follower({
       store: this.store,

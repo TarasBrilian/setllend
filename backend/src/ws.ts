@@ -61,6 +61,11 @@ export class Hub {
     }
   }
 
+  /** The outcome of an intent the relayer answered `pending` (SOT/backend.md#websocket-ws). */
+  intent(account: string, outcome: object): void {
+    this.publish(`account:${account}`, { type: "intent", account, ...outcome });
+  }
+
   book(sides: BookSides): void {
     this.publish(`book:${sides.maturity}`, { type: "book", ...sides });
   }

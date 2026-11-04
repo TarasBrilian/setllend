@@ -47,6 +47,9 @@ export type RelayerOptions = {
   intents: Sender | null;
   /** Function-call key for `<contract>::match_orders`; null = read-only. */
   matcher: Sender | null;
+  /** The outcome of an intent answered `pending`, once known; pushed to `account:<signer>`. */
+  onSettled?: (account: string, body: RelayBody) => void;
+  log?: (message: string) => void;
   now?: () => Date;
 };
 
@@ -124,11 +127,25 @@ export class Relayer {
       return fail(502, "submit_failed", error.message, { actions, tx_hash: error.hash });
     }
     if (sent.outcome === null) {
+      void this.follow(intents, sent.hash, actions, checked.signerId);
       return fail(202, "pending", "Not every receipt executed within 30 s; the result arrives over WebSocket", { actions, tx_hash: sent.hash });
     }
     const read = readOutcome(sent.outcome, contract.id);
     submissions.update(sent.hash, read.ok ? "ok" : "failed", read.error);
     return { status: 200, body: { tx_hash: sent.hash, ok: read.ok, actions, events: read.events, error: read.error } };
+  }
+
+  /** Reads a pending intent's outcome once known, records it, and hands it to `onSettled`. */
+  private async follow(sender: Sender, hash: string, actions: string[], account: string): Promise<void> {
+    try {
+      const outcome = await sender.follow(hash);
+      if (outcome === null) return; // Stays `pending` in submissions: it may never have landed.
+      const read = readOutcome(outcome, this.o.contract.id);
+      this.o.submissions.update(hash, read.ok ? "ok" : "failed", read.error);
+      this.o.onSettled?.(account, { tx_hash: hash, ok: read.ok, actions, events: read.events, error: read.error });
+    } catch (error) {
+      (this.o.log ?? console.error)(`following ${hash} failed: ${messageOf(error)}`);
+    }
   }
 
   /**

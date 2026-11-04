@@ -28,6 +28,9 @@ export const SENDER = {
   /** After this long without every receipt executed, the transaction is reported as pending. */
   pendingAfterMs: 30_000,
   pollMs: 2_000,
+  /** How long `follow` keeps asking for a pending transaction's outcome, and how often. */
+  followMs: 10 * 60_000,
+  followPollMs: 5_000,
 };
 
 export type SendRequest = {
@@ -170,8 +173,16 @@ export class Sender {
     }
   }
 
-  /** Asks for the outcome by hash until every receipt executed, or null after `pendingAfterMs`. */
-  private async lookup(hash: string, sentAt: number): Promise<TxOutcome | null> {
+  /**
+   * Keeps asking for the outcome of a transaction `send` reported as pending, for up to
+   * `followMs`. Null if it is still unknown then (it may never have landed).
+   */
+  follow(hash: string): Promise<TxOutcome | null> {
+    return this.lookup(hash, this.now(), SENDER.followMs, SENDER.followPollMs);
+  }
+
+  /** Asks for the outcome by hash until every receipt executed, or null after `limitMs`. */
+  private async lookup(hash: string, since: number, limitMs = SENDER.pendingAfterMs, pollMs = SENDER.pollMs): Promise<TxOutcome | null> {
     for (;;) {
       try {
         const outcome = await this.rpc.txStatus(hash, this.accountId);
@@ -179,8 +190,8 @@ export class Sender {
       } catch {
         // Timed out or a network error: ask again until the deadline.
       }
-      if (this.now() - sentAt >= SENDER.pendingAfterMs) return null;
-      await this.sleep(SENDER.pollMs);
+      if (this.now() - since >= limitMs) return null;
+      await this.sleep(pollMs);
     }
   }
 

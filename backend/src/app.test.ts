@@ -202,6 +202,9 @@ describe("Hub", () => {
     hub.round(records(81, [fill], "f"), service.store);
     expect(sent.map((s) => JSON.parse(s).type)).toEqual(["trade", "event"]);
     expect(JSON.parse(sent[1]!)).toMatchObject({ account: LENDER, event: { event: "order_filled", block_height: 81 } });
+    hub.intent(LENDER, { tx_hash: "h", ok: true, actions: ["lend"], events: [], error: null });
+    expect(JSON.parse(sent.at(-1)!)).toEqual({ type: "intent", account: LENDER, tx_hash: "h", ok: true, actions: ["lend"], events: [], error: null });
+    sent.pop();
     hub.close(client);
     hub.round(records(82, [fill], "g"), service.store);
     expect(sent).toHaveLength(2);

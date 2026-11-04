@@ -6,7 +6,7 @@ import { openDb } from "../db.ts";
 import { Service } from "../service.ts";
 import { TGAS, buildIntentPayload, setllendAuthCall, setllendTransfer } from "../shared/intents.ts";
 import { CONTRACT, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, outcomeReceipt, serve } from "../testing.ts";
-import { Relayer } from "./relayer.ts";
+import { type RelayBody, Relayer } from "./relayer.ts";
 
 const M = "1795766400000000000";
 const USER = "0x1111111111111111111111111111111111111111";
@@ -58,15 +58,22 @@ async function setup(opts: { keys?: boolean } = {}) {
       },
     });
   const keys = opts.keys ?? true;
+  const settled: { account: string; body: RelayBody }[] = [];
+  let onSettle = () => {};
   const relayer = new Relayer({
     contract: service.contract,
     market: service.market,
     submissions: service.submissions,
     intents: keys ? sender() : null,
     matcher: keys ? sender() : null,
+    onSettled: (account, body) => {
+      settled.push({ account, body });
+      onSettle();
+    },
     now: () => NOW,
   });
-  return { rpc, tx, service, relayer, simulated, setSimulate: (fn: typeof simulate) => (simulate = fn) };
+  const nextSettle = () => new Promise<void>((resolve) => (onSettle = resolve));
+  return { rpc, tx, service, relayer, simulated, settled, nextSettle, setSimulate: (fn: typeof simulate) => (simulate = fn) };
 }
 
 const call = (base64: string) => {
@@ -137,15 +144,29 @@ describe("Relayer.submit", () => {
     expect(result.body.tx_hash).toBeTruthy();
   });
 
-  it("answers 202 when receipts are still running after 30 s", async () => {
-    const { relayer, tx, service } = await setup();
+  it("answers 202 when receipts are still running after 30 s, then pushes the outcome", async () => {
+    const { relayer, tx, service, settled, nextSettle } = await setup();
     tx.onSend = () => {
       throw new TxError("timeout", "TIMEOUT_ERROR");
     };
-    tx.onStatus = (hash) => ({ hash, executed: false, receipts: [] });
+    let done = false;
+    tx.onStatus = (hash) =>
+      done
+        ? { hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [], { panic: "Maturity not listed" })] }
+        : { hash, executed: false, receipts: [] };
     const result = await relayer.submit(body(lend));
     expect(result).toMatchObject({ status: 202, body: { ok: false, error: { code: "pending" } } });
     expect(service.submissions.get(result.body.tx_hash!)?.status).toBe("pending");
+    const settle = nextSettle();
+    done = true;
+    await settle;
+    expect(settled).toEqual([
+      {
+        account: USER,
+        body: { tx_hash: result.body.tx_hash, ok: false, actions: ["lend"], events: [], error: { code: "rejected", reason: "Maturity not listed" } },
+      },
+    ]);
+    expect(service.submissions.get(result.body.tx_hash!)).toMatchObject({ status: "failed", error: { code: "rejected" } });
   });
 
   it("is not ready without a key or before the contract is loaded", async () => {

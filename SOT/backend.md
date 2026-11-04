@@ -151,7 +151,7 @@ Parked pairs and orders are kept in memory only; a restart clears them, which co
 | `submit_failed` | 502 | The simulation could not run (a network or RPC error, not a contract message), or the transaction could not be sent; `tx_hash` is returned when it was signed |
 | `rejected` | 200, `ok: false` | Executed and failed by the rule above, with `reason` |
 | `payout_failed` | 200, `ok: true` | See above |
-| `pending` | 202 | Receipts not all executed within 30 s; `tx_hash` is returned and the result arrives over WebSocket |
+| `pending` | 202 | Receipts not all executed within 30 s; `tx_hash` is returned. The relayer keeps asking by hash every 5 s for up to 10 minutes, records the outcome in `submissions`, and pushes it to `account:<signer_id>` over WebSocket (`type: "intent"`). Still unknown then, the row stays `pending`: the transaction may never have landed, and the user can sign again |
 
 ### `match_orders`
 
@@ -277,7 +277,8 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 
 - `{"type": "book", "maturity", "bids", "asks"}`: the full aggregated book after every reload (books are small enough that diffs are not worth it).
 - `{"type": "trade", ...order_filled, "timestamp"}`.
-- `{"type": "event", "account", "event"}`: every event that names the account, the fills of its orders included (owners from `order_placed`), with `block_height`, `timestamp`, and `tx_hash`; later also the outcome of its relayed intents.
+- `{"type": "event", "account", "event"}`: every event that names the account, the fills of its orders included (owners from `order_placed`), with `block_height`, `timestamp`, and `tx_hash`.
+- `{"type": "intent", "account", "tx_hash", "ok", "actions", "events", "error"}`: the outcome of an intent the account signed that `POST /api/intents` answered `pending`, once every receipt executed. The same shape as the HTTP response ([Submitting user intents](#submitting-user-intents)). Only pending intents are pushed; the others are answered over HTTP.
 - `{"type": "error", "error"}` for a bad subscribe message. A socket holds at most 50 subscriptions (an internal setting).
 - `{"type": "oneclick", "account", ...}`: a status change of one of the account's 1Click quotes.
 
