@@ -5,6 +5,8 @@ description = "Minimal mock of aggregate-oracle.near for the Setllend sandbox te
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+# Required by the reproducible build (NEP-330 metadata).
+repository.workspace = true
 
 # Reproducible build for the dry run's prebuilt wasm in contracts/res (SOT/dry-run.md, D62),
 # with the same image as the Setllend contract.
