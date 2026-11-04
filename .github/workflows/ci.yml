@@ -25,6 +25,38 @@ jobs:
       # Unit tests, then the near-workspaces sandbox tests.
       - run: cargo test
 
+  # The dry run's prebuilt wasm (SOT/dry-run.md, D62). A reproducible build embeds its source
+  # commit, so contracts/res/SHA256SUMS records it: nothing that goes into the wasm may have changed
+  # since, and a rebuild at that commit must give the same hashes.
+  contracts-res:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: The committed wasm matches SHA256SUMS
+        working-directory: contracts/res
+        run: grep -v '^#' SHA256SUMS | sha256sum --check --strict
+      - name: No wasm-relevant change since the source commit
+        run: |
+          rev=$(awk '$2 == "source" { print $3 }' contracts/res/SHA256SUMS)
+          git diff --exit-code --stat "$rev" HEAD -- contracts ':(exclude)contracts/res' ':(exclude)contracts/tests' \
+            || { echo "::error::contracts changed since $rev: rebuild contracts/res (SOT/dry-run.md)"; exit 1; }
+      - run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-installer.sh | sh
+      - name: Rebuild at the source commit
+        run: |
+          rev=$(awk '$2 == "source" { print $3 }' contracts/res/SHA256SUMS)
+          git clone --quiet --no-local . "$RUNNER_TEMP/src"
+          git -C "$RUNNER_TEMP/src" checkout --quiet "$rev"
+          cd "$RUNNER_TEMP/src/contracts"
+          for crate in setllend mocks/intents mocks/oracle; do
+            cargo near build reproducible-wasm --manifest-path "$crate/Cargo.toml"
+          done
+          mkdir -p "$RUNNER_TEMP/built"
+          cp target/near/setllend/setllend.wasm target/near/mock_intents/mock_intents.wasm target/near/mock_oracle/mock_oracle.wasm "$RUNNER_TEMP/built/"
+          grep -v '^#' "$GITHUB_WORKSPACE/contracts/res/SHA256SUMS" > "$RUNNER_TEMP/built/SUMS"
+          cd "$RUNNER_TEMP/built" && sha256sum --check --strict SUMS
+
   backend:
     runs-on: ubuntu-latest
     defaults:
