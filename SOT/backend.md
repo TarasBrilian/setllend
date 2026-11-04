@@ -326,7 +326,7 @@ The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "accoun
 - `{"type": "event", "account", "event"}`: every event that names the account, the fills of its orders included (owners from `order_placed`), with `block_height`, `timestamp`, and `tx_hash`.
 - `{"type": "intent", "account", "tx_hash", "ok", "actions", "events", "error"}`: the outcome of an intent the account signed that `POST /api/intents` answered `pending`, once every receipt executed. The same shape as the HTTP response ([Submitting user intents](#submitting-user-intents)). Only pending intents are pushed; the others are answered over HTTP.
 - `{"type": "error", "error"}` for a bad subscribe message. A socket holds at most 50 subscriptions (an internal setting).
-- `{"type": "oneclick", "account", ...row}`: a change of one of the account's 1Click quotes (status, intent hash, or deposit hash), the row as in [Rows](#rows).
+- `{"type": "oneclick", "account", ...row}`: a change of one of the account's 1Click quotes (status, swap details, intent hash, or deposit hash), the row as in [Rows](#rows).
 
 ## D48 changes
 
@@ -447,7 +447,7 @@ After the quote, the backend calls `/v0/generate-intent` with `type: swap_transf
 
 Anything else answers 502 (1Click returned an unexpected payload) and stores nothing, so the user never signs a payload we didn't check. So does a withdrawal quote whose `amount_in` isn't the amount asked for.
 
-`POST /api/oneclick/:id/submit` takes `{signature, public_key?}`: for `erc191` the wallet's `0x` signature (65 bytes, `v` normalized as in `shared/intents.ts`) or `secp256k1:` base58; for `nep413` an `ed25519:` signature and `public_key`. The envelope is built around the stored payload, so only the checked payload can be submitted, then sent to `/v0/submit-intent`. On success the intent hash is stored and the row is polled at the fast rate. A row that already has an intent hash, or whose submission is still in flight, answers 409; a payload past its deadline answers 400. When 1Click refuses the signed payload (a bad signature, or a balance too low), the answer is 400 with its message and the row stays unsubmitted, so the user can sign again.
+`POST /api/oneclick/:id/submit` takes `{signature, public_key?}`: for `erc191` the wallet's `0x` signature (65 bytes, `v` normalized as in `shared/intents.ts`) or `secp256k1:` base58; for `nep413` an `ed25519:` signature and `public_key`. The envelope is built around the stored payload, so only the checked payload can be submitted, then sent to `/v0/submit-intent`. On success the intent hash is stored and the row is polled at the fast rate. A row that already has an intent hash, or whose submission is still in flight, answers 409; a payload past its deadline answers 400. When 1Click refuses the signed payload (a bad signature, or a balance too low), the answer is 400 with its message and the row stays unsubmitted, so the user can sign again. If the submit times out after 1Click took it, the row also stays unsubmitted; polling still sees the swap run, and the status leaves `PENDING_DEPOSIT`.
 
 ### Status polling
 
@@ -462,7 +462,7 @@ Every open row is polled with `/v0/status?depositAddress=…`. Statuses are 1Cli
 - Polling stops at a final status, or one hour after 1Click's deadline: the row keeps its last status, and the UI shows a `PENDING_DEPOSIT` row past its deadline as expired.
 - The loop ticks every 5 s and sends at most 20 status requests per tick, the rows that have waited longest first. 1Click shows 1,200 requests per minute for unkeyed calls ([open-questions.md](open-questions.md) #2).
 - A failed status request is retried at the row's next turn. The rows still open are picked up again after a restart.
-- A change of status, intent hash, or deposit hash updates the row and is pushed to `account:<account>` as `{type: "oneclick", account, ...row}`.
+- Each answer is applied to the row as it is after the request, so a submit or deposit hash that landed meanwhile keeps its fast rate. A change of status, swap details, intent hash, or deposit hash updates the row and `updated_at`, and is pushed to `account:<account>` as `{type: "oneclick", account, ...row}`.
 
 ### Rows
 
@@ -474,7 +474,7 @@ What `/api/oneclick/quote`, `/api/oneclick/:id`, the account list, and the push 
 - `amount_in` is what the user sends (for `EXACT_OUTPUT`, the slippage buffer included), `min_amount_in` the least 1Click accepts; `amount_out` is the quote's estimate, `min_amount_out` the least that arrives. Decimal strings in base units, as everywhere.
 - `deadline` is 1Click's (ISO 8601), `time_estimate` its estimate in seconds.
 - `intent` is a withdrawal's payload to sign, `{standard, payload}`; `null` for deposits.
-- `details` holds 1Click's swap details once it reports them: `amount_in`, `amount_out`, `refunded_amount`, `refund_reason`, `origin_tx_hashes`, `destination_tx_hashes`, `near_tx_hashes`. `null` before that.
+- `details` holds 1Click's swap details once it reports any: `amount_in`, `amount_out`, `refunded_amount`, `refund_reason`, `origin_tx_hashes`, `destination_tx_hashes`, `near_tx_hashes`. `null` before that: while a quote is pending 1Click sends swap details with only nulls and empty lists ✅ 2026-11-04, which count as none.
 
 `GET /api/accounts/:account/oneclick?before=&limit=` lists only quotes that started, as 1Click shows it: the status has left `PENDING_DEPOSIT` (1Click saw the deposit), or the row has an intent hash (1Click accepted the account's signature). Anyone can create a quote for any account and give it any deposit hash, so neither puts it in that account's list (D61). `next` is the `before` of the next page, `null` on the last; `limit` as for the other lists.
 

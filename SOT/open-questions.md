@@ -3,7 +3,7 @@
 Move an item to [decisions.md](decisions.md) once resolved.
 
 1. *Moved to Resolved (tested 2026-11-03). Number kept because D31 links to it.*
-2. **Does `dry: true` quoting have rate limits** with or without a key? Not documented. Response headers on 2026-11-02 show `x-ratelimit-limit-unauth: 1200` with a reset of about 60 s ✅. Keyed requests on 2026-11-03 still returned only the `-unauth` headers ✅, so the authenticated limit, if any, is not exposed.
+2. **Does `dry: true` quoting have rate limits** with or without a key? Not documented. Response headers on 2026-11-02 show `x-ratelimit-limit-unauth: 1200` with a reset of about 60 s ✅. Keyed requests on 2026-11-03 still returned only the `-unauth` headers ✅, so the authenticated limit, if any, is not exposed. On 2026-11-04, 25 status requests in a row all passed, still showing only the `-unauth` header ✅. The backend stays at 20 status requests per 5 s ([backend.md](backend.md#status-polling)).
 3. *Moved to Resolved (D35). Number kept because D30 links to it.*
 4. **USDC exit without 1Click:** confirm native NEAR USDC `ft_withdraw` to a NEAR account works for an implicit Eth account, and whether a Solver Relay swap is worth building as fallback (D10).
 5. *Moved to Resolved (2026-11-03).*
