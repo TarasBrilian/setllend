@@ -120,7 +120,7 @@ describe("MmAgent.round", () => {
         intent: "transfer",
         receiver_id: CONTRACT,
         tokens: { [USDC]: String(usdc(100)) },
-        msg: JSON.stringify({ action: "lend", data: { maturity: M, min_rate_bps: 650, expires_at: String(rpc.final.timestampNs + 6n * 3_600_000_000_000n) } }),
+        msg: JSON.stringify({ action: "lend", data: { maturity: M, min_rate_bps: 650, expires_at: String(rpc.final.timestampNs + 24n * 3_600_000_000_000n) } }),
       },
     ]);
     expect(agent.lastAction).toMatchObject({ ok: true, actions: ["lend"], error: null });

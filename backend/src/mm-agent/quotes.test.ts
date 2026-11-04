@@ -49,7 +49,7 @@ function run(over: Partial<PlanInput> = {}) {
 
 describe("plan: new quotes", () => {
   it("places a lend bid at base + spread and a borrow ask at base − spread", () => {
-    const expires = String(NOW + 6n * HOUR);
+    const expires = String(NOW + 24n * HOUR);
     expect(run()).toEqual([
       {
         maturity: String(M),
@@ -156,20 +156,20 @@ describe("plan: orders held", () => {
     expect(run({ orders: [borrow], balances: { [USDC]: usdc(1_000) } }).find((a) => a.side === "borrow")).toBeUndefined();
   });
 
-  it("cancels the agent's orders within stopBeforeMs of maturity, first", () => {
-    const near = String(NOW + 23n * HOUR);
-    const actions = run({
-      maturities: [String(M), near],
-      orders: [lend({ order_id: "7", maturity: near }), mine({ order_id: "8", kind: "borrow", maturity: near, rate_bps: 550 })],
-    });
-    expect(actions.slice(0, 2)).toEqual([
-      { maturity: near, side: "lend", reason: "stop", cancel: "7", place: null },
-      { maturity: near, side: "borrow", reason: "stop", cancel: "8", place: null },
+  it("stops borrow asks a day before maturity and lend bids 15 minutes before, cancels first", () => {
+    const day = String(NOW + 23n * HOUR);
+    const orders = [lend({ order_id: "7", maturity: day }), mine({ order_id: "8", kind: "borrow", maturity: day, rate_bps: 550 })];
+    const actions = run({ maturities: [String(M), day], orders });
+    expect(actions[0]).toEqual({ maturity: day, side: "borrow", reason: "stop", cancel: "8", place: null });
+    // The lend bid there stays: a short demo maturity still gets a lender.
+    expect(actions.some((a) => a.maturity === day && a.side === "lend")).toBe(false);
+    expect(run({ maturities: [day] }).map((a) => a.side)).toEqual(["lend"]);
+    const minutes = String(NOW + 14n * 60_000_000_000n);
+    expect(run({ maturities: [minutes], orders: [lend({ order_id: "7", maturity: minutes })] })).toEqual([
+      { maturity: minutes, side: "lend", reason: "stop", cancel: "7", place: null },
     ]);
-    expect(actions.slice(2).every((a) => a.maturity === String(M))).toBe(true);
     // A held stop waits like any other action.
-    const held = run({ maturities: [near], orders: [lend({ order_id: "7", maturity: near })], held: () => true });
-    expect(held).toEqual([]);
+    expect(run({ maturities: [day], orders, held: () => true })).toEqual([]);
   });
 
   it("keeps the newest order of a side and cancels the others", () => {

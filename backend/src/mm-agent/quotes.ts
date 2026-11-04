@@ -48,16 +48,16 @@ export function plan(input: PlanInput): Action[] {
   const mine = input.orders.filter((o) => o.owner === input.account && (o.kind === "lend" || o.kind === "borrow"));
   for (const maturity of [...input.maturities].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1))) {
     const here = mine.filter((o) => o.maturity === maturity);
-    if (BigInt(maturity) - input.nowNs <= BigInt(s.stopBeforeMs) * MS) {
-      for (const order of here) {
-        if (!input.held(maturity, order.kind as Side)) stops.push({ maturity, side: order.kind as Side, reason: "stop", cancel: order.order_id, place: null });
-      }
-      continue;
-    }
     for (const side of ["lend", "borrow"] as const) {
       if (input.held(maturity, side)) continue;
+      const own = here.filter((o) => o.kind === side);
+      const stopBefore = side === "lend" ? s.stopLendBeforeMs : s.stopBorrowBeforeMs;
+      if (BigInt(maturity) - input.nowNs <= BigInt(stopBefore) * MS) {
+        for (const order of own) stops.push({ maturity, side, reason: "stop", cancel: order.order_id, place: null });
+        continue;
+      }
       // The newest order is the one kept; any other (left by a crash, or placed by hand) is cancelled.
-      const held = here.filter((o) => o.kind === side).sort((a, b) => (BigInt(b.order_id) > BigInt(a.order_id) ? 1 : -1));
+      const held = own.sort((a, b) => (BigInt(b.order_id) > BigInt(a.order_id) ? 1 : -1));
       for (const extra of held.slice(1)) others.push({ maturity, side, reason: "extra", cancel: extra.order_id, place: null });
       const action = side === "lend" ? lendAction(input, s, maturity, held[0]) : borrowAction(input, s, maturity, held[0]);
       if (action) others.push(action);

@@ -337,7 +337,7 @@ The contract implements D48 since contract-interface v0.6 (2026-11-03, D53), and
 
 ## Market-maker agent (D35, D60)
 
-An ordinary book participant run by us (D7), in `backend/src/mm-agent/`. It quotes both sides of every open maturity around a base rate that follows Setllend's own fills, with no external rate source (D35). Repaying its debt and redeeming its notes are done by hand: every maturity falls after judging (D60).
+An ordinary book participant run by us (D7), in `backend/src/mm-agent/`. It quotes both sides of every open maturity around a base rate that follows Setllend's own fills, with no external rate source (D35). Repaying its debt and redeeming its notes are done by hand (D60): its `borrow` asks stop a day before maturity so the debt can be repaid before maturity + grace, and short demo maturities get only its `lend` bids.
 
 ### Account
 
@@ -362,7 +362,7 @@ Per open maturity, at most one `lend` bid and one `borrow` ask owned by the agen
 
 - The two never cross each other (`base + spread > base − spread`), and the contract blocks same-owner fills anyway.
 - A second order of the same side (left by a crash, or placed by hand) is cancelled; the newest is kept. A `borrow` ask held while `base − spread` falls below 1 bps is cancelled.
-- Quoting stops `stopBeforeMs` before a maturity; the agent's orders there are cancelled.
+- **Stops:** `borrow` asks stop `stopBorrowBeforeMs` (a day) before a maturity, `lend` bids `stopLendBeforeMs` (15 minutes) before; the agent's orders of that side there are cancelled. A `lend` bid carries no liquidation risk (its notes are redeemed by hand), so a demo maturity a couple of hours out ([risk-params.md](risk-params.md)) still gets a lender. Debt from `borrow` fills is repaid by hand before maturity + grace, or the keeper liquidates it like any other.
 - **No new `borrow` ask** while the agent's loan in that maturity has a health factor below `minHealth` (conservative prices, as `/api/accounts` shows it), or while that health can't be computed (a missing price, or a token the agent's list doesn't have yet). The loan is topped up by hand. This keeps the agent's own loan clear of the keeper.
 - Orders carry `expires_at = now + orderTtlMs`, so a quote left by a stopped agent can't fill at an old base for long.
 
@@ -371,7 +371,7 @@ Per open maturity, at most one `lend` bid and one `borrow` ask owned by the agen
 A round runs every 30 s and on each book change of a maturity (the follower's rounds):
 
 1. Read the agent's Intents balances (`mt_batch_balance_of`, at the latest final block) and its orders from the books (`market.books`, owner = the agent).
-2. Per maturity and side, compare the order held with the quote wanted. Replace it when the rate differs by `requoteBps` or more, its `remaining` is below half the wanted size, or it expires within `renewBeforeMs`. Place one when none is held and the funds suffice; cancel one past `stopBeforeMs`.
+2. Per maturity and side, compare the order held with the quote wanted. Replace it when the rate differs by `requoteBps` or more, its `remaining` is below half the wanted size, or it expires within `renewBeforeMs`. Place one when none is held and the funds suffice; cancel one past its side's stop.
 3. A replacement is one payload: `cancel` of the old order (an `auth_call`) and the new order (a `transfer`), signed together with NEP-413. The old order's escrow comes back only after `execute_intents` has run, so the new order needs funds of its own; when the free balance can't cover it, only the `cancel` is sent and the new order follows in a later round.
 4. One payload in flight at a time, through `relayer.submit(body, {kind: "mm"})`, with a 2-minute deadline like the keeper (D59). After its outcome, the round waits until the final height has passed its last receipt (as the keeper does), so the books it reads include it.
 5. A payload that fails (in simulation or on chain, or without an outcome after following) is logged, and that maturity and side are left alone, cancels near maturity included, until the next book change of the maturity or `failureHoldMs`, whichever comes first. The agent's own reload after a payload that failed on chain doesn't count as a change: the hold is taken after it, or the same payload would go out again at once.
@@ -390,8 +390,8 @@ Constants in `mm-agent/config.ts` (D24: agent settings, not user-facing limits).
 | `requoteBps` | 5 |
 | `targetLtv` | 40% (the contract allows 70%; liquidation at 80%) |
 | `minHealth` | 1.5 |
-| `orderTtlMs`, `renewBeforeMs` | 6 h, 1 h |
-| `stopBeforeMs` | 24 h |
+| `orderTtlMs`, `renewBeforeMs` | 24 h, 2 h: about 6 renewal payloads a day at roughly 0.001 NEAR each (10 to 15 Tgas at the mainnet gas price of 10^8 yocto per gas, 2026-11-04), so renewals use about 0.1 NEAR of the backend account's 0.5 NEAR up to 2026-11-25. At 6 h it would have been 0.25 to 0.5 NEAR |
+| `stopBorrowBeforeMs`, `stopLendBeforeMs` | 24 h, 15 min |
 | `intervalMs`, `failureHoldMs` | 30 s, 5 min |
 
 ### `/health`
