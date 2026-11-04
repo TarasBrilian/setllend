@@ -1,5 +1,7 @@
 //! Helpers shared by the sandbox tests in `tests/`.
 
+pub mod signed;
+
 use std::path::Path;
 
 use near_workspaces::network::Sandbox;
@@ -242,6 +244,34 @@ impl Env {
             .await?)
     }
 
+    /// A relayer submits signed payloads to the mock's `execute_intents`, as the backend does
+    /// on mainnet (`SOT/dry-run.md`).
+    pub async fn execute_intents(
+        &self,
+        relayer: &Account,
+        signed: Vec<Value>,
+    ) -> anyhow::Result<ExecutionFinalResult> {
+        Ok(relayer
+            .call(self.intents.id(), "execute_intents")
+            .args_json(json!({ "signed": signed }))
+            .max_gas()
+            .transact()
+            .await?)
+    }
+
+    /// The mock's `simulate_intents` view: the error message on a refused payload.
+    pub async fn simulate_intents(&self, signed: Vec<Value>) -> Result<Value, String> {
+        match self
+            .intents
+            .view("simulate_intents")
+            .args_json(json!({ "signed": signed }))
+            .await
+        {
+            Ok(result) => Ok(result.json().map_err(|e| e.to_string())?),
+            Err(error) => Err(format!("{error:?}")),
+        }
+    }
+
     /// `user` signs an `auth_call` to Setllend with `msg`.
     pub async fn auth_call(
         &self,
@@ -382,7 +412,7 @@ pub fn events(result: &ExecutionFinalResult, event: &str) -> Vec<Value> {
         .collect()
 }
 
-fn placed_order_id(result: &ExecutionFinalResult) -> u64 {
+pub fn placed_order_id(result: &ExecutionFinalResult) -> u64 {
     let placed = events(result, "order_placed");
     assert_eq!(placed.len(), 1, "logs: {:?}", result.logs());
     placed[0]["order_id"].as_str().unwrap().parse().unwrap()
