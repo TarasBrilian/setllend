@@ -341,7 +341,7 @@ An ordinary book participant run by us (D7), in `backend/src/mm-agent/`. It quot
 
 ### Account
 
-- Its own Intents account, separate from the keeper's (`backend.setllend.near`), so its capital stays apart and its orders never meet keeper flows: an **implicit account**, the hex of the public key of `MM_SIGNING_KEY` (ed25519). It needs no NEAR account, no NEAR balance, and no `add_public_key`, since `intents.near` accepts an implicit account's own key ✅ 2026-11-03 ([intents-primitives.md](intents-primitives.md#payload-format)); the relayer pays the gas.
+- Its own Intents account, separate from the keeper's (`backend.setllend.near`), so its capital stays apart and its orders never meet keeper flows: an **implicit account**, the hex of the public key of `MM_SIGNING_KEY` (ed25519). It needs no NEAR account, no NEAR balance, and no `add_public_key`, since `intents.near` accepts an implicit account's own key ✅ 2026-11-03 ([intents-primitives.md](intents-primitives.md#payload-format)); the relayer pays the gas. ✅ 2026-11-04 on mainnet: a payload signed by the agent's `IntentSigner` from a fresh implicit account passed `simulate_intents` as a lone `cancel`, and as `cancel` + `lend` failed only on balance (`insufficient balance or overflow`), so a mixed `auth_call` + `transfer` payload is accepted.
 - Funded by hand with USDC (for `lend` quotes) and collateral (for `borrow` quotes) on `intents.near`, for example an Intents `transfer` from the user's account. It is a hot wallet like the keeper's: small capital.
 - Without `MM_SIGNING_KEY`, or without the relayer's intents key, the agent doesn't run.
 
@@ -361,6 +361,7 @@ Per open maturity, at most one `lend` bid and one `borrow` ask owned by the agen
 | `borrow` | `max_rate_bps = round(base − spread)`, skipped below 1 bps | `quoteSize` USDC principal | Collateral escrowed so the fill opens at `targetLtv` at mid prices: the one collateral token, not frozen and with a usable price, of which the agent holds the most USD value |
 
 - The two never cross each other (`base + spread > base − spread`), and the contract blocks same-owner fills anyway.
+- A second order of the same side (left by a crash, or placed by hand) is cancelled; the newest is kept. A `borrow` ask held while `base − spread` falls below 1 bps is cancelled.
 - Quoting stops `stopBeforeMs` before a maturity; the agent's orders there are cancelled.
 - **No new `borrow` ask** while the agent's loan in that maturity has a health factor below `minHealth` (conservative prices, as `/api/accounts` shows it). The loan is topped up by hand. This keeps the agent's own loan clear of the keeper.
 - Orders carry `expires_at = now + orderTtlMs`, so a quote left by a stopped agent can't fill at an old base for long.
@@ -373,7 +374,7 @@ A round runs every 30 s and on each book change of a maturity (the follower's ro
 2. Per maturity and side, compare the order held with the quote wanted. Replace it when the rate differs by `requoteBps` or more, its `remaining` is below half the wanted size, or it expires within `renewBeforeMs`. Place one when none is held and the funds suffice; cancel one past `stopBeforeMs`.
 3. A replacement is one payload: `cancel` of the old order (an `auth_call`) and the new order (a `transfer`), signed together with NEP-413. The old order's escrow comes back only after `execute_intents` has run, so the new order needs funds of its own; when the free balance can't cover it, only the `cancel` is sent and the new order follows in a later round.
 4. One payload in flight at a time, through `relayer.submit(body, {kind: "mm"})`, with a 2-minute deadline like the keeper (D59). After its outcome, the round waits until the final height has passed its last receipt (as the keeper does), so the books it reads include it.
-5. A payload that fails (in simulation or on chain) is logged, and that maturity and side are left alone until the next book change of the maturity or 5 minutes, whichever comes first.
+5. A payload that fails (in simulation or on chain, or without an outcome after following) is logged, and that maturity and side are left alone until the next book change of the maturity or `failureHoldMs`, whichever comes first.
 
 ### Agent settings
 
@@ -403,6 +404,6 @@ Constants in `mm-agent/config.ts` (D24: agent settings, not user-facing limits).
 
 ## Tests
 
-- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing.
+- Unit tests with vitest and a mocked chain client (RPC and the explorer behind interfaces, `src/testing.ts`): the follower (cursor, recheck window, page edges, retries, batches of 20, stop on an unknown event), book load and reload (which maturities each event marks, paged views at one height), the API and WebSocket routing, fill building with every pre-check, skip handling, relayer validation and outcome parsing, keeper eligibility and sizing, the market-maker agent's base moves, quote plans (sizes, collateral rounding, replace rules, stops, health gate), and its loop.
 - `shared/math.ts` reproduces the `math` vectors the contract writes into the golden fixture ([repo-structure.md](repo-structure.md)): `face` and share rounding, the exact `can_open` boundary over one to three tokens (largest debt that passes, and one unit more), and `seize` and `repay_for` with partial, capped, and dust cases. The unit tests of `math.rs` and the price validation and valuation rules of `oracle.rs` are ported too.
 - **No sandbox end-to-end test.** The explorer doesn't exist for a sandbox, so the follower, the riskiest part, couldn't be tested that way anyway, and the contract's flows are already covered by the Rust sandbox tests. Instead, a scripted **mainnet smoke test with small amounts** right after the deploy (AGENTS.md): place a `lend` and a `borrow`, see them matched, `repay`, `cancel` a leftover order, and check every step in the book, the events table, and the WebSocket feed.
