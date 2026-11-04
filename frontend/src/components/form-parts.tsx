@@ -66,16 +66,11 @@ export function payInStep(amount: string, symbol: string, chain: Chain): string 
   return `Deposit ${amount} ${symbol} from ${chain} via 1Click`;
 }
 
-/** Leaving the Intents balance: straight to the NEAR account, or 1Click to Arbitrum or Base. */
+/** Leaving the Intents balance: straight to the NEAR account, or 1Click to Arbitrum, Base, or Bitcoin (D61). */
 export function payOutStep(symbol: string, chain: Chain): string {
   if (chain === "NEAR") return `${symbol} is sent to your NEAR account`;
   if (chain === "Bitcoin") return `1Click sends ${symbol} to your Bitcoin address`;
   return `1Click sends ${symbol} to your wallet on ${chain}`;
-}
-
-/** ETH and BTC leave through the bridge to their own chain (`processWithdrawal`, D10, D52), not 1Click. */
-export function bridgeOutStep(symbol: string, chain: Chain): string {
-  return chain === "Bitcoin" ? `The bridge sends ${symbol} to your Bitcoin address` : `The bridge sends ${symbol} to your wallet on ${chain}`;
 }
 
 /** Before its first signed intent, a NEAR account registers its key on `intents.near` (D51). */
