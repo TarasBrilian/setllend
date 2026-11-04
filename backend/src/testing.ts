@@ -202,22 +202,24 @@ export function outcomeReceipt(executorId: string, logs: string[] = [], opts: { 
   };
 }
 
-type SendHandler = (signedTxBase64: string, call: number) => TxOutcome | Promise<TxOutcome>;
+type SendHandler = (signedTxBase64: string, call: number) => void | Promise<void>;
+type IncludedHandler = (hash: string, call: number) => void | Promise<void>;
 type StatusHandler = (hash: string, call: number) => TxOutcome | Promise<TxOutcome>;
 
 /**
- * Transaction calls for `Sender` tests. `onSend` and `onStatus` answer each call (they may throw a
- * `TxError` or any error); the default lands every transaction with no receipts.
+ * Transaction calls for `Sender` tests. `onSend`, `onIncluded`, and `onStatus` answer each call
+ * (they may throw a `TxError` or any error); by default every transaction lands with no receipts.
+ * `active` counts sends in flight, so tests can see that one key sends one at a time.
  */
 export class FakeTxRpc implements TxRpc {
   final: FinalBlock = { height: 100, hash: "11111111111111111111111111111111", timestampNs: 100_000_000_000n };
   keyNonce = 41n;
   readonly sent: string[] = [];
+  readonly included: string[] = [];
   readonly looked: string[] = [];
-  onSend: SendHandler = () => ({ hash: "", executed: true, receipts: [] });
-  onStatus: StatusHandler = () => {
-    throw new Error("unknown transaction");
-  };
+  onSend: SendHandler = () => {};
+  onIncluded: IncludedHandler = () => {};
+  onStatus: StatusHandler = (hash) => ({ hash, executed: true, receipts: [] });
 
   async finalBlock(): Promise<FinalBlock> {
     return this.final;
@@ -227,9 +229,14 @@ export class FakeTxRpc implements TxRpc {
     return this.keyNonce;
   }
 
-  async sendTx(signedTxBase64: string): Promise<TxOutcome> {
+  async sendTx(signedTxBase64: string): Promise<void> {
     this.sent.push(signedTxBase64);
-    return this.onSend(signedTxBase64, this.sent.length);
+    await this.onSend(signedTxBase64, this.sent.length);
+  }
+
+  async txIncluded(hash: string): Promise<void> {
+    this.included.push(hash);
+    await this.onIncluded(hash, this.included.length);
   }
 
   async txStatus(hash: string): Promise<TxOutcome> {

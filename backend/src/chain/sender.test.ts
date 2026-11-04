@@ -36,7 +36,6 @@ describe("Sender", () => {
     const { rpc, submissions, sender } = setup();
     rpc.onSend = () => {
       expect(submissions.open("intent")).toHaveLength(1);
-      return landed();
     };
     const result = await sender.send(request);
     const tx = decode(rpc.sent[0]!);
@@ -53,17 +52,41 @@ describe("Sender", () => {
     expect(submissions.get(result.hash)).toMatchObject({ status: "sent", kind: "intent", signer: "0xabc", signed_tx: rpc.sent[0] });
   });
 
-  it("hands out nonces in order to concurrent sends", async () => {
+  it("sends one transaction of the key at a time, in nonce order, until it is in a block", async () => {
     const { rpc, sender } = setup();
+    let active = 0;
+    let most = 0;
+    rpc.onSend = async () => {
+      most = Math.max(most, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active--;
+    };
+    // Outcomes are awaited outside the lock: the third lookup may run while nothing is sending.
     await Promise.all([sender.send(request), sender.send(request), sender.send(request)]);
-    expect(rpc.sent.map((b) => decode(b).nonce).sort()).toEqual([42n, 43n, 44n]);
+    expect(most).toBe(1);
+    expect(rpc.sent.map((b) => decode(b).nonce)).toEqual([42n, 43n, 44n]);
+  });
+
+  it("lets the next transaction go once the previous one is in a block, before its outcome", async () => {
+    const { rpc, sender } = setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    rpc.onStatus = async (hash, call) => {
+      if (call === 1) await held;
+      return landed(hash);
+    };
+    const first = sender.send(request);
+    const second = await sender.send(request);
+    expect(rpc.sent).toHaveLength(2);
+    expect(second.outcome).not.toBeNull();
+    release();
+    expect((await first).outcome).not.toBeNull();
   });
 
   it("re-sends the same bytes after a network error, with backoff", async () => {
     const { rpc, sender, sleeps } = setup();
     rpc.onSend = (_b, call) => {
       if (call < 3) throw new Error("fetch failed");
-      return landed();
     };
     const result = await sender.send(request);
     expect(rpc.sent).toHaveLength(3);
@@ -78,9 +101,13 @@ describe("Sender", () => {
       advance(SENDER.pendingAfterMs);
       throw new Error("fetch failed");
     };
+    rpc.onIncluded = () => {
+      throw new TxError("unknown_tx", "UNKNOWN_TRANSACTION");
+    };
     const result = await sender.send(request);
     expect(rpc.sent).toHaveLength(1);
-    expect(rpc.looked).toHaveLength(1);
+    expect(rpc.included).toHaveLength(1);
+    expect(rpc.looked).toHaveLength(0);
     expect(result.outcome).toBeNull();
   });
 
@@ -88,7 +115,6 @@ describe("Sender", () => {
     const { rpc, submissions, sender } = setup();
     rpc.onSend = (_b, call) => {
       if (call === 1) throw new TxError("invalid_nonce", "InvalidNonce", 50n);
-      return landed();
     };
     const result = await sender.send(request);
     expect(rpc.sent.map((b) => decode(b).nonce)).toEqual([42n, 51n]);
@@ -105,15 +131,26 @@ describe("Sender", () => {
     rpc.onStatus = (hash) => landed(hash);
     const result = await sender.send(request);
     expect(rpc.sent).toHaveLength(2);
+    expect(rpc.included).toEqual([result.hash]);
     expect(rpc.looked).toEqual([result.hash]);
     expect(result.outcome?.hash).toBe(result.hash);
   });
 
-  it("waits for receipts after an RPC timeout, then reports the transaction as pending", async () => {
-    const { rpc, submissions, sender } = setup();
+  it("asks whether it is in a block after an RPC timeout, then waits for its receipts", async () => {
+    const { rpc, sender } = setup();
     rpc.onSend = () => {
       throw new TxError("timeout", "TIMEOUT_ERROR");
     };
+    rpc.onIncluded = (_h, call) => {
+      if (call < 3) throw new TxError("unknown_tx", "UNKNOWN_TRANSACTION");
+    };
+    const result = await sender.send(request);
+    expect(rpc.included).toHaveLength(3);
+    expect(result.outcome?.executed).toBe(true);
+  });
+
+  it("reports the transaction as pending when its receipts still run after 30 s", async () => {
+    const { rpc, submissions, sender } = setup();
     rpc.onStatus = (hash) => ({ hash, executed: false, receipts: [] });
     const result = await sender.send(request);
     expect(result.outcome).toBeNull();
@@ -123,9 +160,8 @@ describe("Sender", () => {
 
   it("returns the outcome once the lookup sees every receipt executed", async () => {
     const { rpc, sender } = setup();
-    rpc.onSend = (_b) => ({ hash: "", executed: false, receipts: [] });
     rpc.onStatus = (hash, call) => {
-      if (call === 1) throw new TxError("unknown_tx", "UNKNOWN_TRANSACTION");
+      if (call === 1) throw new TxError("timeout", "TIMEOUT_ERROR");
       return call < 3 ? { hash, executed: false, receipts: [] } : landed(hash);
     };
     const result = await sender.send(request);

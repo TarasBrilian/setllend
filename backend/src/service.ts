@@ -61,6 +61,7 @@ export class Service {
         finalBlock: () => o.rpc.finalBlock(),
         accessKeyNonce: (accountId: string, publicKey: string) => tx.accessKeyNonce(accountId, publicKey),
         sendTx: (signed: string) => tx.sendTx(signed),
+        txIncluded: (hash: string, senderId: string) => tx.txIncluded(hash, senderId),
         txStatus: (hash: string, senderId: string) => tx.txStatus(hash, senderId),
       };
       return new Sender({ rpc, accountId: o.keys.accountId, privateKey, submissions: this.submissions, sleep: o.sleep });

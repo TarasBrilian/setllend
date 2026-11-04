@@ -2,7 +2,8 @@
 // the clock the matcher and keeper use, and signed transactions (SOT/backend.md#nonces-and-retries).
 // Behind interfaces so tests can run without a network.
 // Checked on mainnet 2026-11-04: `tx` by hash returns every receipt in order, and `send_tx` from a
-// signer that doesn't exist is refused as a transaction error ("Signer … does not exist").
+// signer that doesn't exist is refused as a transaction error ("Signer … does not exist"), and `tx` on a
+// hash the node hasn't seen answers TIMEOUT_ERROR (NOT_OBSERVED), not UNKNOWN_TRANSACTION.
 import { JsonRpcProvider } from "near-api-js";
 import {
   ContractCodeDoesNotExistError,
@@ -61,8 +62,10 @@ export class TxError extends Error {
 export interface TxRpc {
   /** The access key's current nonce at the latest final block. */
   accessKeyNonce(accountId: string, publicKey: string): Promise<bigint>;
-  /** `send_tx` with the base64 of a signed transaction, waiting for every receipt. */
-  sendTx(signedTxBase64: string): Promise<TxOutcome>;
+  /** `send_tx` with the base64 of a signed transaction; resolves once it is in a block (`INCLUDED`). */
+  sendTx(signedTxBase64: string): Promise<void>;
+  /** `tx` by hash; resolves once the transaction is in a block. */
+  txIncluded(hash: string, senderId: string): Promise<void>;
   /** `tx` by hash, waiting for every receipt. */
   txStatus(hash: string, senderId: string): Promise<TxOutcome>;
 }
@@ -112,13 +115,13 @@ export function createRpc(url: string): Rpc & TxRpc {
   const provider = new JsonRpcProvider({ url });
   // Transaction calls retry in the sender, which decides between re-sending and looking up by hash.
   const txProvider = new JsonRpcProvider({ url }, { retries: 1 });
-  const txCall = async (method: "send_tx" | "tx", params: Record<string, unknown>): Promise<TxOutcome> => {
+  const txCall = async (method: "send_tx" | "tx", params: Record<string, unknown>): Promise<unknown> => {
     try {
       const call = txProvider.sendJsonRpc(method, params as never) as Promise<unknown>;
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`${method} took longer than ${TX_CALL_TIMEOUT_MS} ms`)), TX_CALL_TIMEOUT_MS).unref(),
       );
-      return outcomeOf((await Promise.race([call, timeout])) as RawOutcome);
+      return await Promise.race([call, timeout]);
     } catch (error) {
       throw txError(error);
     }
@@ -128,11 +131,15 @@ export function createRpc(url: string): Rpc & TxRpc {
       const key = await provider.viewAccessKey({ accountId, publicKey, finalityQuery: { finality: "final" } });
       return BigInt(key.nonce);
     },
-    sendTx(signedTxBase64) {
-      return txCall("send_tx", { signed_tx_base64: signedTxBase64, wait_until: "EXECUTED_OPTIMISTIC" });
+    // An `INCLUDED` answer may carry no outcome at all, only the status, so it is not read.
+    async sendTx(signedTxBase64) {
+      await txCall("send_tx", { signed_tx_base64: signedTxBase64, wait_until: "INCLUDED" });
     },
-    txStatus(hash, senderId) {
-      return txCall("tx", { tx_hash: hash, sender_account_id: senderId, wait_until: "EXECUTED_OPTIMISTIC" });
+    async txIncluded(hash, senderId) {
+      await txCall("tx", { tx_hash: hash, sender_account_id: senderId, wait_until: "INCLUDED" });
+    },
+    async txStatus(hash, senderId) {
+      return outcomeOf((await txCall("tx", { tx_hash: hash, sender_account_id: senderId, wait_until: "EXECUTED_OPTIMISTIC" })) as RawOutcome);
     },
     async finalBlock() {
       const { header } = await provider.viewBlock({ finality: "final" });

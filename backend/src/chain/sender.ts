@@ -1,5 +1,6 @@
 // Signs and sends function calls with one access key (SOT/backend.md#nonces-and-retries, D42, D57).
-// Nonces are assigned in order and sent concurrently. A retry re-sends the same signed bytes; a
+// Nonces are assigned in order, one transaction at a time until it is in a block; its outcome is
+// then awaited while the next one goes out. A retry re-sends the same signed bytes; a
 // new transaction is signed only when the node refused the first send (invalid nonce, expired
 // block hash), so it never landed. Every signed transaction is stored in `submissions` first.
 import {
@@ -77,6 +78,7 @@ export class Sender {
   private readonly now: () => number;
   private nonce: bigint | null = null;
   private nonceLock: Promise<unknown> = Promise.resolve();
+  private sendLock: Promise<unknown> = Promise.resolve();
 
   constructor(o: SenderOptions) {
     this.rpc = o.rpc;
@@ -91,39 +93,54 @@ export class Sender {
 
   async send(req: SendRequest): Promise<SendResult> {
     for (let resign = 0; ; resign++) {
-      let signed: { hash: string; base64: string };
-      try {
-        signed = await this.sign(req);
-      } catch (error) {
-        throw new SendError(`signing failed: ${messageOf(error)}`, null);
-      }
-      this.submissions.add({ txHash: signed.hash, kind: req.kind, signer: req.signer, request: req.request, signedTx: signed.base64 });
-      try {
-        const outcome = await this.deliver(signed.hash, signed.base64);
-        if (outcome === null) this.submissions.update(signed.hash, "pending");
-        return { hash: signed.hash, outcome };
-      } catch (error) {
-        const reason = messageOf(error);
-        this.submissions.update(signed.hash, "error", { code: "submit_failed", reason });
-        if (error instanceof Refused && resign < SENDER.resigns) continue;
-        throw new SendError(reason, signed.hash);
-      }
+      // One transaction of this key at a time until it is in a block (D57): a later nonce that
+      // reached a chunk producer first would make this one invalid, and it would be dropped silently.
+      const step = await this.exclusive(async () => {
+        let signed: { hash: string; base64: string };
+        try {
+          signed = await this.sign(req);
+        } catch (error) {
+          throw new SendError(`signing failed: ${messageOf(error)}`, null);
+        }
+        this.submissions.add({ txHash: signed.hash, kind: req.kind, signer: req.signer, request: req.request, signedTx: signed.base64 });
+        const sentAt = this.now();
+        try {
+          return { signed, sentAt, included: await this.include(signed.hash, signed.base64, sentAt) };
+        } catch (error) {
+          const reason = messageOf(error);
+          this.submissions.update(signed.hash, "error", { code: "submit_failed", reason });
+          if (error instanceof Refused && resign < SENDER.resigns) return null;
+          throw new SendError(reason, signed.hash);
+        }
+      });
+      if (step === null) continue;
+      const { signed, sentAt, included } = step;
+      const outcome = included ? await this.lookup(signed.hash, sentAt) : null;
+      if (outcome === null) this.submissions.update(signed.hash, "pending");
+      return { hash: signed.hash, outcome };
     }
   }
 
+  /** Runs `fn` after every earlier call of this key has finished. */
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.sendLock.then(fn);
+    this.sendLock = run.catch(() => {});
+    return run;
+  }
+
   /**
-   * Re-sends the same bytes; null once `pendingAfterMs` passed without every receipt executed.
-   * Throws `Refused` when the first send was refused, so the caller may sign anew.
+   * Sends until the transaction is in a block, re-sending the same bytes. False when it still
+   * isn't after `pendingAfterMs`. Throws `Refused` when the first send was refused, so the caller
+   * may sign anew, and the RPC's error when the node rejected the transaction itself.
    */
-  private async deliver(hash: string, base64: string): Promise<TxOutcome | null> {
-    const sentAt = this.now();
+  private async include(hash: string, base64: string, sentAt: number): Promise<boolean> {
     for (let attempt = 0; ; attempt++) {
       try {
-        const outcome = await this.rpc.sendTx(base64);
-        return outcome.executed ? outcome : await this.lookup(hash, sentAt);
+        await this.rpc.sendTx(base64);
+        return true;
       } catch (error) {
         if (!(error instanceof TxError)) {
-          if (attempt >= SENDER.resends || this.now() - sentAt >= SENDER.pendingAfterMs) return await this.lookup(hash, sentAt);
+          if (attempt >= SENDER.resends || this.now() - sentAt >= SENDER.pendingAfterMs) return await this.awaitIncluded(hash, sentAt);
           await this.sleep(SENDER.backoffMs * 2 ** attempt);
           continue;
         }
@@ -131,11 +148,25 @@ export class Sender {
         if (error.kind === "invalid_nonce" || error.kind === "expired") {
           // A re-send refused so probably repeats an earlier attempt that landed.
           if (attempt === 0) throw new Refused(error.message);
-          return await this.lookup(hash, sentAt);
+          return await this.awaitIncluded(hash, sentAt);
         }
-        if (error.kind === "timeout") return await this.lookup(hash, sentAt);
+        if (error.kind === "timeout") return await this.awaitIncluded(hash, sentAt);
         throw error;
       }
+    }
+  }
+
+  /** Asks by hash until the transaction is in a block; false after `pendingAfterMs`. */
+  private async awaitIncluded(hash: string, sentAt: number): Promise<boolean> {
+    for (;;) {
+      try {
+        await this.rpc.txIncluded(hash, this.accountId);
+        return true;
+      } catch {
+        // Unknown yet, timed out, or a network error: ask again until the deadline.
+      }
+      if (this.now() - sentAt >= SENDER.pendingAfterMs) return false;
+      await this.sleep(SENDER.pollMs);
     }
   }
 
@@ -146,7 +177,7 @@ export class Sender {
         const outcome = await this.rpc.txStatus(hash, this.accountId);
         if (outcome.executed) return outcome;
       } catch {
-        // Unknown yet, timed out, or a network error: ask again until the deadline.
+        // Timed out or a network error: ask again until the deadline.
       }
       if (this.now() - sentAt >= SENDER.pendingAfterMs) return null;
       await this.sleep(SENDER.pollMs);

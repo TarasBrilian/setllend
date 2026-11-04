@@ -42,7 +42,13 @@ async function setup(opts: { keys?: boolean } = {}) {
   let now = NOW.getTime();
   const sender = () =>
     new Sender({
-      rpc: { finalBlock: () => rpc.finalBlock(), accessKeyNonce: () => tx.accessKeyNonce(), sendTx: (b) => tx.sendTx(b), txStatus: (h) => tx.txStatus(h) },
+      rpc: {
+        finalBlock: () => rpc.finalBlock(),
+        accessKeyNonce: () => tx.accessKeyNonce(),
+        sendTx: (b) => tx.sendTx(b),
+        txIncluded: (h) => tx.txIncluded(h),
+        txStatus: (h) => tx.txStatus(h),
+      },
       accountId: ACCOUNT,
       privateKey: KeyPair.fromRandom("ed25519").toString(),
       submissions: service.submissions,
@@ -72,7 +78,7 @@ const call = (base64: string) => {
 describe("Relayer.submit", () => {
   it("simulates, submits execute_intents with 300 Tgas, and answers with the events", async () => {
     const { tx, relayer, service, simulated } = await setup();
-    tx.onSend = () => ({ hash: "", executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [placed])] });
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [placed])] });
     const b = body(lend);
     const result = await relayer.submit(b);
     expect(simulated).toEqual([{ signed: [b.signed] }]);
@@ -84,7 +90,7 @@ describe("Relayer.submit", () => {
 
   it("answers 200 with ok false when the contract panicked", async () => {
     const { tx, relayer, service } = await setup();
-    tx.onSend = () => ({ hash: "", executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [], { panic: "Order not found" })] });
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(CONTRACT, [], { panic: "Order not found" })] });
     const result = await relayer.submit(body({ ...cancel }));
     expect(result).toMatchObject({ status: 200, body: { ok: false, actions: ["cancel"], error: { code: "rejected", reason: "Order not found" } } });
     expect(service.submissions.get(result.body.tx_hash!)).toMatchObject({ status: "failed", error: { code: "rejected" } });
@@ -149,7 +155,7 @@ describe("Relayer.matchOrders", () => {
   it("calls match_orders on the contract from the matcher key and returns the outcome", async () => {
     const { relayer, tx, service } = await setup();
     const skipped = eventLine("fill_skipped", { bid: "1", ask: "2", reason: "cannot_open" });
-    tx.onSend = () => ({ hash: "", executed: true, receipts: [outcomeReceipt(CONTRACT, [skipped])] });
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt(CONTRACT, [skipped])] });
     const sent = await relayer.matchOrders([{ bid: "1", ask: "2", principal: "5" }]);
     expect(call(tx.sent[0]!)).toEqual({
       receiverId: CONTRACT,
