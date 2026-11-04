@@ -3,23 +3,23 @@
 // and sends one NEP-413 `liquidate` intent through the relayer. One liquidation is in flight until
 // its outcome is known; the next one waits until the final height has passed its last receipt.
 // Without the backend account, the signing key, or the relayer's intents key, it only scans.
-import { KeyPair, type KeyPairString } from "near-api-js";
 import type { Contract } from "../chain/contract.ts";
-import type { AccountState, FinalBlock, TxOutcome } from "../chain/rpc.ts";
+import type { AccountState, FinalBlock } from "../chain/rpc.ts";
 import type { Market } from "../market.ts";
 import type { PriceSnapshot, Prices } from "../prices.ts";
-import type { Relayer, Settled } from "../relayer/relayer.ts";
+import { FINAL_POLL_MS, IntentSigner, OWN_DEADLINE_MS, submitAndSettle, waitPast } from "../relayer/own.ts";
+import type { Relayer } from "../relayer/relayer.ts";
 import type { AccountId, U64 } from "../shared/encoding.ts";
-import { buildNep413Payload, nep413Hash, setllendTransfer, signedNep413 } from "../shared/intents.ts";
+import { setllendTransfer } from "../shared/intents.ts";
 import { type Candidate, Holds, type SkipReason, scan } from "./scan.ts";
 
 /** Internal settings (SOT/backend.md#keeper-d44). */
 export const KEEPER = {
   intervalMs: 10_000,
   /** How often the final height is read while waiting past a liquidation's last receipt. */
-  finalPollMs: 1_000,
+  finalPollMs: FINAL_POLL_MS,
   /** Intent deadline: shorter than the relayer's 10-minute follow (D59). */
-  deadlineMs: 2 * 60_000,
+  deadlineMs: OWN_DEADLINE_MS,
   /** Storage alert below 1 NEAR free on the contract (SOT/backend.md#storage-alert). */
   storageAlertYocto: 10n ** 24n,
   /** Eligible loans listed in `/health`. */
@@ -88,7 +88,7 @@ export class Keeper {
   storage: { free: bigint; alert: boolean } | null = null;
   readonly holds = new Holds();
   private readonly o: KeeperOptions;
-  private readonly key: KeyPair | null;
+  private readonly signer: IntentSigner | null;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
   private readonly now: () => number;
@@ -96,7 +96,7 @@ export class Keeper {
 
   constructor(o: KeeperOptions) {
     this.o = o;
-    this.key = o.signingKey ? KeyPair.fromString(o.signingKey as KeyPairString) : null;
+    this.signer = o.signingKey && o.accountId ? new IntentSigner(o.signingKey, o.accountId) : null;
     this.sleep = o.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = o.log ?? console.log;
     this.now = o.now ?? Date.now;
@@ -104,7 +104,7 @@ export class Keeper {
 
   /** Whether the keeper can send liquidations, or only scans. */
   get signing(): boolean {
-    return this.key !== null && this.o.accountId !== undefined && this.o.relayer.canRelay;
+    return this.signer !== null && this.o.relayer.canRelay;
   }
 
   async run(): Promise<void> {
@@ -222,34 +222,23 @@ export class Keeper {
       { action: "liquidate", data: { borrower: c.account_id, maturity: c.maturity } },
       contract.id,
     );
-    const payload = buildNep413Payload({
-      signerId: this.o.accountId!,
-      intents: [intent],
-      deadline: new Date(this.now() + KEEPER.deadlineMs),
-      salt,
-      verifyingContract: contract.intents,
-    });
-    const { signature } = this.key!.sign(await nep413Hash(payload));
-    const body = { signed: signedNep413(payload, this.key!.getPublicKey().toString(), signature) };
+    const body = await this.signer!.sign([intent], salt, new Date(this.now() + KEEPER.deadlineMs), contract.intents);
 
-    let resolve: (settled: Settled) => void = () => {};
-    const settled = new Promise<Settled>((r) => (resolve = r));
-    const result = await relayer.submit(body, { kind: "liquidate", onSettled: (s) => resolve(s) });
-    if (result.status !== 200 && result.status !== 202) {
+    let sent;
+    try {
+      sent = await submitAndSettle(relayer, body, "liquidate", (hash) => (this.inFlight = hash));
+    } finally {
+      this.inFlight = null;
+    }
+    const { result } = sent;
+    if (sent.settled === undefined) {
       const error = result.body.error;
       report({ tx_hash: result.body.tx_hash, ok: false, repaid: null, error: error?.reason ?? "failed" });
       this.log(`keeper: liquidation of ${c.account_id} ${c.maturity} not sent (${error?.code}: ${error?.reason})`);
       if (error?.code === "simulation_failed") this.holds.hold(c.account_id, c.maturity, publishTime);
       return false;
     }
-
-    this.inFlight = result.body.tx_hash;
-    let outcome: Settled;
-    try {
-      outcome = await settled;
-    } finally {
-      this.inFlight = null;
-    }
+    const outcome = sent.settled;
     if (outcome === null) {
       // Past its deadline by now, so it can no longer execute; the next scan reads what happened.
       report({ tx_hash: result.body.tx_hash, ok: false, repaid: null, error: "no outcome after following" });
@@ -267,16 +256,8 @@ export class Keeper {
       this.log(`keeper: liquidation of ${c.account_id} ${c.maturity} failed: ${error?.reason} (${outcome.body.tx_hash})`);
       this.holds.hold(c.account_id, c.maturity, publishTime);
     }
-    await this.waitPast(outcome.outcome);
+    await waitPast(this.o.rpc, outcome.outcome, this.sleep, () => this.stopped);
     return true;
-  }
-
-  /** Waits until the final height is at or past the block of the transaction's last receipt. */
-  private async waitPast(outcome: TxOutcome): Promise<void> {
-    const { rpc } = this.o;
-    const hashes = [...new Set(outcome.receipts.map((r) => r.blockHash))];
-    const last = Math.max(0, ...(await Promise.all(hashes.map((h) => rpc.blockHeight(h)))));
-    while (!this.stopped && (await rpc.finalBlock()).height < last) await this.sleep(KEEPER.finalPollMs);
   }
 }
 

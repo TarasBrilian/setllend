@@ -44,7 +44,7 @@ export type RelayResult = { status: 200 | 202 | 400 | 502 | 503; body: RelayBody
 export type Settled = { outcome: TxOutcome; body: RelayBody } | null;
 
 export type SubmitOptions = {
-  kind?: "intent" | "liquidate";
+  kind?: "intent" | "liquidate" | "mm";
   /**
    * Called once for an intent that was sent (200 or 202): with its outcome, at once or after
    * following a pending one, or with null if following gave up. The keeper waits on it (D59).
@@ -84,8 +84,9 @@ export class Relayer {
   }
 
   /**
-   * Relays one signed payload. The keeper's own `liquidate` intents come through here too, with
-   * `kind: "liquidate"`, so `submissions` tells them apart from users' intents.
+   * Relays one signed payload. The keeper's own `liquidate` intents (`kind: "liquidate"`) and the
+   * market-maker agent's orders (`kind: "mm"`) come through here too, so `submissions` tells them
+   * apart from users' intents.
    */
   async submit(body: unknown, opts: SubmitOptions = {}): Promise<RelayResult> {
     const { contract, market, submissions, intents } = this.o;
