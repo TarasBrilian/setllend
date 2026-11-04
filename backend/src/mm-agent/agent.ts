@@ -89,8 +89,8 @@ export class MmAgent {
     if (moved) this.wake?.();
   }
 
+  /** Call `replay` first, before the follower's rounds start, so fills apply in order. */
   async run(): Promise<void> {
-    this.replay();
     while (!this.stopped) {
       let again = false;
       try {

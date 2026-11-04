@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import { Contract } from "./chain/contract.ts";
 import { Follower, FOLLOWER, type FollowerStatus, RequestBudget } from "./chain/follower.ts";
 import { Keeper, type LiquidationReport, type ScanReport } from "./keeper/keeper.ts";
+import { type MmActionReport, MmAgent } from "./mm-agent/agent.ts";
 import type { TxSource } from "./chain/explorer.ts";
 import { NotDeployedError, type Rpc, type TxRpc } from "./chain/rpc.ts";
 import { Sender } from "./chain/sender.ts";
@@ -33,6 +34,8 @@ export type ServiceOptions = {
    * without `keeper` (the NEP-413 signing key) the keeper only scans.
    */
   keys?: { accountId: string; txRpc: TxRpc; intents?: string; matcher?: string; keeper?: string };
+  /** `MM_SIGNING_KEY`: the market-maker agent's own key; its account is implicit (D60). */
+  mmSigningKey?: string;
   sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
 };
@@ -48,6 +51,7 @@ export class Service {
   readonly relayer: Relayer;
   readonly matcher: Matcher;
   readonly keeper: Keeper;
+  readonly mm: MmAgent;
   contractState: ContractState = "checking";
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
@@ -105,6 +109,17 @@ export class Service {
       sleep: o.sleep,
       log: this.log,
     });
+    this.mm = new MmAgent({
+      market: this.market,
+      prices: this.prices,
+      contract: this.contract,
+      relayer: this.relayer,
+      store: this.store,
+      rpc: o.rpc,
+      signingKey: o.mmSigningKey,
+      sleep: o.sleep,
+      log: this.log,
+    });
     this.follower = new Follower({
       store: this.store,
       source: o.source,
@@ -118,6 +133,7 @@ export class Service {
       onRound: async (round) => {
         await this.market.reload(round.events, round.height, round.timestampNs);
         this.hub.round(round.events, this.store);
+        this.mm.onEvents(round.events);
       },
     });
   }
@@ -142,6 +158,8 @@ export class Service {
     this.contractState = "loading";
     await this.follower.init();
     this.contractState = "ready";
+    // Before the follower's first round, so stored fills move the bases before live ones.
+    this.mm.replay();
     void this.follower.run();
     // Without the matcher key the matcher stays off; the books and API still work (D43).
     if (this.relayer.canMatch) {
@@ -150,6 +168,10 @@ export class Service {
     // The keeper needs the backend account for its capital; without the signing key it only scans (D59).
     if (this.keys) {
       this.keeper.run().catch((error: unknown) => this.log(`keeper stopped: ${error instanceof Error ? error.message : error}`));
+    }
+    // The agent needs its own key and the relayer's intents key (D60).
+    if (this.mm.running) {
+      this.mm.run().catch((error: unknown) => this.log(`mm-agent stopped: ${error instanceof Error ? error.message : error}`));
     }
   }
 
@@ -167,6 +189,13 @@ export class Service {
       last_scan: ScanReport | null;
       last_liquidation: LiquidationReport | null;
       storage: { free: string; alert: boolean } | null;
+    };
+    mm: {
+      account: string | null;
+      bases: Record<string, number>;
+      orders: Record<string, { lend: string[]; borrow: string[] }>;
+      in_flight: string | null;
+      last_action: MmActionReport | null;
     };
   } {
     const follower = this.follower.status();
@@ -189,6 +218,13 @@ export class Service {
         last_scan: this.keeper.lastScan,
         last_liquidation: this.keeper.lastLiquidation,
         storage: this.keeper.storage && { free: this.keeper.storage.free.toString(), alert: this.keeper.storage.alert },
+      },
+      mm: {
+        account: this.mm.running ? this.mm.account : null,
+        bases: this.mm.bases.report(this.market.maturities),
+        orders: this.mm.orders(),
+        in_flight: this.mm.inFlight,
+        last_action: this.mm.lastAction,
       },
     };
   }

@@ -18,6 +18,7 @@ const service = new Service({
   source: createExplorer(config.fastnearTxUrl),
   contractId: config.contractId,
   startBlock: config.startBlock,
+  mmSigningKey: config.mmSigningKey,
   keys: config.nearAccountId
     ? {
         accountId: config.nearAccountId,
