@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Figtree } from "next/font/google";
 import { Header } from "@/components/header";
+import { INTRO_SCRIPT } from "@/components/intro-splash";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -16,7 +17,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${figtree.variable} h-full antialiased`}>
+    // The intro script sets data-intro on <html> before hydration.
+    <html lang="en" className={`${figtree.variable} h-full antialiased`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: INTRO_SCRIPT }} />
+      </head>
       <body className="flex min-h-full flex-col font-sans">
         <Providers>
           <Header />
