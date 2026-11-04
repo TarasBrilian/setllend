@@ -127,6 +127,7 @@ Parked pairs and orders are kept in memory only; a restart clears them, which co
 - A pair's inputs are both orders' remaining amounts, the ask's escrow, and the pool's `V` and `S`. "Until the pool changes" (`zero_shares`) and the reasons that should not happen use these.
 - "Until the reload after the batch" (`bid_not_found`, `ask_not_found`, a first `*_oversize`) adds the book's height, so the next reload of the maturity lifts it. Oversize again with the same pair inputs logs an error and parks on the inputs alone.
 - An ask's inputs for `cannot_open` are its remaining amount and escrow, the owner's loan, and the prices of the feeds involved, so a new price, a change to the order, or a change to the loan lifts it.
+- A `sell_note` ask parked as dust (no principal reaches its remaining shares) holds while its remaining shares and the pool's `V` and `S` are unchanged; a bid too small for one share parks the pair on its inputs.
 - `bid_expired`, `ask_expired`, `matured`, and `notes_wiped_out` need no park: the matcher's own checks leave those orders and maturities out once its clock (the latest final block) or the reloaded pool shows them.
 - `no_price` blocks `borrow` asks until every feed of the oracle read has a newer `publish_time` than at the skip.
 - Parks come only from sizes worked out on the book's inputs. A pair or ask whose order, or whose owner's loan, already has a fill in the batch being built is only passed over for that round: its copy differs from the book, and if the batch failed, a park on the book's inputs would never lift.

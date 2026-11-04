@@ -186,6 +186,20 @@ describe("Matcher.round", () => {
     expect(matcher.inFlight).toBeNull();
   });
 
+  it("reports a batch the node refused, without backing off", async () => {
+    const { tx, matcher, service } = await setup();
+    tx.onSend = () => {
+      throw new TxError("invalid", "NotEnoughBalance");
+    };
+    expect(await matcher.round()).toHaveLength(1);
+    expect(matcher.lastBatch).toMatchObject({ fills: 1, height: null, error: "NotEnoughBalance" });
+    expect(matcher.lastBatch!.tx_hash).toBeTruthy();
+    expect(matcher.inFlight).toBeNull();
+    // The node never took it, so it costs no gas: no backoff, and its submission is closed.
+    expect(matcher.fillLimit).toBe(10);
+    expect(service.submissions.open("match")).toEqual([]);
+  });
+
   it("does nothing without the matcher key", async () => {
     const { service, rpc } = await setup();
     const relayer = new Relayer({ contract: service.contract, market: service.market, submissions: service.submissions, intents: null, matcher: null });
