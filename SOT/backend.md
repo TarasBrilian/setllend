@@ -331,6 +331,18 @@ One service, `setllend`, built from the GitHub repo by Railpack, set up and chec
 
 Variables are set in the service, never in the repo. Until the deploy only `DATABASE_PATH` and `ONE_CLICK_JWT` are set (the key since 2026-11-05: `/health` shows `oneclick.enabled: true`, and a dry quote from production priced a Base USDC deposit at about 1.2 bps, the keyed stablecoin fee ✅ 2026-11-05), so the 1Click endpoints work while the rest runs read-only and waits for the contract (`/health` shows `contract: not_deployed`).
 
+
+### Contract deploy (D69)
+
+`backend/scripts/deploy.ts` (it needs `near-api-js`, which the backend has) deploys the contract in **one transaction** to its own account ([pitfalls.md](pitfalls.md#contract)): `DeployContract`, `new(config)`, `add_maturity` for each maturity, and `add_collateral_token` for each token, all signed by the account's full-access key, so the self-calls pass the owner check (`owner_id` is the contract account).
+
+- **Values**, from the SOT: `config` = owner the contract account, `intents.near`, `aggregate-oracle.near`, debt token NEAR USDC with the USDC/USD feed, `grace` 1 hour, `oracle_max_age` 60 s, `oracle_max_conf` 100 bps ([risk-params.md](risk-params.md), [oracle.md](oracle.md)); maturities 2026-11-08 (test), 2026-11-13, 2026-11-27, and 2026-12-25 at 08:00 UTC (D69); tokens ETH(arb) and ETH(base) on the ETH/USD feed and NEAR (`wrap.near`) on the NEAR/USD feed, each 70% / 80% / 5% (D52). BTC is added later by the owner, once open question #10 passes.
+- **Dry run by default:** it prints the network, the account, the wasm's size and SHA-256, the account's balance against the storage the code needs, and every action with its arguments and gas. `--send` signs and sends.
+- **Refusals:** an account that already has code (an upgrade is another procedure, D23); a balance below what the code and the initial state need plus a margin; a maturity in the past or less than an hour ahead, which is dropped with a warning instead (D69: the test maturity if the deploy slips); a missing `DEPLOY_PRIVATE_KEY` with `--send`.
+- **Inputs:** `DEPLOY_ACCOUNT_ID` (default `setllend.near`), `DEPLOY_PRIVATE_KEY` (the full-access key, from the environment only, never a file in the repo), `NEAR_RPC_URL` (default the free FastNear RPC), and the wasm path (default `../contracts/target/near/setllend/setllend.wasm`). The mainnet wasm is built reproducibly first (`cargo near build reproducible-wasm` in `contracts/setllend`, Docker, NEP-330), so its hash can be checked against the source.
+- **After sending:** it reads `get_config`, `get_maturities`, and `get_collateral_tokens` back and prints the transaction's block height, the value for `SETLLEND_START_BLOCK` on Railway.
+- Tested against a local sandbox before mainnet ✅ 2026-11-05: the same script, pointed at the sandbox RPC (near-sandbox 2.14.0) with a fresh account. One transaction of nine actions succeeded and the views read back the config, the four maturities, and the three tokens; it burnt 46.9 Tgas in all (about 0.005 NEAR), and 434,084 bytes of storage locked 4.34 NEAR, inside the 4.63 NEAR the script asks for. Run again, it refused because the account had code. The local wasm isn't the reproducible one, so its hash differs from the mainnet build's.
+
 ## API
 
 ### REST
