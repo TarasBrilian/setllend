@@ -11,9 +11,12 @@
     "dev": "node --watch --env-file-if-exists=../.env src/index.ts",
     "start": "node --env-file-if-exists=../.env src/index.ts",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sim": "node src/sim/server.ts"
   },
   "devDependencies": {
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.2",
     "@types/ws": "8.18.2",
