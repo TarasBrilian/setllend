@@ -300,6 +300,8 @@ New variables, listed in the root `.env.example` with empty values in the same c
 
 | Variable | Default | Secret |
 |---|---|---|
+| `PORT` | `8080` (Railway sets it) | No |
+| `DATABASE_PATH` | `setllend.db` in the working directory; `/data/setllend.db` on Railway, on the volume | No |
 | `NEAR_RPC_URL` | `https://free.rpc.fastnear.com` | No |
 | `FASTNEAR_TX_URL` | `https://tx.main.fastnear.com` (D55) | No |
 | `SETLLEND_CONTRACT` | `setllend.near` | No |
@@ -312,6 +314,22 @@ New variables, listed in the root `.env.example` with empty values in the same c
 | `ONE_CLICK_JWT` | none (the 1Click endpoints answer 503). The partner key, sent as `X-API-Key`; it never reaches the browser | **Yes** |
 
 Internal settings (fills per batch, gas, page size, poll intervals, flood guard, storage alert) are constants in code with a comment pointing to this file. None of them is user-facing (D24).
+
+### Deployment (Railway, D28)
+
+One service, `setllend`, built from the GitHub repo by Railpack, set up and checked ✅ 2026-11-05:
+
+| Setting | Value | Why |
+|---|---|---|
+| Root directory | `/backend` | The repo root has no `package.json`; from there Railpack can't tell how to build (the first deploys failed so) |
+| Node | 24, from `engines` in `package.json` (24.22.1 on 2026-11-05) | `node src/index.ts` needs type stripping |
+| Start | `npm start` (`node --env-file-if-exists=../.env src/index.ts`; there is no `.env` on Railway, variables come from the service) | |
+| Health check | `/health` | A deploy counts as up only once the server answers; `/health` answers before the contract exists |
+| Watch paths | `/backend/**` | Commits to SOT, the frontend, or the contract don't redeploy the backend |
+| Volume | mounted at `/data`, `DATABASE_PATH=/data/setllend.db` | The database survives redeploys (D28) |
+| Domain | `https://setllend-production.up.railway.app`, to port 8080 | The frontend's API URL |
+
+Variables are set in the service, never in the repo. Until the deploy they stay unset except `DATABASE_PATH`, so the backend runs read-only and waits for the contract (`/health` shows `contract: not_deployed`).
 
 ## API
 

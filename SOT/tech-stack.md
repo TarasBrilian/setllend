@@ -17,7 +17,7 @@ Versions checked 2026-10-31 on crates.io / npm. Rows for D28 and D29 checked 202
 | Oracle | `aggregate-oracle.near` (`list_prices_no_older_than`) | See [oracle.md](oracle.md) |
 | Frontend | Next.js 16.4 (D29), `wagmi` 3 + `viem` 2, TanStack Query, Tailwind + shadcn/ui | EVM wallet login via EIP-6963 injected wallets + WalletConnect (D14). `viem` for `personal_sign` (ERC-191). NEAR wallets through `@near-wallet-selector/core` 10.1.4 with the Meteor, MyNearWallet, and Intear modules (D51; Meteor's SDK has an `overrides` entry for `nanoid` and one accepted advisory, see D51); its `modal-ui` and `react-hook` packages pin React 18, so the app draws its own wallet list |
 | Charts | `lightweight-charts` 5.2 (D29) | Rate curve per maturity, depth chart. Apache-2.0: requires a TradingView attribution link, see [pitfalls.md](pitfalls.md#off-chain) |
-| Hosting | Frontend on Vercel. Backend on Railway (D28) | Up until 2026-11-25 |
+| Hosting | Frontend on Vercel. Backend on Railway (D28), settings in [backend.md](backend.md#deployment-railway-d28) | Up until 2026-11-25 |
 | CI | GitHub Actions, see [repo-structure.md](repo-structure.md#conventions) | Public repo, so runs are free |
 | Dev tools | `near-cli-rs` 0.30, Docker (for reproducible `cargo near build`), `npx skills add near/agent-skills` | Per the official hackathon setup |
 
