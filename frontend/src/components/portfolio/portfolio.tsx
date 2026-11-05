@@ -3,8 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { useAccount } from "@/lib/account";
-import { getAccount, getAccountFills, getAccountHistory, getCollateralTokens, getConfig, getMaturities, getPrices } from "@/lib/api";
+import { getAccount, getAccountFills, getCollateralTokens, getConfig, getMaturities, getPrices } from "@/lib/api";
 import { portfolioTotals } from "@/lib/portfolio";
+import { useAccountHistory } from "@/lib/use-account-history";
+import { useLiveAccount } from "@/lib/use-live-market";
 import { useNowMs } from "@/lib/use-now";
 import { type AccountAction, ActionModal } from "../account/action-modal";
 import { ConnectButton } from "../connect-button";
@@ -29,7 +31,8 @@ export function Portfolio() {
   const maturities = useQuery({ queryKey: ["maturities"], queryFn: getMaturities });
   const data = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled });
   const fills = useQuery({ queryKey: ["fills", account], queryFn: () => getAccountFills(account!), enabled });
-  const history = useQuery({ queryKey: ["history", account], queryFn: () => getAccountHistory(account!), enabled });
+  const history = useAccountHistory(account, enabled);
+  useLiveAccount(account);
 
   const skeleton = <div className="h-80 animate-pulse rounded-3xl border border-line bg-surface/60" />;
   // The server can't know the wallet, so the first render is the same skeleton on both sides
@@ -56,7 +59,7 @@ export function Portfolio() {
       <MaturityTimeline maturities={maturities.data} account={data.data} nowMs={nowMs} />
       <Positions account={data.data} fills={fills.data} config={config.data} prices={prices.data} tokens={tokens.data} nowMs={nowMs} onAction={setAction} />
       <Assets active={active} account={data.data} tokens={tokens.data} prices={prices.data} onAction={setAction} />
-      <History ref={historyRef} entries={history.data ?? []} />
+      <History ref={historyRef} history={history} />
       {action && (
         <ActionModal action={action} config={config.data} prices={prices.data} tokens={tokens.data} account={data.data} nowMs={nowMs} onClose={() => setAction(null)} />
       )}
