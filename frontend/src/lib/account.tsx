@@ -31,7 +31,7 @@ const Context = createContext<AccountContext | null>(null);
 
 // One selector per page load, created on first use in the browser.
 let selector: Promise<WalletSelector> | undefined;
-async function getSelector(): Promise<WalletSelector> {
+export async function getSelector(): Promise<WalletSelector> {
   selector ??= (async () => {
     const [{ setupWalletSelector }, { setupMeteorWallet }, { setupMyNearWallet }, { setupIntearWallet }] = await Promise.all([
       import("@near-wallet-selector/core"),
