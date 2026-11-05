@@ -1,7 +1,7 @@
 // Response shapes of the backend REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain.
 
 import type { AccountId, TokenId, U128, U64 } from "@/shared/encoding";
-import type { OrderFilled } from "@/shared/events";
+import type { OrderFilled, SetllendEvent } from "@/shared/events";
 import type { FreeBalancesView, NotesView, OrderKind, OrderView } from "@/shared/views";
 
 /** `GET /api/maturities`, with the per-maturity totals (D49). */
@@ -73,7 +73,17 @@ export type Trade = OrderFilled & { timestamp: U64 };
 export type LiveMessage =
   | ({ type: "book" } & Book)
   | ({ type: "trade" } & Trade)
-  | { type: "event" | "intent" | "oneclick"; account: AccountId }
+  | { type: "event" | "oneclick"; account: AccountId }
+  /** The outcome of an intent the relayer answered `pending`, in the shape of its HTTP answer. */
+  | {
+      type: "intent";
+      account: AccountId;
+      tx_hash: string;
+      ok: boolean;
+      actions: string[];
+      events: SetllendEvent[];
+      error: { code: string; reason: string } | null;
+    }
   /** Sent by the client itself after the socket reopened: pushes may have been missed. */
   | { type: "reconnected" };
 

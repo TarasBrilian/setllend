@@ -7,13 +7,14 @@ import { borrowLimit, health, legsOf, liquidationPriceOf } from "@/lib/collatera
 import { formatMaturity, formatRate, formatUsd, maturityToMs, usdcToNumber } from "@/lib/format";
 import { crosses, marketFill, type OrderSide } from "@/lib/orders";
 import { faceAtMaturity, presentValue } from "@/lib/rates";
-import { formatTokenAmount, TOKENS, tokenAmount, tokenLabel } from "@/lib/tokens";
-import { useStepper } from "@/lib/use-stepper";
+import { formatTokenAmount, rawAmount, TOKENS, tokenAmount, tokenLabel } from "@/lib/tokens";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
+import { setllendAuthCall, setllendTransfer, setllendTransferMany } from "@/shared/intents";
 import type { NoteView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { amountInput, DecimalInput, decimalString, Field, payInStep, Row, Segmented, Stepper, SubmitButton, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
+import { type LiveSpec, ActionForm } from "./action-form";
+import { amountInput, DecimalInput, decimalString, Field, payInStep, Row, Segmented, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -35,9 +36,15 @@ const toPercent = (bps: number | undefined) => (bps === undefined ? "" : (bps / 
 // "Existing loan" borrows more against the collateral of the loan already open in this maturity,
 // adding none (an `auth_call` borrow, D50).
 type Source = "New deposit" | "Deposited" | "Existing loan";
+// Where a lend order's USDC comes from (D66).
+type Funding = "Intents balance" | "New deposit";
+const FUNDING: Funding[] = ["Intents balance", "New deposit"];
 type Leg = { token: TokenId; amount: string };
 
-/** Lend or Borrow order form. Submitting only simulates (D47). Borrow collateral follows D48. */
+/**
+ * Lend or Borrow order form. In live mode the wallet signs and the relayer sends it (D66); in mock
+ * mode it simulates (D47). Borrow collateral follows D48.
+ */
 export function OrderForm({
   side,
   prices,
@@ -55,7 +62,7 @@ export function OrderForm({
   const account = active?.accountId;
   const chains = useChainOptions();
   const signPrefix = useSignPrefix();
-  const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: isBorrow && account !== undefined });
+  const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: account !== undefined });
   const deposits = mine.data?.deposits ?? {};
   // One loan per maturity (D48): a new borrow adds to the loan already open here, if any.
   const loan = mine.data?.loans.find((l) => l.maturity === book.maturity);
@@ -63,11 +70,18 @@ export function OrderForm({
   const [mode, setMode] = useState<OrderMode>(initialMode);
   const [amount, setAmount] = useState("1000");
   const [rate, setRate] = useState(toPercent(initialRateBps ?? bestRate));
-  const [source, setSource] = useState<Source>("New deposit");
+  // Deposited collateral when there is some, until the user picks; a new deposit otherwise.
+  const [sourceChoice, setSource] = useState<Source | null>(null);
   const [legs, setLegs] = useState<Leg[]>([{ token: ASSETS.ethArb, amount: "0.75" }]);
-  const [chain, setChain] = useChain(isBorrow ? "Arbitrum" : "Base");
+  const [chain, setChain] = useChain("Base");
+  const usdcBalance = deposits[ASSETS.usdcNear];
+  // The balance while it covers the amount, until the user picks (D66).
+  const [fundingChoice, setFunding] = useState<Funding | null>(null);
 
   const principal = Number(amount) || 0;
+  const source: Source = sourceChoice ?? ((tokens.data ?? []).some((t) => !t.frozen && deposits[t.token_id]) ? "Deposited" : "New deposit");
+  const funding: Funding = fundingChoice ?? (account !== undefined && usdcBalance && usdcToNumber(usdcBalance) >= principal ? "Intents balance" : "New deposit");
+  const fromBalance = !isBorrow && funding === "Intents balance";
   const market = marketFill(book, side, principal);
   const limitBps = Math.round((Number(rate) || 0) * 100);
   // Market: a limit order at the last level needed; the preview uses the average fill rate.
@@ -82,9 +96,9 @@ export function OrderForm({
   const existingDebt = loan ? usdcToNumber(loan.debt_face) : 0;
   const totalDebt = existingDebt + face;
   const available = (token: TokenId) => (deposits[token] ? tokenAmount(token, deposits[token]) : 0);
-  // 1Click legs that may need an address: the USDC payment or payout chain, and new collateral deposits.
+  // 1Click legs that may need an address: a lend order's USDC deposit, and new collateral deposits.
   const depositChains = isBorrow && source === "New deposit" ? legs.filter((l) => Number(l.amount) > 0).map((l) => TOKENS[l.token].chain) : [];
-  const addresses = useAddresses([chain, ...depositChains]);
+  const addresses = useAddresses(isBorrow ? depositChains : fromBalance ? [] : [chain]);
 
   let error: string | undefined;
   if (principal <= 0) error = "Enter an amount";
@@ -92,6 +106,7 @@ export function OrderForm({
   else if (rateBps <= 0) error = "Enter a rate";
   else if (isBorrow && source !== "Existing loan" && Object.values(added).every((a) => a <= 0)) error = "Enter collateral";
   else if (isBorrow && source === "Deposited" && legs.some((l) => (Number(l.amount) || 0) > available(l.token))) error = "More than your deposit";
+  else if (fromBalance && principal > available(ASSETS.usdcNear)) error = "More than your Intents balance";
   else if (isBorrow && totalDebt > limit) error = "Above your borrow limit";
   else if (addresses.error) error = addresses.error;
 
@@ -117,32 +132,57 @@ export function OrderForm({
         ? `Buy ${formatTokenAmount(token, amount)} with a 1Click swap from USDC on ${chain === "NEAR" ? "Arbitrum" : chain}`
         : payInStep(decimalString(amount), TOKENS[token].symbol, TOKENS[token].chain),
     );
+  // At a match the USDC arrives in the Intents balance; the user withdraws it from Portfolio (D66).
+  const borrowDone = "Order placed. After a match, USDC arrives in your Intents balance";
+  const signLabel = isBorrow
+    ? source === "Existing loan"
+      ? "Sign the borrow order with your wallet (no collateral added)"
+      : "Sign the borrow order with your wallet"
+    : "Sign the lend order with your wallet";
   const steps = isBorrow
-    ? [
-        ...(source === "New deposit" ? depositSteps : []),
-        ...signPrefix,
-        source === "Existing loan" ? "Sign the borrow order with your wallet (no collateral added)" : "Sign the borrow order with your wallet",
-        `Order placed. After a match, USDC is sent to ${chain === "NEAR" ? "your NEAR account" : chain}`,
-      ]
-    : [
-        payInStep(principal.toLocaleString("en-US"), "USDC", chain),
-        ...signPrefix,
-        "Sign the lend order with your wallet",
-        "Order placed in the book",
-      ];
-  const stepper = useStepper(steps.length);
-  if (stepper.step !== null) {
-    return <Stepper steps={steps} current={stepper.step} onDone={onDone ?? stepper.reset} />;
+    ? [...(source === "New deposit" ? depositSteps : []), ...signPrefix, signLabel, borrowDone, "Withdraw it from Portfolio to a chain or your NEAR account"]
+    : [...(fromBalance ? [] : [payInStep(principal.toLocaleString("en-US"), "USDC", chain)]), ...signPrefix, signLabel, "Order placed in the book"];
+
+  // Market: a limit order at the last level needed (SOT/frontend.md).
+  const orderBps = mode === "Market" ? (market.limitBps ?? 0) : limitBps;
+  const principalRaw = () => rawAmount(ASSETS.usdcNear, amount);
+  const detail = `${principal.toLocaleString("en-US")} USDC ${mode === "Market" ? `up to ${formatRate(orderBps)}` : `at ${formatRate(orderBps)}`} APR`;
+  // A deposit from another chain comes with step 3 of D65, so only orders funded from the balance or the loan run live.
+  let live: LiveSpec | undefined;
+  if (isBorrow && source !== "New deposit") {
+    const msg = () => ({ maturity: book.maturity, max_rate_bps: orderBps, principal: principalRaw().toString(), expires_at: null });
+    live = {
+      sign: signLabel,
+      done: borrowDone,
+      summary: "Borrow order placed",
+      detail,
+      build: () =>
+        source === "Existing loan"
+          ? [setllendAuthCall({ action: "borrow", data: msg() })]
+          : [
+              setllendTransferMany(
+                Object.fromEntries(legs.filter((l) => Number(l.amount) > 0).map((l) => [l.token, rawAmount(l.token, l.amount, deposits[l.token])])),
+                { action: "borrow", data: msg() },
+              ),
+            ],
+    };
+  } else if (fromBalance) {
+    live = {
+      sign: signLabel,
+      done: "Order placed in the book",
+      summary: "Lend order placed",
+      detail,
+      build: () => [
+        setllendTransfer(ASSETS.usdcNear, rawAmount(ASSETS.usdcNear, amount, usdcBalance), {
+          action: "lend",
+          data: { maturity: book.maturity, min_rate_bps: orderBps, expires_at: null },
+        }),
+      ],
+    };
   }
 
   return (
-    <form
-      className="flex flex-col gap-3.5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!error) stepper.start();
-      }}
-    >
+    <ActionForm steps={steps} live={live} error={error} label={isBorrow ? "Place borrow order" : "Place lend order"} onDone={onDone}>
       {withModes && <ModeSwitch mode={mode} onChange={setMode} />}
 
       <Field label={isBorrow ? "Borrow amount" : "Lend amount"} suffix="USDC">
@@ -186,10 +226,25 @@ export function OrderForm({
         </>
       )}
 
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-muted">{isBorrow ? "Receive USDC on" : "Pay USDC from"}</span>
-        <Segmented options={chains} value={chain} onChange={setChain} />
-      </div>
+      {!isBorrow && account !== undefined && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted">Pay from</span>
+            <Segmented options={FUNDING} value={funding} onChange={setFunding} />
+          </div>
+          {fromBalance && (
+            <button type="button" className="self-end text-xs text-faint hover:text-muted" onClick={() => setAmount(decimalString(available(ASSETS.usdcNear)))}>
+              Balance: {formatUsd(available(ASSETS.usdcNear))} · Max
+            </button>
+          )}
+        </div>
+      )}
+      {!isBorrow && !fromBalance && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted">Pay USDC from</span>
+          <Segmented options={chains} value={chain} onChange={setChain} />
+        </div>
+      )}
 
       {addresses.fields}
 
@@ -209,8 +264,7 @@ export function OrderForm({
         <Row label="Matures" value={formatMaturity(book.maturity)} />
       </dl>
 
-      <SubmitButton error={error} label={isBorrow ? "Place borrow order" : "Place lend order"} />
-    </form>
+    </ActionForm>
   );
 }
 
@@ -339,19 +393,22 @@ export function SellNoteForm({
 
   const signPrefix = useSignPrefix();
   const steps = [...signPrefix, "Sign the sell order with your wallet", "Order placed in the book", "USDC from each fill goes to your Intents balance"];
-  const stepper = useStepper(steps.length);
-  if (stepper.step !== null) {
-    return <Stepper steps={steps} current={stepper.step} onDone={onDone ?? stepper.reset} />;
-  }
+  const orderBps = mode === "Market" ? (market.limitBps ?? 0) : rateBps;
+  const live: LiveSpec = {
+    sign: "Sign the sell order with your wallet",
+    done: "Order placed. USDC from each fill goes to your Intents balance",
+    summary: "Sell order placed",
+    detail: `${formatUsd(value)} of notes ${mode === "Market" ? `up to ${formatRate(orderBps)}` : `at ${formatRate(orderBps)}`} APR`,
+    build: () => [
+      setllendAuthCall({
+        action: "sell_note",
+        data: { maturity: book.maturity, value: rawAmount(ASSETS.usdcNear, amount, note?.free_value).toString(), max_rate_bps: orderBps, expires_at: null },
+      }),
+    ],
+  };
 
   return (
-    <form
-      className="flex flex-col gap-3.5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!error) stepper.start();
-      }}
-    >
+    <ActionForm steps={steps} live={live} error={error} label="Sell notes" onDone={onDone}>
       {withModes && <ModeSwitch mode={mode} onChange={setMode} />}
 
       <Field
@@ -386,8 +443,7 @@ export function SellNoteForm({
         <Row label="Interest given up" value={formatUsd(value - received)} />
       </dl>
 
-      <SubmitButton error={error} label="Sell notes" />
-    </form>
+    </ActionForm>
   );
 }
 

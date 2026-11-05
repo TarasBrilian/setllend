@@ -1,6 +1,7 @@
 // Display metadata for every token the UI shows. IDs come from the shared assets; BTC and NEAR are
 // the D52 collateral for D48.
 
+import { parseUnits } from "viem";
 import { ASSETS, DECIMALS } from "@/shared/assets";
 import type { TokenId, U128 } from "@/shared/encoding";
 
@@ -25,6 +26,21 @@ export function tokenAmount(token: TokenId, raw: U128): number {
 export function toRaw(token: TokenId, amount: number): U128 {
   const [whole, fraction = ""] = amount.toFixed(TOKENS[token].decimals).split(".");
   return String(BigInt(whole) * 10n ** BigInt(TOKENS[token].decimals) + BigInt(fraction || "0"));
+}
+
+/**
+ * Raw units of an amount typed in a form, without float and rounded down: digits past the token's
+ * decimals are dropped. With `max` (raw), an amount that reaches the shown maximum, which is rounded
+ * for display, means all of it, so Max never asks for more than there is.
+ */
+export function rawAmount(token: TokenId, input: string, max?: U128): bigint {
+  const decimals = TOKENS[token].decimals;
+  const [whole = "", fraction = ""] = input.split(".");
+  const text = `${whole || "0"}.${fraction.slice(0, decimals) || "0"}`;
+  const raw = parseUnits(text, decimals);
+  if (max === undefined) return raw;
+  const all = BigInt(max);
+  return raw >= all || Number(text) >= tokenAmount(token, max) ? all : raw;
 }
 
 /** "ETH · Arbitrum"; tokens native to their own chain (NEAR, BTC) show the symbol alone. */

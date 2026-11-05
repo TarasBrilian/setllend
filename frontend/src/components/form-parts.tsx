@@ -177,7 +177,7 @@ export function Row({ label, value, tone }: { label: string; value: string; tone
 }
 
 /** Sticks to the bottom of a scrolling order panel, so submit stays in view. */
-export function SubmitButton({ error, label }: { error: string | undefined; label: string }) {
+export function SubmitButton({ error, label, live = false }: { error: string | undefined; label: string; live?: boolean }) {
   return (
     <div className="sticky -bottom-3 -mb-3 flex flex-col gap-2 bg-surface pt-1 pb-3">
       <button
@@ -187,7 +187,7 @@ export function SubmitButton({ error, label }: { error: string | undefined; labe
       >
         {error ?? label}
       </button>
-      <p className="text-center text-xs text-faint">Demo: nothing is signed or sent.</p>
+      <p className="text-center text-xs text-faint">{live ? "Your wallet signs. Setllend's relayer pays the gas." : "Demo: nothing is signed or sent."}</p>
     </div>
   );
 }
