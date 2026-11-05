@@ -2,12 +2,16 @@
 // DeployContract, `new`, `add_maturity` for each maturity, and `add_collateral_token` for each
 // token, signed by the contract account's own full-access key, so the owner-only calls pass.
 //
+//   (cd ../contracts/setllend && cargo near build reproducible-wasm --out-dir ../target/mainnet)
 //   node --env-file-if-exists=../.env scripts/deploy.ts            # dry run: prints every action
 //   node --env-file-if-exists=../.env scripts/deploy.ts --send     # signs and sends
 //
 // Env: DEPLOY_ACCOUNT_ID (default setllend.near), DEPLOY_PRIVATE_KEY (full-access key, --send only),
-// NEAR_RPC_URL (default the free FastNear RPC), DEPLOY_WASM (default the cargo-near output).
+// NEAR_RPC_URL (default the free FastNear RPC), DEPLOY_WASM (default the reproducible build's
+// output, contracts/target/mainnet/setllend.wasm). `--dev-wasm` accepts a wasm that isn't a
+// reproducible build of a commit on origin/main: for a sandbox run only.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -40,9 +44,10 @@ const TOKENS = [
 ].map((t) => ({ ...t, max_ltv: 7000, liq_threshold: 8000, liq_bonus: 500 }));
 
 const send = process.argv.includes("--send");
+const devWasm = process.argv.includes("--dev-wasm");
 const accountId = process.env.DEPLOY_ACCOUNT_ID || ACCOUNTS.setllend;
 const rpcUrl = process.env.NEAR_RPC_URL || "https://free.rpc.fastnear.com";
-const wasmPath = process.env.DEPLOY_WASM || fileURLToPath(new URL("../../contracts/target/near/setllend/setllend.wasm", import.meta.url));
+const wasmPath = process.env.DEPLOY_WASM || fileURLToPath(new URL("../../contracts/target/mainnet/setllend.wasm", import.meta.url));
 
 const config = {
   owner_id: accountId,
@@ -61,6 +66,20 @@ const fail = (message: string): never => {
 };
 
 const wasm = readFileSync(wasmPath);
+// NEP-330: a reproducible build embeds its Docker image and the commit it was built from, so anyone
+// can rebuild the deployed code from the public repo. A plain build embeds neither.
+const text = wasm.toString("latin1");
+const buildEnvironment = /"build_environment":"([^"]+)"/.exec(text)?.[1] ?? null;
+const snapshot = /"source_code_snapshot":"[^"]*\?rev=([0-9a-f]{40})"/.exec(text)?.[1] ?? null;
+const onMain = (rev: string) => {
+  try {
+    execFileSync("git", ["fetch", "-q", "origin", "main"], { stdio: "ignore" });
+    execFileSync("git", ["merge-base", "--is-ancestor", rev, "origin/main"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
 const provider = new JsonRpcProvider({ url: rpcUrl });
 const signer = send ? new KeyPairSigner(KeyPair.fromString((process.env.DEPLOY_PRIVATE_KEY || fail("DEPLOY_PRIVATE_KEY is not set")) as KeyPairString)) : undefined;
 const account = new Account(accountId, provider, signer);
@@ -84,6 +103,8 @@ console.log(`Network RPC: ${rpcUrl}`);
 console.log(`Account:     ${accountId} (balance ${near(state.balance.total)}, code hash ${state.codeHash})`);
 console.log(`Wasm:        ${wasmPath}`);
 console.log(`             ${wasm.length} bytes, sha256 ${createHash("sha256").update(wasm).digest("hex")}`);
+console.log(`             build environment: ${buildEnvironment ?? "none (not a reproducible build)"}`);
+console.log(`             source commit: ${snapshot ?? "none"}${snapshot ? (onMain(snapshot) ? " (on origin/main)" : " (NOT on origin/main)") : ""}`);
 console.log(`Storage:     needs about ${near(needed)} (code, state, and a margin)`);
 console.log("\nOne transaction:");
 console.log(`  1. DeployContract (${wasm.length} bytes)`);
@@ -97,6 +118,8 @@ if (!send) {
   console.log("\nDry run: nothing sent. Run again with --send to deploy.");
   process.exit(0);
 }
+if (!devWasm && (!buildEnvironment || !snapshot)) fail("the wasm is not a reproducible build (NEP-330); build it with cargo near build reproducible-wasm.");
+if (!devWasm && !onMain(snapshot!)) fail(`the wasm was built from ${snapshot}, which is not on origin/main, so nobody could rebuild it from the public repo.`);
 
 const outcome = await account.signAndSendTransaction({
   receiverId: accountId,
@@ -114,3 +137,4 @@ console.log(`Set SETLLEND_START_BLOCK=${block.header.height} on Railway.`);
 console.log("get_config:", JSON.stringify(await view("get_config")));
 console.log("get_maturities:", JSON.stringify(await view("get_maturities")));
 console.log("get_collateral_tokens:", JSON.stringify(await view("get_collateral_tokens")));
+console.log("contract_source_metadata:", JSON.stringify(await view("contract_source_metadata")));
