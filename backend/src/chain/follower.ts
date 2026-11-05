@@ -98,7 +98,8 @@ export class Follower {
   private readonly settled = new Set<string>();
 
   constructor(options: FollowerOptions) {
-    this.o = { now: Date.now, sleep: delay, log: console.log, ...options };
+    // `??`, not spread defaults: the service passes its own `sleep`, which is undefined in production.
+    this.o = { ...options, now: options.now ?? Date.now, sleep: options.sleep ?? delay, log: options.log ?? console.log };
   }
 
   /** Loads everything at the final height, then sets the cursor: where it was, or `startBlock`. */

@@ -37,6 +37,36 @@ function setup(opts: { final?: number; startBlock?: number; store?: Store } = {}
 }
 
 describe("Follower", () => {
+  it("keeps its own sleep when given an undefined one, as the service passes in production", async () => {
+    // Found by running the backend on a simulated chain: the spread defaults let `sleep: undefined`
+    // replace the default, so the follower stopped after its first poll.
+    const rpc = new FakeRpc();
+    rpc.final = { height: 1_000, hash: "h", timestampNs: 7n };
+    const follower = new Follower({
+      store: new Store(openDb(":memory:")),
+      source: new FakeExplorer(),
+      rpc,
+      contractId: CONTRACT,
+      budget: new RequestBudget(1_000_000, 1_000_000),
+      onRound: async () => {},
+      onLoad: async () => {},
+      sleep: undefined,
+      log: () => {},
+    });
+    await follower.init();
+    const original = FOLLOWER.pollMs;
+    FOLLOWER.pollMs = 1;
+    try {
+      const running = follower.run();
+      await new Promise((r) => setTimeout(r, 30));
+      follower.stop();
+      await running;
+    } finally {
+      FOLLOWER.pollMs = original;
+    }
+    expect(follower.status().error).toBeNull();
+  });
+
   it("loads at the final height and starts reading there on a fresh database", async () => {
     const { follower, loads } = setup();
     await follower.init();
