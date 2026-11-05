@@ -70,7 +70,8 @@ export function OrderForm({
   const [mode, setMode] = useState<OrderMode>(initialMode);
   const [amount, setAmount] = useState("1000");
   const [rate, setRate] = useState(toPercent(initialRateBps ?? bestRate));
-  const [source, setSource] = useState<Source>("New deposit");
+  // Deposited collateral when there is some, until the user picks; a new deposit otherwise.
+  const [sourceChoice, setSource] = useState<Source | null>(null);
   const [legs, setLegs] = useState<Leg[]>([{ token: ASSETS.ethArb, amount: "0.75" }]);
   const [chain, setChain] = useChain("Base");
   const usdcBalance = deposits[ASSETS.usdcNear];
@@ -78,6 +79,7 @@ export function OrderForm({
   const [fundingChoice, setFunding] = useState<Funding | null>(null);
 
   const principal = Number(amount) || 0;
+  const source: Source = sourceChoice ?? ((tokens.data ?? []).some((t) => !t.frozen && deposits[t.token_id]) ? "Deposited" : "New deposit");
   const funding: Funding = fundingChoice ?? (account !== undefined && usdcBalance && usdcToNumber(usdcBalance) >= principal ? "Intents balance" : "New deposit");
   const fromBalance = !isBorrow && funding === "Intents balance";
   const market = marketFill(book, side, principal);
@@ -148,7 +150,7 @@ export function OrderForm({
   // A deposit from another chain comes with step 3 of D65, so only orders funded from the balance or the loan run live.
   let live: LiveSpec | undefined;
   if (isBorrow && source !== "New deposit") {
-    const msg = { maturity: book.maturity, max_rate_bps: orderBps, principal: principalRaw().toString(), expires_at: null };
+    const msg = () => ({ maturity: book.maturity, max_rate_bps: orderBps, principal: principalRaw().toString(), expires_at: null });
     live = {
       sign: signLabel,
       done: borrowDone,
@@ -156,11 +158,11 @@ export function OrderForm({
       detail,
       build: () =>
         source === "Existing loan"
-          ? [setllendAuthCall({ action: "borrow", data: msg })]
+          ? [setllendAuthCall({ action: "borrow", data: msg() })]
           : [
               setllendTransferMany(
                 Object.fromEntries(legs.filter((l) => Number(l.amount) > 0).map((l) => [l.token, rawAmount(l.token, l.amount, deposits[l.token])])),
-                { action: "borrow", data: msg },
+                { action: "borrow", data: msg() },
               ),
             ],
     };

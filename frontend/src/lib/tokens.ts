@@ -29,13 +29,15 @@ export function toRaw(token: TokenId, amount: number): U128 {
 }
 
 /**
- * Raw units of an amount typed in a form, exactly (no float). With `max` (raw), an amount that
- * reaches the shown maximum, which is rounded for display, means all of it, so Max never asks for
- * more than there is.
+ * Raw units of an amount typed in a form, without float and rounded down: digits past the token's
+ * decimals are dropped. With `max` (raw), an amount that reaches the shown maximum, which is rounded
+ * for display, means all of it, so Max never asks for more than there is.
  */
 export function rawAmount(token: TokenId, input: string, max?: U128): bigint {
-  const text = input === "" || input === "." ? "0" : input.endsWith(".") ? input.slice(0, -1) : input;
-  const raw = parseUnits(text, TOKENS[token].decimals);
+  const decimals = TOKENS[token].decimals;
+  const [whole = "", fraction = ""] = input.split(".");
+  const text = `${whole || "0"}.${fraction.slice(0, decimals) || "0"}`;
+  const raw = parseUnits(text, decimals);
   if (max === undefined) return raw;
   const all = BigInt(max);
   return raw >= all || Number(text) >= tokenAmount(token, max) ? all : raw;

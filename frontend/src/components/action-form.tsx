@@ -6,9 +6,10 @@
 
 import { useAccount } from "@/lib/account";
 import { useApiMode } from "@/lib/api-mode";
-import { txUrl } from "@/lib/intents-client";
+import { type RelayBody, txUrl } from "@/lib/intents-client";
 import { type ActionState, useIntentAction } from "@/lib/use-intent-action";
 import { useStepper } from "@/lib/use-stepper";
+import { useState } from "react";
 import type { Intent } from "@/shared/intents";
 import { Stepper, SubmitButton } from "./form-parts";
 
@@ -22,6 +23,8 @@ export type LiveSpec = {
   summary: string;
   /** A line under it, e.g. "1,000 USDC at 6.40% APR". */
   detail?: string;
+  /** A line read from the outcome instead, e.g. the amount a redemption actually paid. */
+  outcome?: (body: RelayBody) => string | undefined;
   /** The intents, built when the user submits. */
   build: () => Intent[];
 };
@@ -50,10 +53,17 @@ export function ActionForm({
   const { active } = useAccount();
   const action = useIntentAction();
   const stepper = useStepper(steps.length);
-  const close = onDone ?? (() => (isLive ? action.reset() : stepper.reset()));
+  // The spec as it was at submit: the form behind it can change meanwhile (a balance that drops after
+  // the action moves Lend to "New deposit"), and the steps and result must not.
+  const [running, setRunning] = useState<LiveSpec | null>(null);
+  const reset = () => {
+    action.reset();
+    setRunning(null);
+  };
+  const close = onDone ?? (() => (running ? reset() : stepper.reset()));
 
-  if (isLive && live && action.state.step !== "idle") {
-    return <LiveProgress spec={live} state={action.state} onClose={close} onRetry={action.reset} />;
+  if (running && action.state.step !== "idle") {
+    return <LiveProgress spec={running} state={action.state} onClose={close} onRetry={reset} />;
   }
   if (stepper.step !== null) return <Stepper steps={steps} current={stepper.step} onDone={close} />;
 
@@ -66,8 +76,10 @@ export function ActionForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (error || blocked) return;
-        if (isLive && live) void action.run(live.build());
-        else stepper.start();
+        if (isLive && live) {
+          setRunning(live);
+          void action.run(live.build);
+        } else stepper.start();
       }}
     >
       {children}
@@ -86,11 +98,12 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
     { label: state.step === "pending" ? "Sent to NEAR Intents. Still processing…" : "Sent to NEAR Intents", key: "send" },
     { label: spec.done, key: "done" },
   ];
-  const at = { signing: "sign", registering: "register", sending: "send", pending: "send", done: "end", failed: state.step === "failed" ? state.at : "sign", idle: "sign" }[state.step];
+  const at = { signing: "sign", registering: "register", sending: "send", pending: "send", unknown: "send", done: "end", failed: state.step === "failed" ? state.at : "sign", idle: "sign" }[state.step];
   const order = steps.map((s) => s.key);
   const current = at === "end" ? order.length : order.indexOf(at as (typeof order)[number]);
   const stateOf = (i: number): StepState => (i < current ? "done" : i === current ? (state.step === "failed" ? "failed" : "active") : "todo");
-  const hash = state.step === "done" ? state.body.tx_hash : state.step === "pending" ? state.hash : state.step === "failed" ? state.hash : null;
+  const hash = state.step === "done" ? state.body.tx_hash : state.step === "pending" || state.step === "unknown" || state.step === "failed" ? state.hash : null;
+  const detail = state.step === "done" ? (spec.outcome?.(state.body) ?? spec.detail) : spec.detail;
 
   return (
     <div>
@@ -121,7 +134,7 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
       {state.step === "done" && (
         <div className="mt-6 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm">
           <p className="font-semibold text-white">{spec.summary}</p>
-          {spec.detail && <p className="mt-0.5 text-accent-soft">{spec.detail}</p>}
+          {detail && <p className="mt-0.5 text-accent-soft">{detail}</p>}
           {state.body.error?.code === "payout_failed" && <p className="mt-2 text-amber-300">{state.body.error.reason}</p>}
           {hash && <TxLink hash={hash} />}
         </div>
@@ -129,6 +142,12 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
       {state.step === "pending" && (
         <div className="mt-6 rounded-xl border border-line bg-background/50 px-4 py-3 text-sm text-muted">
           NEAR is still running this transaction. The result appears here when it finishes; you can close this, and it shows in your History.
+          <TxLink hash={state.hash} />
+        </div>
+      )}
+      {state.step === "unknown" && (
+        <div className="mt-6 rounded-xl border border-line bg-background/50 px-4 py-3 text-sm text-muted">
+          The result didn&apos;t reach this page. Check your History and balances; the transaction shows its outcome too.
           <TxLink hash={state.hash} />
         </div>
       )}
@@ -150,7 +169,7 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
           </button>
         </div>
       ) : (
-        (state.step === "done" || state.step === "pending") && (
+        (state.step === "done" || state.step === "pending" || state.step === "unknown") && (
           <button className="mt-4 w-full rounded-xl border border-line py-3 font-medium hover:bg-surface-raised" onClick={onClose}>
             {state.step === "done" ? "Done" : "Close"}
           </button>

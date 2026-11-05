@@ -109,5 +109,5 @@ export const txUrl = (hash: string) => `https://nearblocks.io/txns/${hash}`;
 
 function walletMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return /reject|denied|cancel|closed|user/i.test(message) ? "The signature was cancelled in the wallet" : message;
+  return /reject|denied|cancel|closed/i.test(message) ? "The signature was cancelled in the wallet" : message;
 }

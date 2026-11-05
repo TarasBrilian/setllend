@@ -316,7 +316,8 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   const amounts = amountsOf(loan);
   const legs = legsOf(amounts, tokens, prices);
   const i = held.indexOf(token);
-  const maxRounded = Math.floor(maxWithdrawOf(debt, legs, i) * 1e6) / 1e6;
+  // With debt, the limit is rounded down to stay inside it; without, all of it may go, to the last unit.
+  const maxRounded = debt > 0 ? Math.floor(maxWithdrawOf(debt, legs, i) * 1e6) / 1e6 : amounts[token];
   const [amount, setAmount] = useState(decimalString(maxRounded));
   const value = Number(amount) || 0;
   const afterLegs = legsOf({ ...amounts, [token]: Math.max(0, amounts[token] - value) }, tokens, prices);
@@ -368,7 +369,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
           value={token}
           onChange={(t) => {
             setToken(t);
-            setAmount(decimalString(Math.floor(maxWithdrawOf(debt, legs, held.indexOf(t)) * 1e6) / 1e6));
+            setAmount(decimalString(debt > 0 ? Math.floor(maxWithdrawOf(debt, legs, held.indexOf(t)) * 1e6) / 1e6 : amounts[t]));
           }}
         />
       )}
@@ -406,6 +407,11 @@ function RedeemForm({ maturity, note, onDone }: { maturity: U64; note: NoteView;
     done: "USDC reaches your Intents balance",
     summary: "Notes redeemed",
     detail: `${formatUsd(free)} is in your Intents balance`,
+    // The pool pays up to what it holds (contract-interface.md): the event says how much.
+    outcome: (body) => {
+      const redeemed = body.events.find((e) => e.event === "redeemed");
+      return redeemed?.event === "redeemed" ? `${formatUsd(usdcToNumber(redeemed.data.value))} is in your Intents balance` : undefined;
+    },
     // `value: null` redeems every free share (contract-interface.md).
     build: () => [setllendAuthCall({ action: "redeem", data: { maturity, value: null } })],
   };
