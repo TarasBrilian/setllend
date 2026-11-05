@@ -8,11 +8,15 @@
 //!   signer, the receiver gets `mt_on_transfer`, and the refund follows the returned vector, or
 //!   the full amount on a panic or a malformed return value.
 //! - `auth_call` stands in for a signed `auth_call` intent: `on_auth` runs detached.
+//! - `add_public_key` needs exactly 1 yoctoNEAR and registers a key for the predecessor;
+//!   `has_public_key` reads it back (the backend's setup script, `SOT/backend.md`).
 
 use near_sdk::json_types::{U64, U128};
 use near_sdk::serde_json::{self, json};
-use near_sdk::store::LookupMap;
-use near_sdk::{AccountId, Gas, GasWeight, NearToken, Promise, env, near, require};
+use near_sdk::store::{LookupMap, LookupSet};
+use near_sdk::{
+    AccountId, Gas, GasWeight, NearToken, Promise, PublicKey, assert_one_yocto, env, near, require,
+};
 
 /// Default `min_gas` of a `transfer` notification and of an `auth_call`, as on `intents.near`.
 /// Both calls also get a share of the remaining gas (weight 1), as there.
@@ -25,6 +29,7 @@ pub struct MockIntents {
     balances: LookupMap<(AccountId, String), u128>,
     /// When set, every `mt_transfer` panics. Used to test failed payouts.
     fail_transfers: bool,
+    public_keys: LookupSet<(AccountId, PublicKey)>,
 }
 
 impl Default for MockIntents {
@@ -32,6 +37,7 @@ impl Default for MockIntents {
         Self {
             balances: LookupMap::new(b"b"),
             fail_transfers: false,
+            public_keys: LookupSet::new(b"k"),
         }
     }
 }
@@ -57,6 +63,22 @@ impl MockIntents {
 
 #[near]
 impl MockIntents {
+    /// As on `intents.near`: exactly 1 yoctoNEAR, the key belongs to the predecessor, and a key
+    /// that is already registered panics. Unlike there, an implicit account's own key isn't implied.
+    #[payable]
+    pub fn add_public_key(&mut self, public_key: PublicKey) {
+        assert_one_yocto();
+        require!(
+            self.public_keys
+                .insert((env::predecessor_account_id(), public_key)),
+            "public key already exists"
+        );
+    }
+
+    pub fn has_public_key(&self, account_id: AccountId, public_key: PublicKey) -> bool {
+        self.public_keys.contains(&(account_id, public_key))
+    }
+
     /// Test faucet: credits `amount` out of thin air.
     pub fn deposit(&mut self, account_id: AccountId, token_id: String, amount: U128) {
         let balance = self.balance(&account_id, &token_id);
