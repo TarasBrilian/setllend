@@ -329,7 +329,7 @@ One service, `setllend`, built from the GitHub repo by Railpack, set up and chec
 | Volume | mounted at `/data`, `DATABASE_PATH=/data/setllend.db` | The database survives redeploys (D28) |
 | Domain | `https://setllend-production.up.railway.app`, to port 8080 | The frontend's API URL |
 
-Variables are set in the service, never in the repo. Until the deploy they stay unset except `DATABASE_PATH`, so the backend runs read-only and waits for the contract (`/health` shows `contract: not_deployed`).
+Variables are set in the service, never in the repo. Until the deploy only `DATABASE_PATH` and `ONE_CLICK_JWT` are set (the key since 2026-11-05: `/health` shows `oneclick.enabled: true`, and a dry quote from production priced a Base USDC deposit at about 1.2 bps, the keyed stablecoin fee ✅ 2026-11-05), so the 1Click endpoints work while the rest runs read-only and waits for the contract (`/health` shows `contract: not_deployed`).
 
 ## API
 
