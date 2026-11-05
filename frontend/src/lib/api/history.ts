@@ -16,6 +16,8 @@ export type HistoryEvent = SetllendEvent & {
   timestamp: U64;
   tx_hash: string | null;
   account_orders?: { order_id: U64; kind: OrderKind }[];
+  /** `order_cancelled` only: the order's kind, maturity, and rate, or null if the backend doesn't know it (D65). */
+  order?: { kind: OrderKind; maturity: U64; rate_bps: number } | null;
 };
 
 /** The fields of a 1Click row (`GET /api/accounts/:account/oneclick`) the history uses. */
@@ -42,8 +44,9 @@ export type WithdrawalItem = {
 
 export const msToNs = (ms: number): U64 => String(BigInt(ms) * 1_000_000n);
 
-const base = (id: string, timestamp: U64, txHash: string | null) => ({
+const base = (id: string, timestamp: U64, txHash: string | null, seq: number | null = null) => ({
   id,
+  seq,
   order_kind: null,
   maturity: null,
   rate_bps: null,
@@ -61,7 +64,7 @@ export function eventRows(account: AccountId, e: HistoryEvent): HistoryEntry[] {
   const at = { timestamp: e.timestamp, txHash: e.tx_hash };
   const id = (suffix = "") => `event:${e.block_height}:${e.seq}${suffix}`;
   const row = (fields: Partial<HistoryEntry> & Pick<HistoryEntry, "kind" | "amount" | "token_id">, suffix = ""): HistoryEntry => ({
-    ...base(id(suffix), at.timestamp, at.txHash),
+    ...base(id(suffix), at.timestamp, at.txHash, e.seq),
     ...fields,
   });
   const perToken = (kind: HistoryEntry["kind"], tokens: Record<TokenId, U128>, maturity: U64) =>
@@ -82,14 +85,17 @@ export function eventRows(account: AccountId, e: HistoryEvent): HistoryEntry[] {
       );
     case "order_cancelled": {
       if (e.data.owner !== account) return [];
-      // The event doesn't name the kind: unlocked shares mean a note sale, refunded USDC a lend order, collateral a borrow.
+      // The order's kind, maturity, and rate come from the backend (D65); without them, unlocked shares
+      // mean a note sale, refunded USDC a lend order, and collateral a borrow.
+      const order = e.order ?? null;
+      const of = { maturity: order?.maturity ?? null, rate_bps: order?.rate_bps ?? null };
       if (e.data.unlocked_shares !== null) {
-        return [row({ kind: "cancelled", order_kind: "sell_note", amount: e.data.unlocked_shares, token_id: ASSETS.usdcNear })];
+        return [row({ kind: "cancelled", order_kind: "sell_note", amount: e.data.unlocked_shares, token_id: ASSETS.usdcNear, ...of })];
       }
       const refunded = Object.entries(e.data.refunded).filter(([token]) => known(token));
-      if (refunded.length === 0) return [row({ kind: "cancelled", order_kind: "borrow", amount: "0", token_id: ASSETS.usdcNear })];
+      if (refunded.length === 0) return [row({ kind: "cancelled", order_kind: order?.kind ?? "borrow", amount: "0", token_id: ASSETS.usdcNear, ...of })];
       return refunded.map(([token, amount]) =>
-        row({ kind: "cancelled", order_kind: token === ASSETS.usdcNear ? "lend" : "borrow", amount, token_id: token }, `:${token}`),
+        row({ kind: "cancelled", order_kind: order?.kind ?? (token === ASSETS.usdcNear ? "lend" : "borrow"), amount, token_id: token, ...of }, `:${token}`),
       );
     }
     case "repaid":
@@ -97,6 +103,8 @@ export function eventRows(account: AccountId, e: HistoryEvent): HistoryEntry[] {
     case "redeemed":
       return e.data.account === account ? [row({ kind: "redeemed", maturity: e.data.maturity, amount: e.data.value, token_id: ASSETS.usdcNear })] : [];
     case "liquidated":
+      // The keeper's own account sees the liquidations it made as fills of its USDC, not as its loans.
+      if (e.data.borrower !== account) return [];
       return [row({ kind: "liquidated", maturity: e.data.maturity, amount: e.data.repaid, token_id: ASSETS.usdcNear })];
     case "collateral_added":
       return e.data.account === account ? perToken("collateral_added", e.data.collateral, e.data.maturity) : [];
@@ -150,10 +158,13 @@ export function withdrawalRow(w: WithdrawalItem): HistoryEntry | null {
   };
 }
 
-/** Newest first; equal times keep a stable order by id. */
+/** Newest first: by time, then, within one block, by the event's place in it (`seq`), then by id for a stable order. */
 export function byTimeDesc(a: HistoryEntry, b: HistoryEntry): number {
   const d = BigInt(b.timestamp) - BigInt(a.timestamp);
-  return d > 0n ? 1 : d < 0n ? -1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  if (d !== 0n) return d > 0n ? 1 : -1;
+  const s = (b.seq ?? -1) - (a.seq ?? -1);
+  if (s !== 0) return s;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 /**

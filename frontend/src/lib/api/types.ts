@@ -73,7 +73,9 @@ export type Trade = OrderFilled & { timestamp: U64 };
 export type LiveMessage =
   | ({ type: "book" } & Book)
   | ({ type: "trade" } & Trade)
-  | { type: "event" | "intent" | "oneclick"; account: AccountId };
+  | { type: "event" | "intent" | "oneclick"; account: AccountId }
+  /** Sent by the client itself after the socket reopened: pushes may have been missed. */
+  | { type: "reconnected" };
 
 /** Totals of one maturity, as `GET /api/maturities` carries them. */
 export type MaturityStats = {
@@ -113,6 +115,8 @@ export type HistoryKind =
 export type HistoryEntry = {
   /** Unique within the history: the source and its own key. */
   id: string;
+  /** An event's place in the backend's event log, which orders rows of one block; null for other sources. */
+  seq: number | null;
   kind: HistoryKind;
   order_kind: OrderKind | null;
   maturity: U64 | null;

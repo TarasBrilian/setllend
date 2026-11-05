@@ -134,6 +134,8 @@ let sent = new Set<string>();
 let retryMs = RECONNECT_MIN_MS;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+/** Whether a socket of this tab was open before, so the next open is a reconnect. */
+let everOpened = false;
 
 const wanted = () => new Set([...listeners].flatMap((l) => [...l.channels]));
 
@@ -157,9 +159,13 @@ function connect(): void {
   const ws = new WebSocket(WS_URL);
   socket = ws;
   sent = new Set();
+  const again = everOpened;
   ws.onopen = () => {
     retryMs = RECONNECT_MIN_MS;
+    everOpened = true;
     sync();
+    // Pushes sent while the socket was down are lost: every listener refetches what it shows.
+    if (again) for (const l of listeners) l.onMessage({ type: "reconnected" });
   };
   ws.onmessage = (event) => {
     let message: LiveMessage;
@@ -188,14 +194,20 @@ function connect(): void {
 function sync(): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
   const want = wanted();
-  const missing = [...want].filter((t) => !sent.has(t));
+  let missing = [...want].filter((t) => !sent.has(t));
   if (missing.length === 0) return;
   if (sent.size + missing.length > MAX_TOPICS) {
-    const old = socket;
-    socket = null;
-    old.close();
-    connect();
-    return;
+    // Topics no longer wanted still count on the server: start over with the wanted ones.
+    if (sent.size > 0 && want.size <= MAX_TOPICS) {
+      const old = socket;
+      socket = null;
+      old.close();
+      connect();
+      return;
+    }
+    // More than the server takes at all: the first ones only, rather than reconnecting forever.
+    missing = missing.slice(0, MAX_TOPICS - sent.size);
+    if (missing.length === 0) return;
   }
   socket.send(JSON.stringify({ subscribe: missing }));
   missing.forEach((t) => sent.add(t));

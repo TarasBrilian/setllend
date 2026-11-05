@@ -101,7 +101,11 @@ export function AccountTables({
       </Table>
     );
   } else {
-    body = !history.entries ? (
+    body = history.failed ? (
+      <Empty>
+        History could not be loaded. <Action onClick={history.retry}>Try again</Action>
+      </Empty>
+    ) : !history.entries ? (
       <Empty>Loading…</Empty>
     ) : (
       <>

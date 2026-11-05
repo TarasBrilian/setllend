@@ -20,8 +20,13 @@ export function useLiveMarket(maturities: U64[]) {
 
   useEffect(() => {
     if (key === "" || mode === null) return;
-    const channels = key.split(",").flatMap((m) => [`book:${m}`, `trades:${m}`]);
+    const list = key.split(",");
+    const channels = list.flatMap((m) => [`book:${m}`, `trades:${m}`]);
     return subscribe(channels, (message) => {
+      if (message.type === "reconnected") {
+        for (const m of list) for (const k of ["book", "trades"]) void queryClient.invalidateQueries({ queryKey: [k, m] });
+        return;
+      }
       if (message.type !== "book" && message.type !== "trade") return;
       if (message.type === "book") {
         const book: Book = { maturity: message.maturity, bids: message.bids, asks: message.asks };
@@ -37,7 +42,7 @@ export function useLiveMarket(maturities: U64[]) {
 
 /**
  * Refetches the account's data when `/ws` pushes something for it: an event that names it, a pending
- * intent's outcome, or a 1Click quote's change (SOT/frontend.md#data, D65).
+ * intent's outcome, or a 1Click quote's change, and after a reconnect (SOT/frontend.md#data, D65).
  */
 export function useLiveAccount(account: string | undefined) {
   const queryClient = useQueryClient();

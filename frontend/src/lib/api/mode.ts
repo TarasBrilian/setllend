@@ -24,15 +24,18 @@ export function modeKnown(): Promise<void> {
   return known;
 }
 
-/** Asks `/health` and returns the mode it implies; any failure means the mocks. */
-export async function checkMode(): Promise<ApiMode> {
+/** Once live, this many missed `/health` checks in a row switch to the mocks (D65). */
+export const MISSED_CHECKS_TO_MOCK = 3;
+
+/** What `/health` says: the backend's mode, or `unreachable` when it gave no usable answer. */
+export async function checkHealth(): Promise<ApiMode | "unreachable"> {
   try {
     const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS), cache: "no-store" });
-    if (!res.ok) return "mock";
+    if (!res.ok) return "unreachable";
     const health = (await res.json()) as { contract?: unknown };
     return health.contract === "ready" ? "live" : "mock";
   } catch {
-    return "mock";
+    return "unreachable";
   }
 }
 

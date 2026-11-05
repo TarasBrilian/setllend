@@ -28,7 +28,16 @@ export function History({ history, ref }: { history: ReturnType<typeof useAccoun
         <h2 className="text-lg font-semibold">History</h2>
         <Tabs options={Object.keys(FILTERS) as Filter[]} value={filter} onChange={setFilter} size="sm" />
       </div>
-      <HistoryTable entries={shown} withMaturity empty={history.entries ? "Nothing here yet." : "Loading…"} />
+      {history.failed ? (
+        <p className="py-6 text-center text-sm text-muted">
+          History could not be loaded.{" "}
+          <button type="button" onClick={history.retry} className="cursor-pointer text-accent-soft hover:text-white">
+            Try again
+          </button>
+        </p>
+      ) : (
+        <HistoryTable entries={shown} withMaturity empty={history.entries ? "Nothing here yet." : "Loading…"} />
+      )}
       {history.hasMore && (
         <div className="mt-4 flex justify-center">
           <button

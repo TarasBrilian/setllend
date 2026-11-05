@@ -92,7 +92,10 @@ export function HistoryTable({ entries, withMaturity, empty }: { entries: Histor
           <Cell>{e.rate_bps === null ? "–" : formatRate(e.rate_bps)}</Cell>
           <Cell muted>{formatTime(e.timestamp)}</Cell>
           <Cell>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-xs">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-xs"
+              title={e.status === "unknown" ? "The outcome isn't known. Check your Intents balance and your NEAR account." : undefined}
+            >
               <span className={`size-1.5 rounded-full ${e.status === "success" ? "bg-emerald-400" : e.status === "pending" ? "bg-amber-300" : e.status === "unknown" ? "bg-faint" : "bg-red-400"}`} />
               {e.status[0].toUpperCase() + e.status.slice(1)}
             </span>

@@ -223,6 +223,7 @@ export function getAccountHistory(account: AccountId, cursor: HistoryCursor | nu
     rest: Partial<HistoryEntry> = {},
   ): HistoryEntry => ({
     id: `mock:${hoursAgo}:${kind}`,
+    seq: null,
     kind,
     order_kind: null,
     maturity,
@@ -320,21 +321,23 @@ function tradesOf(maturity: U64): Trade[] {
 // flashes can be seen (SOT/frontend.md#data). Each open maturity gets one random event every 0.5 to
 // 1.5 s: a fill at the best level that sometimes sweeps 2 levels, a new order, or a cancel, with
 // the spread kept at most MAX_SPREAD_BPS wide.
-// It runs only while someone subscribes, and pushes what `/ws` would push: the trades first, then the
-// full book.
+// It runs only while someone subscribes to a book or trades channel, and pushes what `/ws` would
+// push: the trades first, then the full book. The mock pushes nothing on `account:` channels.
 
 type Listener = { channels: Set<string>; onMessage: (message: LiveMessage) => void };
 const listeners = new Set<Listener>();
 const simTimers = new Map<U64, ReturnType<typeof setTimeout>>();
 
+const marketListener = (l: Listener) => [...l.channels].some((c) => c.startsWith("book:") || c.startsWith("trades:"));
+
 /** Mirrors WebSocket `/ws` (SOT/backend.md#websocket-ws) for `book:<maturity>` and `trades:<maturity>`. Returns the unsubscribe. */
 export function subscribe(channels: string[], onMessage: (message: LiveMessage) => void): () => void {
   const listener = { channels: new Set(channels), onMessage };
   listeners.add(listener);
-  if (simTimers.size === 0) MATURITIES.forEach(scheduleSim);
+  if (marketListener(listener) && simTimers.size === 0) MATURITIES.forEach(scheduleSim);
   return () => {
     listeners.delete(listener);
-    if (listeners.size === 0) {
+    if (![...listeners].some(marketListener)) {
       simTimers.forEach(clearTimeout);
       simTimers.clear();
     }

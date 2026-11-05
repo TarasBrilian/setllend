@@ -25,6 +25,9 @@ export function useAccountHistory(account: string | undefined, enabled = true) {
   }
   return {
     entries,
+    /** The first page failed after its retries; `retry` asks again. */
+    failed: query.isError && !query.data,
+    retry: () => void query.refetch(),
     hasMore: query.hasNextPage,
     loadMore: () => void query.fetchNextPage(),
     loadingMore: query.isFetchingNextPage,
