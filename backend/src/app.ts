@@ -1,6 +1,7 @@
 // REST API (SOT/backend.md#api). Amounts stay decimal strings, as on chain.
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { type Context, Hono } from "hono";
+import { cors } from "hono/cors";
 import { NotDeployedError } from "./chain/rpc.ts";
 import type { HistoryCursor, StoredEvent } from "./chain/store.ts";
 import { bookSides } from "./matcher/book.ts";
@@ -62,6 +63,9 @@ export function createApp(service: Service) {
   const oneclickFlood = new FloodGuard();
   const dryQuoteFlood = new FloodGuard(Date.now, FLOOD.dryQuotesPerMinute);
   let salt: { at: number; value: Promise<string> } | null = null;
+
+  // Any origin, no credentials (D65): the API has no cookies or logins, so an origin check protects nothing.
+  app.use("*", cors({ origin: "*", allowMethods: ["GET", "POST"], allowHeaders: ["Content-Type"] }));
 
   const ready = () => {
     if (service.contractState === "not_deployed") throw new HttpError(503, "The Setllend contract is not deployed yet");
@@ -218,8 +222,24 @@ export function createApp(service: Service) {
     const limit = limitOf(c.req.query("limit"));
     const rows = store.history(account, { before: cursor, limit });
     const last = rows.at(-1);
+    // Fills and cancels name only order IDs (D65): a fill gets `account_orders`, the account's orders
+    // in it with their kind; a cancel gets `order`, the order's kind, maturity, and rate.
+    const placed = new Map(store.ordersOf(account).map((o) => [o.order_id, o]));
+    const withOrders = (row: StoredEvent) => {
+      const json = eventJson(row);
+      if (row.event.event === "order_filled") {
+        const { bid, ask } = row.event.data;
+        const account_orders = [bid, ask].filter((id) => placed.has(id)).map((order_id) => ({ order_id, kind: placed.get(order_id)!.kind }));
+        return { ...json, account_orders };
+      }
+      if (row.event.event === "order_cancelled") {
+        const o = placed.get(row.event.data.order_id);
+        return { ...json, order: o ? { kind: o.kind, maturity: o.maturity, rate_bps: o.rate_bps } : null };
+      }
+      return json;
+    };
     return c.json({
-      events: rows.map(eventJson),
+      events: rows.map(withOrders),
       next: rows.length === limit && last ? `${last.block_height}:${last.seq}` : null,
     });
   });
