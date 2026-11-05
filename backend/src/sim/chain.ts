@@ -25,7 +25,8 @@ const PAGE = 200;
 
 type Block = FinalBlock & { snapshot: World };
 
-type World = { setllend: SetllendState; intents: IntentsState; usdcStorage: Set<AccountId> };
+/** `usdc` and `near`: what withdrawals sent to NEAR accounts, outside `intents.near`. */
+type World = { setllend: SetllendState; intents: IntentsState; usdcStorage: Set<AccountId>; usdc: Map<AccountId, bigint>; near: Map<AccountId, bigint> };
 
 type AccessKey = { nonce: bigint; receiver: AccountId | null; methods: string[] };
 
@@ -41,6 +42,9 @@ export class SimChain implements Rpc, TxRpc, TxSource {
   /** Feed ID → price; `publish_time` is always the block time. */
   readonly prices = new Map<string, Price>();
   usdcStorage = new Set<AccountId>();
+  /** USDC and NEAR that withdrawals sent to NEAR accounts. */
+  usdc = new Map<AccountId, bigint>();
+  near = new Map<AccountId, bigint>();
   private readonly accessKeys = new Map<string, AccessKey>();
   private offsetNs = 0n;
   private readonly blocks: Block[] = [];
@@ -109,7 +113,7 @@ export class SimChain implements Rpc, TxRpc, TxSource {
   }
 
   private world(): World {
-    return structuredClone({ setllend: this.setllend.s, intents: this.intents.st, usdcStorage: this.usdcStorage });
+    return structuredClone({ setllend: this.setllend.s, intents: this.intents.st, usdcStorage: this.usdcStorage, usdc: this.usdc, near: this.near });
   }
 
   private restore(world: World): void {
@@ -117,6 +121,8 @@ export class SimChain implements Rpc, TxRpc, TxSource {
     this.setllend.s = copy.setllend;
     this.intents.st = copy.intents;
     this.usdcStorage = copy.usdcStorage;
+    this.usdc = copy.usdc;
+    this.near = copy.near;
   }
 
   /** Runs `fn` after everything queued before it: one transaction at a time. */
@@ -164,6 +170,13 @@ export class SimChain implements Rpc, TxRpc, TxSource {
     });
   }
 
+  /** `storage_deposit` on the USDC contract, as the UI's "Register on USDC" step sends it. */
+  registerUsdc(account: AccountId): Promise<void> {
+    return this.inBlock(async () => {
+      this.usdcStorage.add(account);
+    });
+  }
+
   setPrice(feedId: string, usd: number): void {
     const price = BigInt(Math.round(usd * 1e8));
     this.prices.set(feedId, { price, conf: price / 2_000n, expo: -8 });
@@ -192,8 +205,10 @@ export class SimChain implements Rpc, TxRpc, TxSource {
     return block.height;
   }
 
-  async account(): Promise<AccountState> {
-    return { amount: 10n * 10n ** 24n, storageUsage: 1_000 };
+  /** 10 NEAR for every account, plus what `native_withdraw` sent it. */
+  async account(accountId: string, height?: number): Promise<AccountState> {
+    const block = typeof height === "number" ? (this.blocks.find((b) => b.height === height) ?? this.latest()) : this.latest();
+    return { amount: 10n * 10n ** 24n + (block.snapshot.near.get(accountId) ?? 0n), storageUsage: 1_000 };
   }
 
   async accountExists(): Promise<boolean> {
@@ -219,6 +234,9 @@ export class SimChain implements Rpc, TxRpc, TxSource {
       }
       if (contractId === USDC_CONTRACT && method === "storage_balance_of") {
         return (world.usdcStorage.has(String(args.account_id)) ? { total: "1250000000000000000000", available: "0" } : null) as T;
+      }
+      if (contractId === USDC_CONTRACT && method === "ft_balance_of") {
+        return (world.usdc.get(String(args.account_id)) ?? 0n).toString() as T;
       }
     } catch (error) {
       if (isPanic(error)) throw new Error(`wasm execution failed: Smart contract panicked: ${(error as Error).message}`);
@@ -388,6 +406,7 @@ export class SimChain implements Rpc, TxRpc, TxSource {
       case "ft_withdraw": {
         const sent = await this.exec(effect.token, () => {
           if (effect.token === USDC_CONTRACT && !this.usdcStorage.has(effect.receiver)) throw new IntentsPanic(`The account ${effect.receiver} is not registered`);
+          if (effect.token === USDC_CONTRACT) this.usdc.set(effect.receiver, (this.usdc.get(effect.receiver) ?? 0n) + effect.amount);
         });
         // `ft_resolve_withdraw` returns what reached the receiver; a failed transfer is refunded.
         await this.exec(INTENTS, () => {
@@ -399,7 +418,9 @@ export class SimChain implements Rpc, TxRpc, TxSource {
       }
       case "native_withdraw":
         await this.exec("wrap.near", () => {});
-        await this.exec(effect.receiver, () => {});
+        await this.exec(effect.receiver, () => {
+          this.near.set(effect.receiver, (this.near.get(effect.receiver) ?? 0n) + effect.amount);
+        });
         return;
     }
   }
