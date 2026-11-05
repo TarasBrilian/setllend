@@ -129,7 +129,7 @@ describe("withdrawals (D64)", () => {
   it("withdraws USDC with ft_withdraw, naming the token contract without nep141:", () => {
     expect(withdrawIntent(ASSETS.usdcNear, 5_000_000n, "alice.near")).toEqual({
       intent: "ft_withdraw",
-      token: "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+      token: ASSETS.usdcNear.slice("nep141:".length),
       receiver_id: "alice.near",
       amount: "5000000",
     });
