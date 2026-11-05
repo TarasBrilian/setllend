@@ -25,6 +25,7 @@ setllend/
 │       ├── keeper/       # liquidation + maturity settlement: scan (scan.ts), loop (keeper.ts)
 │       ├── mm-agent/     # market-maker agent: settings (config.ts), base rate (base.ts), quote planner (quotes.ts), loop (agent.ts)
 │       ├── oneclick/     # 1Click wrapper (quote, deposit, withdraw, status)
+│       ├── sim/          # simulated chain, intents.near, contract, oracle, and 1Click; `npm run sim` server; e2e test (D71)
 │       └── shared/       # msg, view, and event types, intent payload builders, asset IDs (copied to the frontend)
 ├── frontend/             # Next.js + wagmi/viem
 │   ├── AGENTS.md         # written by `next dev` (points agents to the bundled Next.js docs), kept as is

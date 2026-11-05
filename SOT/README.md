@@ -27,6 +27,8 @@ This folder is the single source of truth for building Setllend. The root `READM
 | [contract-interface.md](contract-interface.md) | `msg` formats and contract methods. **Contract between all components** |
 | [backend.md](backend.md) | Matcher, relayer, keeper, market-maker agent, 1Click wrapper: chain access, book, fills, retries, liquidation, API, persistence |
 | [frontend.md](frontend.md) | Pages, look, and how the UI gets its data |
+| [simulation.md](simulation.md) | The backend end to end on a simulated chain: what is simulated, the local server, the scenario test |
+| [smoke-test.md](smoke-test.md) | The mainnet smoke test after the deploy: accounts, amounts, steps, and the checking script |
 | [risk-params.md](risk-params.md) | LTV, liquidation threshold, bonus, grace, maturities, oracle guards |
 | [oracle.md](oracle.md) | Oracle survey, `aggregate-oracle.near`, risks, integration pattern |
 | [assets-and-flows.md](assets-and-flows.md) | Asset IDs, money paths, 1Click notes and fees |
