@@ -59,6 +59,25 @@ export function readOutcome(outcome: TxOutcome, contractId: string): IntentOutco
 }
 
 /**
+ * What an executed withdrawal to a NEAR account did (D64): it failed if any receipt failed. No
+ * Setllend receipt is involved. After `execute_intents` itself, a failed `ft_transfer` is refunded
+ * by `ft_resolve_withdraw`; a failed `native_withdraw` is not (near/intents `NativeWithdraw`).
+ */
+export function readWithdrawalOutcome(outcome: TxOutcome, kind: "ft_withdraw" | "native_withdraw"): IntentOutcome {
+  const [first, ...rest] = outcome.receipts;
+  if (!first) return { ok: false, events: [], error: { code: "rejected", reason: "The transaction produced no receipts" } };
+  const firstFailure = failureOf(first);
+  if (firstFailure !== null) return { ok: false, events: [], error: { code: "rejected", reason: firstFailure } };
+  for (const receipt of rest) {
+    const failure = failureOf(receipt);
+    if (failure === null) continue;
+    const after = kind === "ft_withdraw" ? "the USDC was refunded to your Intents balance" : "the NEAR was not refunded";
+    return { ok: false, events: [], error: { code: "rejected", reason: `${failure}; ${after}` } };
+  }
+  return { ok: true, events: [], error: null };
+}
+
+/**
  * The contract's message from a failed `simulate_intents` view: the text ends in
  * `GuestPanic { panic_msg: "<message>" }` (mainnet, 2026-11-04). Null for any other error (network,
  * RPC), which says nothing about the payload.

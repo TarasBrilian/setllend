@@ -4,7 +4,8 @@ import { TxError } from "../chain/rpc.ts";
 import { Sender } from "../chain/sender.ts";
 import { openDb } from "../db.ts";
 import { Service } from "../service.ts";
-import { TGAS, buildIntentPayload, setllendAuthCall, setllendTransfer } from "../shared/intents.ts";
+import { ASSETS } from "../shared/assets.ts";
+import { TGAS, buildIntentPayload, buildNep413Payload, setllendAuthCall, setllendTransfer, signedNep413, withdrawIntent } from "../shared/intents.ts";
 import { CONTRACT, FakeExplorer, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, outcomeReceipt, serve } from "../testing.ts";
 import { type RelayBody, Relayer, type Settled } from "./relayer.ts";
 
@@ -198,6 +199,79 @@ describe("Relayer.submit", () => {
     const fresh = await setup();
     fresh.service.market.config = null;
     expect((await fresh.relayer.submit(body(lend))).body.error?.code).toBe("not_ready");
+  });
+});
+
+describe("Relayer.submit, withdrawals to a NEAR account (D64)", () => {
+  const ALICE = "alice.near";
+  const USDC_CONTRACT = USDC.slice("nep141:".length);
+  const withdrawal = (intent: ReturnType<typeof withdrawIntent>) => {
+    const payload = buildNep413Payload({ signerId: intent.receiver_id, intents: [intent], deadline: new Date(NOW.getTime() + 300_000), salt: "0a1b2c3d" });
+    return { signed: signedNep413(payload, `ed25519:${"3".repeat(44)}`, new Uint8Array(64).fill(7)) };
+  };
+  const usdcOut = withdrawal(withdrawIntent(USDC, 5_000_000n, ALICE));
+  const nearOut = (receiver = ALICE) => withdrawal(withdrawIntent(ASSETS.wnear, 10n ** 24n, receiver));
+
+  it("checks the receiver's USDC storage at the latest block, then relays the ft_withdraw", async () => {
+    const { rpc, tx, relayer, service, simulated } = await setup();
+    rpc.on(`${USDC_CONTRACT}.storage_balance_of`, () => ({ total: "1250000000000000000000", available: "0" }));
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), outcomeReceipt("intents.near")] });
+    const result = await relayer.submit(usdcOut);
+    expect(rpc.calls.find((c) => c.method === "storage_balance_of")).toMatchObject({ args: { account_id: ALICE }, height: "optimistic" });
+    expect(simulated).toEqual([{ signed: [usdcOut.signed] }]);
+    expect(result).toMatchObject({ status: 200, body: { ok: true, actions: ["ft_withdraw"], events: [], error: null } });
+    expect(service.submissions.get(result.body.tx_hash!)).toMatchObject({ status: "ok", kind: "withdraw", signer: ALICE });
+  });
+
+  it("answers storage_missing without simulating when the receiver has no USDC storage", async () => {
+    const { rpc, tx, relayer, simulated } = await setup();
+    rpc.on(`${USDC_CONTRACT}.storage_balance_of`, () => null);
+    const result = await relayer.submit(usdcOut);
+    expect(result).toMatchObject({ status: 400, body: { ok: false, actions: ["ft_withdraw"], error: { code: "storage_missing", reason: expect.stringMatching(/storage_deposit/) } } });
+    expect(simulated).toHaveLength(0);
+    expect(tx.sent).toHaveLength(0);
+  });
+
+  it("answers receiver_missing for a named account that doesn't exist, and skips the check for an implicit one", async () => {
+    const { rpc, relayer, tx } = await setup();
+    tx.onStatus = (hash) => ({ hash, executed: true, receipts: [outcomeReceipt("intents.near"), outcomeReceipt("wrap.near"), outcomeReceipt("intents.near")] });
+    expect(await relayer.submit(nearOut())).toMatchObject({ status: 400, body: { error: { code: "receiver_missing" } } });
+    expect(tx.sent).toHaveLength(0);
+    rpc.accounts.set(ALICE, { amount: 1n, storageUsage: 100 });
+    expect(await relayer.submit(nearOut())).toMatchObject({ status: 200, body: { ok: true, actions: ["native_withdraw"] } });
+    expect((await relayer.submit(nearOut("ab".repeat(32)))).status).toBe(200);
+  });
+
+  it("answers submit_failed when a pre-check can't run", async () => {
+    const { rpc, relayer } = await setup();
+    rpc.on(`${USDC_CONTRACT}.storage_balance_of`, () => {
+      throw new Error("fetch failed");
+    });
+    expect(await relayer.submit(usdcOut)).toMatchObject({ status: 502, body: { error: { code: "submit_failed", reason: expect.stringMatching(/fetch failed/) } } });
+  });
+
+  it("reads a failed ft_transfer as rejected and refunded, also once a pending one settles", async () => {
+    const { rpc, tx, relayer, settled, nextSettle } = await setup();
+    rpc.on(`${USDC_CONTRACT}.storage_balance_of`, () => ({ total: "1", available: "0" }));
+    const failedTransfer = (hash: string) => ({
+      hash,
+      executed: true,
+      receipts: [outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT, [], { panic: "paused" }), outcomeReceipt("intents.near")],
+    });
+    tx.onStatus = failedTransfer;
+    expect((await relayer.submit(usdcOut)).body).toMatchObject({ ok: false, error: { code: "rejected", reason: expect.stringMatching(/refunded/) } });
+
+    tx.onSend = () => {
+      throw new TxError("timeout", "TIMEOUT_ERROR");
+    };
+    let done = false;
+    tx.onStatus = (hash) => (done ? failedTransfer(hash) : { hash, executed: false, receipts: [] });
+    const pending = await relayer.submit(withdrawal(withdrawIntent(USDC, 7n, ALICE)));
+    expect(pending.status).toBe(202);
+    const settle = nextSettle();
+    done = true;
+    await settle;
+    expect(settled.at(-1)).toMatchObject({ account: ALICE, body: { actions: ["ft_withdraw"], error: { reason: expect.stringMatching(/refunded/) } } });
   });
 });
 
