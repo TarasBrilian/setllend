@@ -10,7 +10,7 @@ const repaid = (amount: string) =>
   eventLine("repaid", { borrower: "a.near", payer: "a.near", maturity: M, amount, debt_remaining: "0" });
 const repayTx = (hash: string, height: number, amount: string) => tx(hash, receipt(height + 1, [repaid(amount)], { id: `r-${hash}` }));
 
-function setup(opts: { final?: number; startBlock?: number; store?: Store } = {}) {
+function setup(opts: { final?: number; startBlock?: number; store?: Store; sleep?: (ms: number) => Promise<void> } = {}) {
   const rpc = new FakeRpc();
   rpc.final = { height: opts.final ?? 1_000, hash: "h", timestampNs: 7n };
   const source = new FakeExplorer();
@@ -30,13 +30,32 @@ function setup(opts: { final?: number; startBlock?: number; store?: Store } = {}
     onLoad: async (b) => {
       loads.push(b);
     },
-    sleep: noSleep,
+    sleep: "sleep" in opts ? opts.sleep : noSleep,
     log: () => {},
   });
   return { rpc, source, store, rounds, loads, follower };
 }
 
 describe("Follower", () => {
+  it("keeps its own sleep when given an undefined one, as the service passes in production", async () => {
+    // Found by running the backend on a simulated chain: the spread defaults let `sleep: undefined`
+    // replace the default, so the follower stopped after its first poll.
+    const { follower, source } = setup({ sleep: undefined });
+    await follower.init();
+    const original = FOLLOWER.pollMs;
+    FOLLOWER.pollMs = 1;
+    try {
+      const running = follower.run();
+      await new Promise((r) => setTimeout(r, 50));
+      follower.stop();
+      await running;
+    } finally {
+      FOLLOWER.pollMs = original;
+    }
+    expect(follower.status().error).toBeNull();
+    expect(source.listed.length).toBeGreaterThan(1);
+  });
+
   it("loads at the final height and starts reading there on a fresh database", async () => {
     const { follower, loads } = setup();
     await follower.init();
