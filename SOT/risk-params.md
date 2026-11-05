@@ -13,7 +13,7 @@ Only lending-mechanism parameters (as in Aave or Morpho) and internal technical 
 | Liquidator bonus (`liq_bonus`, per token) | **500 bps (5%)** | Common level for ETH collateral. At the threshold, collateral is 125% of debt, so ETH can fall a further ~16% below the threshold before a liquidation stops being solvent (125% → 105%) |
 | Close factor | 100% | MVP: one liquidation can repay the whole loan |
 | Grace period after maturity (`grace`) | **1 hour** | Hackathon value, disclosed in the README. Lets a real overdue liquidation on mainnet happen within the demo, with no price manipulation. Production would use 24 to 72 hours |
-| Maturities at launch | **2026-11-13, 2026-11-27, 2026-12-25**, Fridays 08:00 UTC | About 1, 3, and 7 weeks after the 2026-11-06 start. The first one matures before submission and judging, so maturity and redemption can be shown. Three books keep liquidity from fragmenting |
+| Maturities at launch | **2026-11-13, 2026-11-27, 2026-12-25**, Fridays 08:00 UTC, plus the test maturity **2026-11-08** (D69) | About 1, 3, and 7 weeks after the 2026-11-06 start. The first launch one matures before submission and judging, so maturity and redemption can be shown. Three books keep liquidity from fragmenting. 2026-11-08 matures a day after the 2026-11-07 deploy, for our own small test orders through the whole lifecycle |
 | Extra demo maturities | Added by the owner when needed | E.g. one a couple of hours out to demo repay, overdue liquidation, and redemption end to end |
 | Rate tick | 1 bps | From [product.md](product.md) |
 | Interest basis | Simple, 365-day year | D16 |
@@ -27,6 +27,7 @@ Maturity timestamps (nanoseconds) for `add_maturity`:
 
 | Maturity | Timestamp |
 |---|---|
+| 2026-11-08 08:00 UTC (test, D69) | `1794124800000000000` |
 | 2026-11-13 08:00 UTC | `1794556800000000000` |
 | 2026-11-27 08:00 UTC | `1795766400000000000` |
 | 2026-12-25 08:00 UTC | `1798185600000000000` |
