@@ -249,6 +249,17 @@ describe("API", () => {
     expect(page2.events[1].account_orders).toBeUndefined();
   });
 
+  it("gives a cancel in the history its order's kind, maturity, and rate (D65)", async () => {
+    const { app, service } = await ready();
+    const placed = eventLine("order_placed", { order_id: "7", owner: LENDER, kind: "lend", maturity: M, rate_bps: 710, size: "5", collateral: null, expires_at: null });
+    const cancelled = eventLine("order_cancelled", { order_id: "7", owner: LENDER, refunded: { [USDC]: "5" }, unlocked_shares: null });
+    const unknown = eventLine("order_cancelled", { order_id: "8", owner: LENDER, refunded: {}, unlocked_shares: null });
+    service.store.commit(records(91, [placed]));
+    service.store.commit(records(92, [cancelled, unknown]));
+    const events = (await json(await app.request(`/api/accounts/${LENDER}/history`))).body.events;
+    expect(events.filter((e: any) => e.event === "order_cancelled").map((e: any) => e.order)).toEqual([null, { kind: "lend", maturity: M, rate_bps: 710 }]);
+  });
+
   it("allows any origin, without credentials, and answers preflight requests (D65)", async () => {
     const { app } = await ready();
     const res = await app.request("/api/config", { headers: { origin: "https://app.example" } });

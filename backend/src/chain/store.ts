@@ -100,14 +100,14 @@ export class Store {
   }
 
   /** `order_placed` events of an account: its orders, with kind and maturity. */
-  ordersOf(account: string): { order_id: string; kind: string; maturity: string }[] {
+  ordersOf(account: string): { order_id: string; kind: string; maturity: string; rate_bps: number }[] {
     const rows = this.db
       .prepare(
         `SELECT data FROM events WHERE event = 'order_placed'
            AND EXISTS (SELECT 1 FROM json_each(events.accounts) WHERE value = ?)`,
       )
       .all(account) as { data: string }[];
-    return rows.map((row) => JSON.parse(row.data) as { order_id: string; kind: string; maturity: string });
+    return rows.map((row) => JSON.parse(row.data) as { order_id: string; kind: string; maturity: string; rate_bps: number });
   }
 
   /** Owners of `orderIds`, from their `order_placed` events. */

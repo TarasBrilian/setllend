@@ -222,14 +222,21 @@ export function createApp(service: Service) {
     const limit = limitOf(c.req.query("limit"));
     const rows = store.history(account, { before: cursor, limit });
     const last = rows.at(-1);
-    // A fill names only order IDs; `account_orders` says which are the account's, and their kind (D65).
-    const kinds = new Map(store.ordersOf(account).map((o) => [o.order_id, o.kind]));
+    // Fills and cancels name only order IDs (D65): a fill gets `account_orders`, the account's orders
+    // in it with their kind; a cancel gets `order`, the order's kind, maturity, and rate.
+    const placed = new Map(store.ordersOf(account).map((o) => [o.order_id, o]));
     const withOrders = (row: StoredEvent) => {
       const json = eventJson(row);
-      if (row.event.event !== "order_filled") return json;
-      const { bid, ask } = row.event.data;
-      const account_orders = [bid, ask].filter((id) => kinds.has(id)).map((order_id) => ({ order_id, kind: kinds.get(order_id)! }));
-      return { ...json, account_orders };
+      if (row.event.event === "order_filled") {
+        const { bid, ask } = row.event.data;
+        const account_orders = [bid, ask].filter((id) => placed.has(id)).map((order_id) => ({ order_id, kind: placed.get(order_id)!.kind }));
+        return { ...json, account_orders };
+      }
+      if (row.event.event === "order_cancelled") {
+        const o = placed.get(row.event.data.order_id);
+        return { ...json, order: o ? { kind: o.kind, maturity: o.maturity, rate_bps: o.rate_bps } : null };
+      }
+      return json;
     };
     return c.json({
       events: rows.map(withOrders),
