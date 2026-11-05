@@ -1,33 +1,47 @@
 "use client";
 
-// The form of every action, with its submit: in live mode the wallet signs and the relayer sends
-// (D66), in mock mode the steps are simulated (D47). The steps and the result card are shown in place
-// of the form until the user closes them or tries again.
+// The form of every action, with its submit: in live mode its stages run (D66, D67): signing,
+// deposits, and withdrawals, one after another; in mock mode the steps are simulated (D47). The
+// steps and the result card are shown in place of the form until the user closes them.
 
+import QRCode from "qrcode";
+import { useEffect, useState } from "react";
 import { useAccount } from "@/lib/account";
 import { useApiMode } from "@/lib/api-mode";
-import { type RelayBody, txUrl } from "@/lib/intents-client";
-import { type ActionState, useIntentAction } from "@/lib/use-intent-action";
+import type { RelayBody } from "@/lib/intents-client";
+import { type PipelineState, type Stage, type StagePanel, usePipeline } from "@/lib/pipeline";
+import { intentStages } from "@/lib/stages";
 import { useStepper } from "@/lib/use-stepper";
-import { useState } from "react";
 import type { Intent } from "@/shared/intents";
 import { Stepper, SubmitButton } from "./form-parts";
 
-/** What a live action signs and says (D66). */
+/** What a live action runs and says (D66, D67). */
 export type LiveSpec = {
-  /** The wallet step, e.g. "Sign the lend order with your wallet". */
-  sign: string;
-  /** The last step, e.g. "Order placed in the book". */
-  done: string;
   /** The result card's title, e.g. "Lend order placed". */
   summary: string;
   /** A line under it, e.g. "1,000 USDC at 6.40% APR". */
   detail?: string;
-  /** A line read from the outcome instead, e.g. the amount a redemption actually paid. */
-  outcome?: (body: RelayBody) => string | undefined;
-  /** The intents, built when the user submits. */
-  build: () => Intent[];
+  /** A line read from what the stages left instead, e.g. what a redemption actually paid. */
+  outcome?: (vars: Record<string, unknown>) => string | undefined;
+  stages: Stage[];
 };
+
+/** A live action that signs one payload of intents (D66). */
+export function intentLive(o: {
+  sign: string;
+  done: string;
+  summary: string;
+  detail?: string;
+  build: () => Intent[];
+  outcome?: (body: RelayBody) => string | undefined;
+}): LiveSpec {
+  return {
+    summary: o.summary,
+    detail: o.detail,
+    outcome: o.outcome && ((vars) => (vars.relay ? o.outcome!(vars.relay as RelayBody) : undefined)),
+    stages: intentStages({ sign: o.sign, done: o.done, build: () => o.build() }),
+  };
+}
 
 export function ActionForm({
   steps,
@@ -40,7 +54,7 @@ export function ActionForm({
 }: {
   /** The simulated steps of mock mode. */
   steps: string[];
-  /** Undefined for an action that live mode doesn't offer yet (D66). */
+  /** Undefined for an action that live mode doesn't offer. */
   live: LiveSpec | undefined;
   error: string | undefined;
   label: string;
@@ -51,25 +65,23 @@ export function ActionForm({
 }) {
   const isLive = useApiMode() === "live";
   const { active } = useAccount();
-  const action = useIntentAction();
+  const pipeline = usePipeline();
   const stepper = useStepper(steps.length);
   // The spec as it was at submit: the form behind it can change meanwhile (a balance that drops after
   // the action moves Lend to "New deposit"), and the steps and result must not.
   const [running, setRunning] = useState<LiveSpec | null>(null);
   const reset = () => {
-    action.reset();
+    pipeline.reset();
     setRunning(null);
   };
   const close = onDone ?? (() => (running ? reset() : stepper.reset()));
 
-  if (running && action.state.step !== "idle") {
-    return <LiveProgress spec={running} state={action.state} onClose={close} onRetry={reset} />;
+  if (running && pipeline.state) {
+    return <LiveProgress spec={running} state={pipeline.state} onClose={close} onRetry={pipeline.retry} />;
   }
   if (stepper.step !== null) return <Stepper steps={steps} current={stepper.step} onDone={close} />;
 
-  // Live actions need a wallet to sign; a leg that deposits from or exits to another chain comes
-  // with step 3 of D65.
-  const blocked = !isLive ? undefined : !active ? "Connect a wallet" : !live ? "Not available yet" : undefined;
+  const blocked = !isLive ? undefined : !active ? "Connect a wallet" : !live ? "Not available here" : undefined;
   return (
     <form
       className={className}
@@ -78,7 +90,7 @@ export function ActionForm({
         if (error || blocked) return;
         if (isLive && live) {
           setRunning(live);
-          void action.run(live.build);
+          pipeline.start(live.stages);
         } else stepper.start();
       }}
     >
@@ -88,78 +100,59 @@ export function ActionForm({
   );
 }
 
-type StepState = "done" | "active" | "failed" | "todo";
-
-function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state: ActionState; onClose: () => void; onRetry: () => void }) {
-  const registering = state.step === "registering" || ("registered" in state && state.registered);
-  const steps: { label: string; key: "sign" | "register" | "send" | "done" }[] = [
-    { label: spec.sign, key: "sign" },
-    ...(registering ? [{ label: "Register your key on NEAR Intents (first time only)", key: "register" as const }] : []),
-    { label: state.step === "pending" ? "Sent to NEAR Intents. Still processing…" : "Sent to NEAR Intents", key: "send" },
-    { label: spec.done, key: "done" },
-  ];
-  const at = { signing: "sign", registering: "register", sending: "send", pending: "send", unknown: "send", done: "end", failed: state.step === "failed" ? state.at : "sign", idle: "sign" }[state.step];
-  const order = steps.map((s) => s.key);
-  const current = at === "end" ? order.length : order.indexOf(at as (typeof order)[number]);
-  const stateOf = (i: number): StepState => (i < current ? "done" : i === current ? (state.step === "failed" ? "failed" : "active") : "todo");
-  const hash = state.step === "done" ? state.body.tx_hash : state.step === "pending" || state.step === "unknown" || state.step === "failed" ? state.hash : null;
-  const detail = state.step === "done" ? (spec.outcome?.(state.body) ?? spec.detail) : spec.detail;
+function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state: PipelineState; onClose: () => void; onRetry: () => void }) {
+  const shown = state.stages.filter((s) => s.status !== "skipped");
+  const outcome = state.outcome;
+  const detail = outcome?.kind === "done" ? (spec.outcome?.(state.vars) ?? spec.detail) : spec.detail;
 
   return (
     <div>
       <ol className="flex flex-col gap-4">
-        {steps.map((s, i) => {
-          const st = stateOf(i);
-          return (
-            <li key={s.key} className="flex items-center gap-3">
-              <span
-                className={`grid size-8 shrink-0 place-items-center rounded-full border text-sm font-semibold ${
-                  st === "done"
-                    ? "border-accent bg-accent text-background"
-                    : st === "active"
-                      ? "animate-pulse border-accent text-accent"
-                      : st === "failed"
-                        ? "border-red-400 text-red-400"
-                        : "border-line text-faint"
-                }`}
-              >
-                {st === "done" ? "✓" : st === "failed" ? "✗" : i + 1}
-              </span>
-              <span className={st === "todo" ? "text-faint" : ""}>{s.label}</span>
-            </li>
-          );
-        })}
+        {shown.map((s, i) => (
+          <li key={s.key} className="flex items-center gap-3">
+            <span
+              className={`grid size-8 shrink-0 place-items-center rounded-full border text-sm font-semibold ${
+                s.status === "done"
+                  ? "border-accent bg-accent text-background"
+                  : s.status === "active"
+                    ? "animate-pulse border-accent text-accent"
+                    : s.status === "failed"
+                      ? "border-red-400 text-red-400"
+                      : "border-line text-faint"
+              }`}
+            >
+              {s.status === "done" ? "✓" : s.status === "failed" ? "✗" : i + 1}
+            </span>
+            <span className={s.status === "todo" ? "text-faint" : ""}>{s.label}</span>
+          </li>
+        ))}
       </ol>
 
-      {state.step === "done" && (
+      {state.panel && <DepositPanel panel={state.panel} />}
+
+      {outcome?.kind === "done" && (
         <div className="mt-6 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm">
           <p className="font-semibold text-white">{spec.summary}</p>
           {detail && <p className="mt-0.5 text-accent-soft">{detail}</p>}
-          {state.body.error?.code === "payout_failed" && <p className="mt-2 text-amber-300">{state.body.error.reason}</p>}
-          {hash && <TxLink hash={hash} />}
+          <Links links={state.links} />
         </div>
       )}
-      {state.step === "pending" && (
+      {outcome?.kind === "unknown" && (
         <div className="mt-6 rounded-xl border border-line bg-background/50 px-4 py-3 text-sm text-muted">
-          NEAR is still running this transaction. The result appears here when it finishes; you can close this, and it shows in your History.
-          <TxLink hash={state.hash} />
+          {outcome.reason}
+          <Links links={state.links} />
         </div>
       )}
-      {state.step === "unknown" && (
-        <div className="mt-6 rounded-xl border border-line bg-background/50 px-4 py-3 text-sm text-muted">
-          The result didn&apos;t reach this page. Check your History and balances; the transaction shows its outcome too.
-          <TxLink hash={state.hash} />
-        </div>
-      )}
-      {state.step === "failed" && (
+      {outcome?.kind === "failed" && (
         <div className="mt-6 rounded-xl border border-red-400/40 bg-red-400/10 px-4 py-3 text-sm">
-          <p className="font-semibold text-red-300">{state.at === "send" ? "Not done" : state.at === "register" ? "Key not registered" : "Not signed"}</p>
-          <p className="mt-0.5 text-muted">{state.reason}</p>
-          {hash && <TxLink hash={hash} />}
+          <p className="font-semibold text-red-300">Not done</p>
+          <p className="mt-0.5 text-muted">{outcome.reason}</p>
+          <Links links={state.links} />
         </div>
       )}
+      {outcome === null && state.links.length > 0 && <Links links={state.links} />}
 
-      {state.step === "failed" ? (
+      {outcome?.kind === "failed" ? (
         <div className="mt-4 grid grid-cols-2 gap-2">
           <button className="rounded-xl border border-line py-3 font-medium hover:bg-surface-raised" onClick={onClose}>
             Close
@@ -169,20 +162,63 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
           </button>
         </div>
       ) : (
-        (state.step === "done" || state.step === "pending" || state.step === "unknown") && (
-          <button className="mt-4 w-full rounded-xl border border-line py-3 font-medium hover:bg-surface-raised" onClick={onClose}>
-            {state.step === "done" ? "Done" : "Close"}
-          </button>
-        )
+        <button className="mt-4 w-full rounded-xl border border-line py-3 font-medium hover:bg-surface-raised" onClick={onClose}>
+          {outcome?.kind === "done" ? "Done" : "Close"}
+        </button>
       )}
+      {outcome === null && <p className="mt-2 text-center text-xs text-faint">Closing stops watching here; what was sent carries on and shows in History.</p>}
     </div>
   );
 }
 
-function TxLink({ hash }: { hash: string }) {
+function Links({ links }: { links: { label: string; url: string }[] }) {
+  if (links.length === 0) return null;
   return (
-    <a href={txUrl(hash)} target="_blank" rel="noreferrer" className="mt-2 inline-block text-accent-soft hover:text-white">
-      View transaction ↗
-    </a>
+    <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+      {links.map((l) => (
+        <a key={l.url} href={l.url} target="_blank" rel="noreferrer" className="text-accent-soft hover:text-white">
+          {l.label} ↗
+        </a>
+      ))}
+    </p>
+  );
+}
+
+/** Where to send a deposit by hand: a Bitcoin one, or a NEAR account's on an EVM chain (D67). */
+function DepositPanel({ panel }: { panel: StagePanel }) {
+  const [qr, setQr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!panel.qr) return;
+    let live = true;
+    QRCode.toDataURL(panel.address, { margin: 1, width: 160 }).then(
+      (url) => live && setQr(url),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [panel.address, panel.qr]);
+  const copy = () =>
+    navigator.clipboard.writeText(panel.address).then(
+      () => setCopied(true),
+      () => {},
+    );
+  return (
+    <div className="mt-6 flex gap-4 rounded-xl border border-line bg-background/50 p-4 text-sm">
+      {/* A data URL, which next/image does not optimize. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {panel.qr && (qr ? <img src={qr} alt="Deposit address QR code" className="size-32 shrink-0 rounded-lg bg-white p-1" /> : <div className="size-32 shrink-0" />)}
+      <div className="min-w-0">
+        <p className="text-muted">
+          Send exactly <span className="font-semibold text-white">{panel.amount}</span> on {panel.chain} to
+        </p>
+        <p className="mt-1 font-mono text-xs break-all text-white">{panel.address}</p>
+        <button type="button" onClick={copy} className="mt-2 rounded-lg border border-line px-3 py-1 text-xs hover:bg-surface-raised">
+          {copied ? "Copied" : "Copy address"}
+        </button>
+        <p className="mt-2 text-xs text-faint">{panel.note}</p>
+      </div>
+    </div>
   );
 }
