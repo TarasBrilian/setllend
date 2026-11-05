@@ -70,8 +70,13 @@ export function listen(sim: Sim, port: number): Promise<{ port: number; close():
   });
 
   app.post("/sim/oneclick/:id/arrive", async (c) => {
-    await sim.oneclick.arrive(c.req.param("id"));
-    return c.json(service.oneclick.row(c.req.param("id")));
+    const id = c.req.param("id");
+    try {
+      await sim.oneclick.arrive(id);
+    } catch {
+      return c.json({ error: "Unknown deposit address" }, 404);
+    }
+    return c.json(service.oneclick.row(id));
   });
 
   // One hub client per connection, as in index.ts.

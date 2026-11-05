@@ -194,12 +194,16 @@ describe("core run: order book, repayment, maturity, redemption, withdrawals, 1C
   });
 
   it("4. a tampered signature is refused before anything is sent", async () => {
+    const usdc = await usdcOf(client, lender.id);
+    const before = await book(client, m);
     const body = (await lender.body(client, [lend(m, USDC(1), 500)])) as { signed: { payload: { message: string } } };
     body.signed.payload.message = body.signed.payload.message.replace('"1000000"', '"2000000"');
     const { status, body: answer } = await client.post("/api/intents", body);
     expect(status).toBe(400);
     expect(answer.error.code).toBe("simulation_failed");
     expect(answer.error.reason).toContain("invalid signature");
+    expect(await usdcOf(client, lender.id)).toBe(usdc);
+    expect((await book(client, m)).bids).toEqual(before.bids);
   });
 
   it("5. a borrow fills at the maker's rate and opens a loan with the right debt", async () => {
@@ -265,9 +269,12 @@ describe("core run: order book, repayment, maturity, redemption, withdrawals, 1C
 
   it("9. a partial repay lowers the debt and fills the redemption pool", async () => {
     const before = BigInt((await loanOf(client, borrower.id, m))!.debt_face);
+    const pool = async () => BigInt((await sim.chain.view<Json>(sim.chain.contractId, "get_pool", { maturity: m })).redemption_pool);
+    const poolBefore = await pool();
     const body = await submit(client, borrower, [setllendTransfer(ASSETS.usdcNear, USDC(300), { action: "repay", data: { maturity: m, borrower: null } })]);
     expect(body.events.find((e: Json) => e.event === "repaid").data).toMatchObject({ amount: USDC(300).toString(), debt_remaining: (before - USDC(300)).toString() });
     await eventually("the lower debt", async () => (await loanOf(client, borrower.id, m))?.debt_face === (before - USDC(300)).toString());
+    expect(await pool()).toBe(poolBefore + USDC(300));
   });
 
   it("10. after maturity the borrower repays the rest", async () => {
@@ -322,7 +329,9 @@ describe("core run: order book, repayment, maturity, redemption, withdrawals, 1C
     const from = client.pushes.length;
     await client.post(`/api/oneclick/${deposit.body.id}/deposit-tx`, { tx_hash: `0x${"ab".repeat(32)}` });
     await client.push("deposit SUCCESS push", (p) => p.type === "oneclick" && p.id === deposit.body.id && p.status === "SUCCESS", from);
+    expect((await client.get(`/api/oneclick/${deposit.body.id}`)).status).toBe("SUCCESS");
     expect(await usdcOf(client, evm.id)).toBe(start + BigInt(deposit.body.amount_out));
+    expect((await client.post(`/sim/oneclick/${"0".repeat(64)}/arrive`, {})).status).toBe(404);
 
     const withdrawal = await client.post("/api/oneclick/quote", { account: evm.id, direction: "withdraw", asset: "USDC", chain: "arbitrum", amount: USDC(50).toString() });
     expect(withdrawal.body.intent.standard).toBe("erc191");

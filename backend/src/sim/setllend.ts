@@ -177,7 +177,7 @@ export class SimSetllend {
     for (const [token, amount] of sortedEntries(amounts)) this.payout(account, token, amount);
   }
 
-  // --- owner methods (admin.rs) ---
+  // --- owner methods (admin.rs): the two the setup needs ---
 
   addMaturity(maturity: bigint): void {
     require(this.predecessor === this.s.config.owner_id, "Owner only");
@@ -193,6 +193,9 @@ export class SimSetllend {
     require(token.token_id !== this.s.config.debt_token, "Debt token cannot be collateral");
     require(!this.collateralToken(token.token_id), "Collateral token exists");
     require(token.feed_id !== "", "Feed ID is empty");
+    // `assert_risk_params` (config.rs).
+    require(0 < token.max_ltv && token.max_ltv < token.liq_threshold, "Require 0 < max_ltv < liq_threshold");
+    require(token.liq_threshold * (10_000 + token.liq_bonus) < 10_000 * 10_000, "Require liq_threshold * (1 + liq_bonus) < 100%");
     const listed = { ...token, frozen: false };
     this.emit("collateral_token_added", {
       token_id: listed.token_id,
