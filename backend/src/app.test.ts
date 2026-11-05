@@ -244,6 +244,23 @@ describe("API", () => {
       [91, "order_filled"],
       [91, "order_placed"],
     ]);
+    // A fill on the first page names the account's own order and its kind, though order_placed is on page 2 (D65).
+    expect(page1.events[0].account_orders).toEqual([{ order_id: "1", kind: "lend" }]);
+    expect(page2.events[1].account_orders).toBeUndefined();
+  });
+
+  it("allows any origin, without credentials, and answers preflight requests (D65)", async () => {
+    const { app } = await ready();
+    const res = await app.request("/api/config", { headers: { origin: "https://app.example" } });
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-credentials")).toBeNull();
+    const preflight = await app.request("/api/intents", {
+      method: "OPTIONS",
+      headers: { origin: "https://app.example", "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-methods")).toMatch(/POST/);
+    expect(preflight.headers.get("access-control-allow-headers")?.toLowerCase()).toMatch(/content-type/);
   });
 
   it("serves the intents salt", async () => {
