@@ -97,7 +97,9 @@ cp .env.example .env              # fill in values as needed, all are optional f
 # {"ok":true,"contract":"not_deployed",...} and the data endpoints answer 503
 (cd backend && npm install && npm run dev)
 
-# Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet
+# Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet. It reads the backend at
+# NEXT_PUBLIC_API_URL (empty = the deployed one; http://localhost:8080 for the backend above) and shows
+# demo data, marked "Demo data", until that backend reports the contract as ready
 (cd frontend && npm install && npm run dev)
 ```
 
