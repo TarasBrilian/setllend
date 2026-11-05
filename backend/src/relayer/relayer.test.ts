@@ -248,6 +248,10 @@ describe("Relayer.submit, withdrawals to a NEAR account (D64)", () => {
       throw new Error("fetch failed");
     });
     expect(await relayer.submit(usdcOut)).toMatchObject({ status: 502, body: { error: { code: "submit_failed", reason: expect.stringMatching(/fetch failed/) } } });
+    rpc.accountExists = async () => {
+      throw new Error("fetch failed");
+    };
+    expect(await relayer.submit(nearOut())).toMatchObject({ status: 502, body: { error: { code: "submit_failed" } } });
   });
 
   it("reads a failed ft_transfer as rejected and refunded, also once a pending one settles", async () => {
@@ -256,7 +260,11 @@ describe("Relayer.submit, withdrawals to a NEAR account (D64)", () => {
     const failedTransfer = (hash: string) => ({
       hash,
       executed: true,
-      receipts: [outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT, [], { panic: "paused" }), outcomeReceipt("intents.near")],
+      receipts: [
+        outcomeReceipt("intents.near"),
+        outcomeReceipt(USDC_CONTRACT, [], { panic: "paused" }),
+        { ...outcomeReceipt("intents.near"), status: { SuccessValue: Buffer.from('"0"').toString("base64") } },
+      ],
     });
     tx.onStatus = failedTransfer;
     expect((await relayer.submit(usdcOut)).body).toMatchObject({ ok: false, error: { code: "rejected", reason: expect.stringMatching(/refunded/) } });
