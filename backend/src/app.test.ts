@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "./app.ts";
 import { openDb } from "./db.ts";
 import { Service } from "./service.ts";
+import { buildNep413Payload, signedNep413, withdrawIntent } from "./shared/intents.ts";
 import { CONTRACT, ETH, FakeExplorer, FakeOneClick, FakeRpc, FakeTxRpc, USDC, eventLine, fakeState, order, records, serve } from "./testing.ts";
 import { Hub } from "./ws.ts";
 
@@ -36,6 +37,12 @@ async function ready() {
   s.service.contractState = "ready";
   return s;
 }
+
+const withdrawalRequest = () => {
+  const intents = [withdrawIntent(USDC, 5_000_000n, BORROWER)];
+  const payload = buildNep413Payload({ signerId: BORROWER, intents, deadline: new Date("2026-11-05T00:05:00Z"), salt: "0a1b2c3d" });
+  return { signed: [signedNep413(payload, `ed25519:${"3".repeat(44)}`, new Uint8Array(64))] };
+};
 
 const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as any });
 
@@ -207,6 +214,15 @@ describe("API", () => {
     expect((await app.request("/api/accounts/0xAbC1111111111111111111111111111111111111")).status).toBe(400);
     expect((await app.request(`/api/trades/${M}?limit=0`)).status).toBe(400);
     expect((await app.request("/api/accounts/b.near/history?before=x")).status).toBe(400);
+  });
+
+  it("lists an account's withdrawals to its NEAR account, before the contract is loaded too (D64)", async () => {
+    const { app, service } = setup();
+    service.submissions.add({ txHash: "w1", kind: "withdraw", signer: BORROWER, request: withdrawalRequest(), signedTx: "" });
+    const res = await json(await app.request(`/api/accounts/${BORROWER}/withdrawals?limit=1`));
+    expect(res).toMatchObject({ status: 200, body: { items: [{ tx_hash: "w1", token: USDC, amount: "5000000", status: "sent" }], next: expect.any(String) } });
+    expect((await app.request(`/api/accounts/${BORROWER}/withdrawals?before=0`)).status).toBe(400);
+    expect((await app.request("/api/accounts/0xABC/withdrawals")).status).toBe(400);
   });
 
   it("serves trades and paged history", async () => {

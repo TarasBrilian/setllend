@@ -1,5 +1,6 @@
 // The relayer (SOT/backend.md#relayer-d42, D42, D57): checks a user's signed payload, simulates it,
-// submits it with `execute_intents` from the intents key, and reads what happened. It also sends
+// submits it with `execute_intents` from the intents key, and reads what happened. A withdrawal to
+// the signer's NEAR account (D64) gets its pre-checks first and its own outcome rule. It also sends
 // the matcher's `match_orders` batches from the matcher key. Without a key, that half is off.
 import type { Contract } from "../chain/contract.ts";
 import type { TxOutcome } from "../chain/rpc.ts";
@@ -7,10 +8,13 @@ import { SendError, type SendResult, type Sender } from "../chain/sender.ts";
 import type { Submissions } from "../chain/submissions.ts";
 import type { Market } from "../market.ts";
 import type { SetllendEvent } from "../shared/events.ts";
-import { TGAS } from "../shared/intents.ts";
+import { TGAS, type WithdrawIntent } from "../shared/intents.ts";
 import { type Fill, encodeMatchOrdersArgs } from "../shared/views.ts";
-import { readOutcome, simulationReason } from "./outcome.ts";
+import { type IntentOutcome, readOutcome, readWithdrawalOutcome, simulationReason } from "./outcome.ts";
 import { Rejected, checkPayload } from "./validate.ts";
+
+/** An implicit NEAR account: the hex of an ed25519 public key. */
+const IMPLICIT_ACCOUNT = /^[0-9a-f]{64}$/;
 
 /** Gas attached to `execute_intents` and `match_orders` (SOT/backend.md). Unused gas is refunded. */
 export const RELAY_GAS = 300n * TGAS;
@@ -19,6 +23,8 @@ export type RelayErrorCode =
   | "invalid_payload"
   | "not_setllend"
   | "min_gas_too_low"
+  | "storage_missing"
+  | "receiver_missing"
   | "simulation_failed"
   | "not_ready"
   | "submit_failed"
@@ -44,6 +50,7 @@ export type RelayResult = { status: 200 | 202 | 400 | 502 | 503; body: RelayBody
 export type Settled = { outcome: TxOutcome; body: RelayBody } | null;
 
 export type SubmitOptions = {
+  /** Defaults to `withdraw` for a withdrawal to a NEAR account (D64), `intent` otherwise. */
   kind?: "intent" | "liquidate" | "mm";
   /**
    * Called once for an intent that was sent (200 or 202): with its outcome, at once or after
@@ -110,8 +117,20 @@ export class Relayer {
       if (error instanceof Rejected) return fail(400, error.code, error.message);
       throw error;
     }
-    const { actions } = checked;
+    const { actions, withdrawal } = checked;
     const args = { signed: [checked.signed] };
+    const read = (outcome: TxOutcome): IntentOutcome =>
+      withdrawal ? readWithdrawalOutcome(outcome, withdrawal) : readOutcome(outcome, contract.id);
+
+    if (withdrawal) {
+      let blocked: { code: "storage_missing" | "receiver_missing"; reason: string } | null;
+      try {
+        blocked = await this.withdrawalBlocker(withdrawal);
+      } catch (error) {
+        return fail(502, "submit_failed", `withdrawal check unavailable: ${messageOf(error)}`, { actions });
+      }
+      if (blocked) return fail(400, blocked.code, blocked.reason, { actions });
+    }
 
     try {
       // At the latest block, not the final one, so a deposit or order from the last seconds counts.
@@ -132,7 +151,7 @@ export class Relayer {
         method: "execute_intents",
         args: JSON.stringify(args),
         gas: RELAY_GAS,
-        kind: opts.kind ?? "intent",
+        kind: opts.kind ?? (withdrawal ? "withdraw" : "intent"),
         signer: checked.signerId,
         request: args,
       });
@@ -141,12 +160,12 @@ export class Relayer {
       return fail(502, "submit_failed", error.message, { actions, tx_hash: error.hash });
     }
     if (sent.outcome === null) {
-      void this.follow(intents, sent.hash, actions, checked.signerId, opts.onSettled);
+      void this.follow(intents, sent.hash, actions, checked.signerId, read, opts.onSettled);
       return fail(202, "pending", "Not every receipt executed within 30 s; the result arrives over WebSocket", { actions, tx_hash: sent.hash });
     }
-    const read = readOutcome(sent.outcome, contract.id);
-    submissions.update(sent.hash, read.ok ? "ok" : "failed", read.error);
-    const settled: RelayBody = { tx_hash: sent.hash, ok: read.ok, actions, events: read.events, error: read.error };
+    const outcome = read(sent.outcome);
+    submissions.update(sent.hash, outcome.ok ? "ok" : "failed", outcome.error);
+    const settled: RelayBody = { tx_hash: sent.hash, ok: outcome.ok, actions, events: outcome.events, error: outcome.error };
     opts.onSettled?.({ outcome: sent.outcome, body: settled });
     return { status: 200, body: settled };
   }
@@ -163,15 +182,38 @@ export class Relayer {
     return matcher.resume(hash, row.signed_tx);
   }
 
+  /**
+   * Why a withdrawal to a NEAR account would fail after taking the funds or the gas (D64), read
+   * at the latest block; null when it can go. An RPC error throws.
+   */
+  private async withdrawalBlocker(w: WithdrawIntent): Promise<{ code: "storage_missing" | "receiver_missing"; reason: string } | null> {
+    const { rpc } = this.o.contract;
+    if (w.intent === "ft_withdraw") {
+      const storage = await rpc.view<unknown>(w.token, "storage_balance_of", { account_id: w.receiver_id }, "optimistic");
+      if (storage !== null) return null;
+      return { code: "storage_missing", reason: `${w.receiver_id} is not registered on ${w.token}: register it with storage_deposit first` };
+    }
+    // An implicit account is created by the transfer itself; a named one must exist, or the NEAR is lost.
+    if (IMPLICIT_ACCOUNT.test(w.receiver_id) || (await rpc.accountExists(w.receiver_id))) return null;
+    return { code: "receiver_missing", reason: `${w.receiver_id} does not exist on NEAR` };
+  }
+
   /** Reads a pending intent's outcome once known, records it, and hands it to `onSettled`. */
-  private async follow(sender: Sender, hash: string, actions: string[], account: string, onSettled?: SubmitOptions["onSettled"]): Promise<void> {
+  private async follow(
+    sender: Sender,
+    hash: string,
+    actions: string[],
+    account: string,
+    read: (outcome: TxOutcome) => IntentOutcome,
+    onSettled?: SubmitOptions["onSettled"],
+  ): Promise<void> {
     let settled: Settled = null;
     try {
       const outcome = await sender.follow(hash);
       if (outcome === null) return; // Stays `pending` in submissions: it may never have landed.
-      const read = readOutcome(outcome, this.o.contract.id);
-      this.o.submissions.update(hash, read.ok ? "ok" : "failed", read.error);
-      const body: RelayBody = { tx_hash: hash, ok: read.ok, actions, events: read.events, error: read.error };
+      const result = read(outcome);
+      this.o.submissions.update(hash, result.ok ? "ok" : "failed", result.error);
+      const body: RelayBody = { tx_hash: hash, ok: result.ok, actions, events: result.events, error: result.error };
       settled = { outcome, body };
       this.o.onSettled?.(account, body);
     } catch (error) {

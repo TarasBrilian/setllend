@@ -12,7 +12,7 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Withdraw free balance (failed payouts) | `auth_call` → `withdraw{token_id, amount}` | 1 signature | No |
 | Match | `match_orders(fills)` by any matcher. Fill rate = maker's limit rate. Contract checks crossing and, for borrow fills, collateral | – | **Yes** (borrow fills) |
 | Payout or withdrawal to Arbitrum, Base, or Bitcoin | The contract `mt_transfer`s USDC to the borrower's Intents balance at fill. To leave it, the user signs the payload of a 1Click `INTENTS → DESTINATION_CHAIN` quote (from `generate-intent`), which the backend submits to 1Click (D61): USDC and NEAR (as USDC) to Arbitrum or Base, ETH to its own chain, BTC to Bitcoin | 1 signature | No |
-| Withdrawal to the user's NEAR account | `ft_withdraw` (USDC) or `native_withdraw` (NEAR) intent through the relayer, no 1Click (D61, next PR) | 1 signature | No |
+| Withdrawal to the user's NEAR account | `ft_withdraw` (USDC) or `native_withdraw` (NEAR) intent to the signer's own NEAR account, alone in its payload, through the relayer, no 1Click (D61, D64) | 1 signature | No |
 | Repay | `transfer` USDC, `msg = repay{maturity}`. Collateral stays until withdrawn | 1 signature | No |
 | Repay early, cheaper | Place a lend order in the same maturity. Bought notes net against the debt automatically | 1 signature | No |
 | Withdraw collateral | `auth_call` → `withdraw_collateral{maturity, collateral_token, amount}`, one token at a time | 1 signature | **Yes** (if debt remains) |
@@ -28,6 +28,7 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 | Deposit from Arbitrum or Base | 1Click into the user's Intents balance; not collateral until added | D48, D49 |
 | Deposit from Bitcoin | 1Click from any Bitcoin wallet to a deposit address, about 15 minutes; refunds go to a Bitcoin address the user enters | D52 |
 | Deposit from NEAR | `ft_transfer_call` to `intents.near`, `msg` = the receiving account; NEAR is wrapped through `wrap.near` in the same transaction. A NEAR transaction, so the user pays its gas | D51 |
+| Register on the USDC contract | `storage_deposit` on the USDC contract from the NEAR wallet, once before the first USDC withdrawal to that NEAR account (0.00125 NEAR). A NEAR transaction the user pays for | D64 |
 | Register a NEAR account's key | `add_public_key` on `intents.near`, once before the first signed intent. A NEAR transaction the user pays for | D51 |
 | Freeze, unfreeze, or update a collateral token | Owner methods; updates apply at once to open loans | D48, D50 |
 

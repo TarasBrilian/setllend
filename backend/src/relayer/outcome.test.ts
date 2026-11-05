@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { TxOutcome } from "../chain/rpc.ts";
+import { ASSETS } from "../shared/assets.ts";
+import { withdrawIntent } from "../shared/intents.ts";
 import { CONTRACT, USDC, eventLine, outcomeReceipt } from "../testing.ts";
-import { failureOf, readOutcome, simulationReason } from "./outcome.ts";
+import { failureOf, readOutcome, readWithdrawalOutcome, simulationReason } from "./outcome.ts";
 
 const M = "1795766400000000000";
 const tx = (...receipts: TxOutcome["receipts"]): TxOutcome => ({ hash: "h", executed: true, receipts });
@@ -56,10 +58,70 @@ describe("readOutcome", () => {
   });
 });
 
+describe("readWithdrawalOutcome (D64)", () => {
+  const USDC_CONTRACT = USDC.slice("nep141:".length);
+  const usdcOut = withdrawIntent(USDC, 5_000_000n, "alice.near");
+  const nearOut = withdrawIntent(ASSETS.wnear, 10n ** 24n, "alice.near");
+  /** `ft_resolve_withdraw`'s receipt: the amount that reached the receiver. */
+  const resolved = (used: string) => ({ ...outcomeReceipt("intents.near"), status: { SuccessValue: Buffer.from(JSON.stringify(used)).toString("base64") } });
+
+  it("succeeds when ft_resolve_withdraw reports the full amount delivered", () => {
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), resolved("5000000")), usdcOut);
+    expect(out).toEqual({ ok: true, events: [], error: null });
+  });
+
+  it("succeeds on the delivered amount even when a later receipt failed", () => {
+    const out = readWithdrawalOutcome(
+      tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), resolved("5000000"), outcomeReceipt("intents.near", [], { panic: "late" })),
+      usdcOut,
+    );
+    expect(out.ok).toBe(true);
+  });
+
+  it("fails on a refunded ft_transfer with the token's message", () => {
+    const out = readWithdrawalOutcome(
+      tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT, [], { panic: "The account alice.near is not registered" }), resolved("0")),
+      usdcOut,
+    );
+    expect(out).toEqual({
+      ok: false,
+      events: [],
+      error: { code: "rejected", reason: "The account alice.near is not registered; the USDC was refunded to your Intents balance" },
+    });
+  });
+
+  it("claims no refund and no delivery when the resolver itself failed", () => {
+    const out = readWithdrawalOutcome(
+      tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), outcomeReceipt("intents.near", [], { panic: "Exceeded the prepaid gas" })),
+      usdcOut,
+    );
+    expect(out.error).toEqual({ code: "rejected", reason: "Exceeded the prepaid gas; check your NEAR account and your Intents balance" });
+  });
+
+  it("fails on a native transfer to a missing account, readable and not refunded", () => {
+    const missing = {
+      ...outcomeReceipt("alice.near"),
+      status: { Failure: { ActionError: { index: 0, kind: { AccountDoesNotExist: { account_id: "alice.near" } } } } },
+    };
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt("wrap.near"), outcomeReceipt("intents.near"), missing), nearOut);
+    expect(out.error?.reason).toBe("Account alice.near does not exist; the NEAR was not refunded");
+    expect(readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt("wrap.near"), outcomeReceipt("intents.near")), nearOut).ok).toBe(true);
+  });
+
+  it("fails without a refund note when execute_intents itself failed", () => {
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near", [], { panic: "insufficient balance or overflow" })), nearOut);
+    expect(out.error).toEqual({ code: "rejected", reason: "insufficient balance or overflow" });
+    expect(readWithdrawalOutcome(tx(), usdcOut).ok).toBe(false);
+  });
+});
+
 describe("failureOf", () => {
   it("reads other failures as JSON", () => {
-    expect(failureOf({ ...outcomeReceipt(CONTRACT), status: { Failure: { ActionError: { kind: { AccountDoesNotExist: {} } } } } })).toBe(
-      '{"ActionError":{"kind":{"AccountDoesNotExist":{}}}}',
+    expect(failureOf({ ...outcomeReceipt(CONTRACT), status: { Failure: { ActionError: { kind: { LackBalanceForState: {} } } } } })).toBe(
+      '{"ActionError":{"kind":{"LackBalanceForState":{}}}}',
+    );
+    expect(failureOf({ ...outcomeReceipt(CONTRACT), status: { Failure: { ActionError: { kind: { AccountDoesNotExist: { account_id: "x.near" } } } } } })).toBe(
+      "Account x.near does not exist",
     );
     expect(failureOf(outcomeReceipt(CONTRACT))).toBeNull();
   });

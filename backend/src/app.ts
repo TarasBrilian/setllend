@@ -10,6 +10,7 @@ import { type AccountId, isAccountId } from "./shared/encoding.ts";
 import { MathError, type Price, healthFactor, valuation } from "./shared/math.ts";
 import { OneClickFailure } from "./oneclick/oneclick.ts";
 import { FLOOD, FloodGuard, clientIp } from "./relayer/flood.ts";
+import { listWithdrawals } from "./relayer/withdrawals.ts";
 
 /** Internal settings (SOT/backend.md#api): page sizes and cache times, none user-facing (D24). */
 export const API = { defaultLimit: 100, maxLimit: 1_000, saltCacheMs: 60_000 };
@@ -167,6 +168,14 @@ export function createApp(service: Service) {
     const before = c.req.query("before");
     if (before !== undefined && !/^[1-9][0-9]*$/.test(before)) throw new HttpError(400, "before must be the `next` value of a previous page");
     return c.json(oneclick.list(account, { before: before === undefined ? undefined : Number(before), limit: limitOf(c.req.query("limit")) }));
+  });
+
+  // Withdrawals to the account's NEAR account through the relayer (D64), from `submissions`.
+  app.get("/api/accounts/:account/withdrawals", (c) => {
+    const account = accountOf(c.req.param("account"));
+    const before = c.req.query("before");
+    if (before !== undefined && !/^[1-9][0-9]*$/.test(before)) throw new HttpError(400, "before must be the `next` value of a previous page");
+    return c.json(listWithdrawals(service.submissions, account, { before: before === undefined ? undefined : Number(before), limit: limitOf(c.req.query("limit")) }));
   });
 
   app.get("/api/accounts/:account", async (c) => {

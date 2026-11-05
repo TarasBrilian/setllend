@@ -66,6 +66,8 @@ const MIGRATIONS = [
    );
    CREATE INDEX oneclick_by_account ON oneclick (account, n);
    CREATE INDEX oneclick_by_poll ON oneclick (next_poll_at) WHERE next_poll_at IS NOT NULL;`,
+  // An account's withdrawals to its NEAR account (D64).
+  `CREATE INDEX submissions_by_signer ON submissions (signer, kind, id);`,
 ];
 
 export function openDb(path: string): Database.Database {

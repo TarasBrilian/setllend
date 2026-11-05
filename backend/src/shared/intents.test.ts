@@ -14,6 +14,7 @@ import {
   signedErc191,
   signedNep413,
   versionedNonce,
+  withdrawIntent,
 } from "./intents.ts";
 
 const MATURITY = "1795766400000000000";
@@ -121,6 +122,30 @@ describe("intents", () => {
     expect(() =>
       setllendTransferMany({}, { action: "add_collateral", data: { maturity: MATURITY } }),
     ).toThrow();
+  });
+});
+
+describe("withdrawals (D64)", () => {
+  it("withdraws USDC with ft_withdraw, naming the token contract without nep141:", () => {
+    expect(withdrawIntent(ASSETS.usdcNear, 5_000_000n, "alice.near")).toEqual({
+      intent: "ft_withdraw",
+      token: ASSETS.usdcNear.slice("nep141:".length),
+      receiver_id: "alice.near",
+      amount: "5000000",
+    });
+  });
+
+  it("withdraws wNEAR as native NEAR", () => {
+    expect(withdrawIntent(ASSETS.wnear, 10n ** 24n, "alice.near")).toEqual({
+      intent: "native_withdraw",
+      receiver_id: "alice.near",
+      amount: "1000000000000000000000000",
+    });
+  });
+
+  it("rejects a zero amount and an asset ID without nep141:", () => {
+    expect(() => withdrawIntent(ASSETS.usdcNear, 0n, "alice.near")).toThrow(RangeError);
+    expect(() => withdrawIntent("wrap.near", 1n, "alice.near")).toThrow(TypeError);
   });
 });
 

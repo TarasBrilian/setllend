@@ -27,6 +27,22 @@ describe("Submissions", () => {
     ]);
   });
 
+  it("lists one signer's rows of one kind, newest first, in pages", () => {
+    const subs = new Submissions(openDb(":memory:"));
+    for (const [hash, kind, signer] of [
+      ["w1", "withdraw", "alice.near"],
+      ["i1", "intent", "alice.near"],
+      ["w2", "withdraw", "bob.near"],
+      ["w3", "withdraw", "alice.near"],
+      ["w4", "withdraw", "alice.near"],
+    ] as const) {
+      subs.add({ txHash: hash, kind, signer, request: {}, signedTx: "" });
+    }
+    const first = subs.bySigner("alice.near", "withdraw", { limit: 2 });
+    expect(first.map((s) => s.tx_hash)).toEqual(["w4", "w3"]);
+    expect(subs.bySigner("alice.near", "withdraw", { before: first.at(-1)!.id, limit: 2 }).map((s) => s.tx_hash)).toEqual(["w1"]);
+  });
+
   it("refuses a second row with the same hash", () => {
     const subs = new Submissions(openDb(":memory:"));
     const row = { txHash: "h", kind: "match" as const, signer: "b", request: {}, signedTx: "" };

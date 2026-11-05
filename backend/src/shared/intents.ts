@@ -4,12 +4,15 @@
 // - payload: {signer_id, verifying_contract, deadline (RFC 3339), nonce (base64), intents}
 // - transfer: {intent, receiver_id, tokens, msg, min_gas}; `msg` and `min_gas` are flattened
 // - auth_call: {intent, contract_id, msg, min_gas}; `attached_deposit` stays 0, so it is omitted
+// - ft_withdraw: {intent, token (NEP-141 contract), receiver_id, amount}; native_withdraw:
+//   {intent, receiver_id, amount (yoctoNEAR)} (contracts/defuse/core/src/intents/tokens.rs, main at
+//   32cd1f9, read 2026-11-05; D64)
 // - gas is a decimal string of gas units
 // - versioned nonce: magic 5628f6c6 ‖ version 0 ‖ salt (4) ‖ deadline ns (i64 LE) ‖ 15 random bytes
 // - NEP-413: {message: JSON of {signer_id, deadline, intents}, nonce (base64), recipient}, the
 //   verifying contract as `recipient`
 
-import { ACCOUNTS } from "./assets.ts";
+import { ACCOUNTS, ASSETS } from "./assets.ts";
 import { type AccountId, type TokenId, type U128, dateToNs, isAccountId, u128 } from "./encoding.ts";
 import { type AuthMsg, type TransferMsg, encodeAuthMsg, encodeTransferMsg } from "./msg.ts";
 
@@ -44,6 +47,27 @@ export type AuthCallIntent = {
 
 export type SetllendIntent = TransferIntent | AuthCallIntent;
 
+/** USDC from the Intents balance to a NEAR account with `ft_transfer`. `token` has no `nep141:`. */
+export type FtWithdrawIntent = {
+  intent: "ft_withdraw";
+  token: AccountId;
+  receiver_id: AccountId;
+  amount: U128;
+};
+
+/** NEAR from the wNEAR balance to a NEAR account, unwrapped (D64). */
+export type NativeWithdrawIntent = {
+  intent: "native_withdraw";
+  receiver_id: AccountId;
+  amount: U128;
+};
+
+/** A withdrawal to the signer's own NEAR account, relayed alone in its payload (D64). */
+export type WithdrawIntent = FtWithdrawIntent | NativeWithdrawIntent;
+
+/** Anything the relayer relays: Setllend intents, or one withdrawal. */
+export type Intent = SetllendIntent | WithdrawIntent;
+
 export type IntentPayload = {
   signer_id: AccountId;
   verifying_contract: AccountId;
@@ -51,7 +75,7 @@ export type IntentPayload = {
   deadline: string;
   /** Base64 of the 32-byte versioned nonce. */
   nonce: string;
-  intents: SetllendIntent[];
+  intents: Intent[];
 };
 
 /** A `transfer` of one token to Setllend with a `msg`. */
@@ -103,6 +127,19 @@ export function setllendAuthCall(msg: AuthMsg, contractId: AccountId = ACCOUNTS.
   };
 }
 
+const NEP141_PREFIX = "nep141:";
+
+/**
+ * A withdrawal of `token` (an asset ID: `nep141:wrap.near` becomes `native_withdraw`, any other
+ * NEP-141 an `ft_withdraw`) to `receiver`, which the relayer requires to be the signer (D64).
+ */
+export function withdrawIntent(token: TokenId, amount: bigint, receiver: AccountId): WithdrawIntent {
+  if (!token.startsWith(NEP141_PREFIX)) throw new TypeError("token must be a nep141: asset ID");
+  if (amount <= 0n) throw new RangeError("amount must be positive");
+  if (token === ASSETS.wnear) return { intent: "native_withdraw", receiver_id: receiver, amount: u128(amount) };
+  return { intent: "ft_withdraw", token: token.slice(NEP141_PREFIX.length), receiver_id: receiver, amount: u128(amount) };
+}
+
 const NONCE_MAGIC = [0x56, 0x28, 0xf6, 0xc6];
 const NONCE_VERSION_V1 = 0;
 
@@ -132,7 +169,7 @@ export function versionedNonce(
  */
 export function buildIntentPayload(params: {
   signerId: AccountId;
-  intents: SetllendIntent[];
+  intents: Intent[];
   deadline: Date;
   salt: string;
   random?: Uint8Array;
@@ -181,7 +218,7 @@ export type Nep413Payload = { message: string; nonce: string; recipient: Account
 
 export function buildNep413Payload(params: {
   signerId: AccountId;
-  intents: SetllendIntent[];
+  intents: Intent[];
   deadline: Date;
   salt: string;
   random?: Uint8Array;

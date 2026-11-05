@@ -98,7 +98,7 @@ describe("createExplorer", () => {
 describe("Store", () => {
   it("migrates once and moves the cursor with the events", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.pragma("user_version", { simple: true })).toBe(4);
     const store = new Store(db);
     store.commit(records(10, [placed("1", LENDER, "lend")]), { name: "live", height: 10 });
     expect(store.cursor("live")).toBe(10);
