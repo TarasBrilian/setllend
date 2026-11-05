@@ -1,6 +1,6 @@
 // Steps 1 and 2 of SOT/backend.md#submitting-user-intents (D42, D57): the relayer pays gas, so it
-// relays only well-formed payloads made of Setllend intents with enough `min_gas`, checked without
-// any network call. The signed payload is relayed byte for byte; only its envelope is rebuilt from
+// relays only well-formed payloads made of Setllend intents with enough `min_gas`, or of one
+// withdrawal to the signer's NEAR account (D64), checked without any network call. The signed payload is relayed byte for byte; only its envelope is rebuilt from
 // the fields read here.
 import { type AccountId, type TokenId, isAccountId, parseU128, parseU64 } from "../shared/encoding.ts";
 import {
@@ -11,6 +11,7 @@ import {
   type SignedErc191Payload,
   type SignedNep413Payload,
   TGAS,
+  type WithdrawIntent,
 } from "../shared/intents.ts";
 import { type AuthMsg, type TransferMsg, decodeAuthMsg, decodeTransferMsg } from "../shared/msg.ts";
 import type { CollateralToken } from "../shared/views.ts";
@@ -38,8 +39,10 @@ export type Checked = {
   signed: SignedErc191Payload | SignedNep413Payload;
   signerId: AccountId;
   deadline: Date;
-  /** The `msg` action of each intent, in order. */
+  /** The `msg` action of each intent, in order; the intent kind for a withdrawal. */
   actions: string[];
+  /** The payload's only intent when it is a withdrawal to the signer's NEAR account (D64). */
+  withdrawal: WithdrawIntent | null;
 };
 
 /** `min_gas` of a `transfer` when the intent leaves it out (SOT/intents-primitives.md). */
@@ -48,6 +51,11 @@ export const TRANSFER_DEFAULT_MIN_GAS = 30n * TGAS;
 const TRANSFER_FIELDS = new Set(["intent", "receiver_id", "tokens", "msg", "min_gas"]);
 const AUTH_CALL_FIELDS = new Set(["intent", "contract_id", "msg", "min_gas", "attached_deposit"]);
 const ONE_DEBT_TOKEN = new Set(["lend", "repay", "liquidate"]);
+const WITHDRAW_FIELDS = new Map<unknown, Set<string>>([
+  ["ft_withdraw", new Set(["intent", "token", "receiver_id", "amount"])],
+  ["native_withdraw", new Set(["intent", "receiver_id", "amount"])],
+]);
+const EVM_ACCOUNT = /^0x[0-9a-f]{40}$/;
 
 const invalid = (reason: string) => new Rejected("invalid_payload", reason);
 const notSetllend = (reason: string) => new Rejected("not_setllend", reason);
@@ -107,9 +115,34 @@ export function checkPayload(body: unknown, ctx: CheckContext): Checked {
   if (deadlineMs <= ctx.now.getTime()) throw invalid("deadline has passed");
   if (!Array.isArray(intents) || intents.length === 0) throw invalid("intents must be a non-empty list");
 
+  if (intents.some((intent: unknown) => isObject(intent) && WITHDRAW_FIELDS.has(intent.intent))) {
+    if (intents.length !== 1) throw notSetllend("a withdrawal must be the only intent of its payload");
+    const withdrawal = checkWithdrawal(intents[0] as Record<string, unknown>, signerId, ctx);
+    return { signed: envelope, signerId, deadline: new Date(deadlineMs), actions: [withdrawal.intent], withdrawal };
+  }
   const checked = intents.map((intent: unknown) => checkIntent(intent, ctx));
   for (const { intent, action } of checked) checkMinGas(intent, action);
-  return { signed: envelope, signerId, deadline: new Date(deadlineMs), actions: checked.map((c) => c.action) };
+  return { signed: envelope, signerId, deadline: new Date(deadlineMs), actions: checked.map((c) => c.action), withdrawal: null };
+}
+
+/** USDC with `ft_withdraw` or NEAR with `native_withdraw`, to the signer's own NEAR account (D64). */
+function checkWithdrawal(intent: Record<string, unknown>, signerId: AccountId, ctx: CheckContext): WithdrawIntent {
+  const kind = intent.intent as WithdrawIntent["intent"];
+  unknownFields(intent, WITHDRAW_FIELDS.get(kind)!);
+  if (EVM_ACCOUNT.test(signerId)) throw notSetllend("an EVM account withdraws through 1Click, not to a NEAR account");
+  if (intent.receiver_id !== signerId) throw notSetllend("a withdrawal must go to the signer's own NEAR account");
+  let amount: bigint;
+  try {
+    amount = parseU128(intent.amount);
+  } catch {
+    throw invalid("amount must be a u128 decimal string");
+  }
+  if (amount === 0n) throw invalid("amount must be positive");
+  if (kind === "ft_withdraw") {
+    const debtContract = ctx.debtToken.replace(/^nep141:/, "");
+    if (intent.token !== debtContract) throw notSetllend(`ft_withdraw takes only ${debtContract}`);
+  }
+  return intent as WithdrawIntent;
 }
 
 function checkIntent(intent: unknown, ctx: CheckContext): { intent: SetllendIntent; action: string } {

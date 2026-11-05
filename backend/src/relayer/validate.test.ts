@@ -8,7 +8,9 @@ import {
   setllendTransfer,
   setllendTransferMany,
   signedNep413,
+  withdrawIntent,
 } from "../shared/intents.ts";
+import { ASSETS } from "../shared/assets.ts";
 import { CONTRACT, ETH, USDC } from "../testing.ts";
 import { type CheckContext, Rejected, checkPayload } from "./validate.ts";
 
@@ -122,5 +124,42 @@ describe("checkPayload", () => {
     expect(checkPayload(at(liquidate, 300n), ctx).actions).toEqual(["liquidate"]);
     expect(checkPayload(at(lend, undefined), ctx).actions).toEqual(["lend"]);
     expect(checkPayload(at(lend, 30n), ctx).actions).toEqual(["lend"]);
+  });
+
+  describe("withdrawals to the signer's NEAR account (D64)", () => {
+    const ALICE = "alice.near";
+    const usdcOut = withdrawIntent(USDC, 5_000_000n, ALICE);
+    const nearOut = withdrawIntent(ASSETS.wnear, 10n ** 24n, ALICE);
+    const nep413 = (intents: unknown[], signerId = ALICE) => {
+      const payload = buildNep413Payload({ signerId, intents: intents as SetllendIntent[], deadline: DEADLINE, salt: "0a1b2c3d" });
+      return { signed: signedNep413(payload, `ed25519:${"3".repeat(44)}`, new Uint8Array(64).fill(7)) };
+    };
+
+    it("accepts one ft_withdraw of USDC or one native_withdraw, alone", () => {
+      expect(checkPayload(nep413([usdcOut]), ctx)).toMatchObject({ signerId: ALICE, actions: ["ft_withdraw"], withdrawal: usdcOut });
+      expect(checkPayload(nep413([nearOut]), ctx)).toMatchObject({ actions: ["native_withdraw"], withdrawal: nearOut });
+      expect(checkPayload(nep413([cancel]), ctx).withdrawal).toBeNull();
+    });
+
+    it("sends only to the signer, and never for an EVM account", () => {
+      rejects(nep413([{ ...usdcOut, receiver_id: "bob.near" }]), "not_setllend", /own NEAR account/);
+      rejects(erc191([{ ...nearOut, receiver_id: USER }]), "not_setllend", /1Click/);
+    });
+
+    it("keeps a withdrawal alone in its payload", () => {
+      rejects(nep413([cancel, usdcOut]), "not_setllend", /only intent/);
+      rejects(nep413([usdcOut, nearOut]), "not_setllend", /only intent/);
+    });
+
+    it("takes only USDC, a positive amount, and the known fields", () => {
+      rejects(nep413([{ ...usdcOut, token: "wrap.near" }]), "not_setllend", /takes only/);
+      rejects(nep413([{ ...usdcOut, token: USDC }]), "not_setllend", /takes only/);
+      for (const extra of [{ msg: "{}" }, { storage_deposit: "1250000000000000000000" }, { memo: "hi" }, { min_gas: "30000000000000" }]) {
+        rejects(nep413([{ ...usdcOut, ...extra }]), "not_setllend", /unknown field/);
+      }
+      rejects(nep413([{ ...nearOut, token: "wrap.near" }]), "not_setllend", /unknown field token/);
+      rejects(nep413([{ ...nearOut, amount: "0" }]), "invalid_payload", /positive/);
+      rejects(nep413([{ ...usdcOut, amount: 5 }]), "invalid_payload", /u128/);
+    });
   });
 });
