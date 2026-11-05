@@ -37,6 +37,6 @@ All actions are gasless for users because the relayer submits `execute_intents`.
 1. **Borrower (Arbitrum):** deposits ETH via 1Click into their Intents balance (`recipientType: INTENTS`), then signs a `transfer` of ETH to Setllend with `msg = borrow` "borrow 1,000 USDC, 30 days, max 8% APR".
 2. **Lender (Base):** deposits USDC via 1Click (Base USDC → NEAR USDC, `recipientType: INTENTS`), then signs a `transfer` of USDC with `msg = lend` "lend 1,000 USDC, 30 days, min 7%".
 3. **Matcher** sees crossing orders (7% ≤ 8%). Fill rate = maker's rate. Matcher calls `match_orders`. Contract reads the oracle, checks collateral value × max LTV ≥ debt face, where face = principal × (1 + r·t), records the loan, and sends USDC to the borrower's Intents balance.
-4. **Borrower** signs the payout: 1Click NEAR USDC → Arbitrum USDC. Funds land in the Arbitrum wallet.
+4. **Borrower** withdraws the USDC from Portfolio, whenever they like after the match: one signature for a 1Click withdrawal, NEAR USDC → Arbitrum USDC (D61, D66). Funds land in the Arbitrum wallet.
 5. **Lender exits on day 10:** sells the note on the book. Another lender buys. The original lender receives USDC and can withdraw to Base.
 6. **Liquidation (simulated):** price drops, keeper liquidates the loan.
