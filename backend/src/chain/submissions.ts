@@ -2,7 +2,7 @@
 // is sent, so a restart can re-send the same bytes or look it up by hash (D42, D57).
 import type Database from "better-sqlite3";
 
-export type SubmissionKind = "intent" | "match" | "liquidate" | "mm";
+export type SubmissionKind = "intent" | "withdraw" | "match" | "liquidate" | "mm";
 
 /** `sent` until the outcome is known; `pending` when receipts were still running after 30 s. */
 export type SubmissionStatus = "sent" | "ok" | "failed" | "pending" | "error";
@@ -59,6 +59,14 @@ export class Submissions {
   get(txHash: string): Submission | undefined {
     const row = this.db.prepare("SELECT * FROM submissions WHERE tx_hash = ?").get(txHash) as Row | undefined;
     return row && parse(row);
+  }
+
+  /** The signer's transactions of `kind`, newest first, before row `before` (an `id`). */
+  bySigner(signer: string, kind: SubmissionKind, opts: { before?: number; limit: number }): Submission[] {
+    const rows = this.db
+      .prepare("SELECT * FROM submissions WHERE signer = ? AND kind = ? AND id < ? ORDER BY id DESC LIMIT ?")
+      .all(signer, kind, opts.before ?? Number.MAX_SAFE_INTEGER, opts.limit) as Row[];
+    return rows.map(parse);
   }
 
   /** Transactions of `kind` whose outcome isn't known yet (`sent` or `pending`), oldest first. */

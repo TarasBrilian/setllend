@@ -114,6 +114,10 @@ export class FakeRpc implements Rpc {
     return account;
   }
 
+  async accountExists(accountId: string): Promise<boolean> {
+    return this.accounts.has(accountId);
+  }
+
   async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T> {
     this.calls.push({ method, args, height });
     if (contractId === CONTRACT && !this.deployed) throw new NotDeployedError(`${contractId} has no contract code`);

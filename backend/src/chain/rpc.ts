@@ -6,6 +6,7 @@
 // hash the node hasn't seen answers TIMEOUT_ERROR (NOT_OBSERVED), not UNKNOWN_TRANSACTION.
 import { JsonRpcProvider } from "near-api-js";
 import {
+  AccountDoesNotExistError,
   ContractCodeDoesNotExistError,
   InvalidNonceError,
   TransactionExecutionError,
@@ -30,6 +31,8 @@ export interface Rpc {
   view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt): Promise<T>;
   /** `view_account` at `height` (the keeper's storage alert, SOT/backend.md#storage-alert). */
   account(accountId: string, height: number): Promise<AccountState>;
+  /** Whether the account exists at the latest block (a withdrawal's pre-check, D64). */
+  accountExists(accountId: string): Promise<boolean>;
 }
 
 /** Balance in yoctoNEAR and storage in bytes. */
@@ -166,6 +169,16 @@ export function createRpc(url: string): Rpc & TxRpc {
     async account(accountId, height) {
       const account = await provider.viewAccount({ accountId, blockQuery: { blockId: height } });
       return { amount: account.amount, storageUsage: account.storage_usage };
+    },
+    // Checked on mainnet 2026-11-05: a missing account throws AccountDoesNotExistError.
+    async accountExists(accountId) {
+      try {
+        await provider.viewAccount({ accountId, blockQuery: { finality: "optimistic" } });
+        return true;
+      } catch (error) {
+        if (error instanceof AccountDoesNotExistError) return false;
+        throw error;
+      }
     },
     async view<T>(contractId: string, method: string, args: Record<string, unknown>, height?: ViewAt) {
       try {
