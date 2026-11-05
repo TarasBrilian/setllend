@@ -4,6 +4,7 @@
 // panic on these paths is reverted and refunded in full, so nothing else needs reporting.
 import type { ReceiptOutcome, TxOutcome } from "../chain/rpc.ts";
 import { type SetllendEvent, parseEventLog } from "../shared/events.ts";
+import type { WithdrawIntent } from "../shared/intents.ts";
 
 export type OutcomeError = { code: "rejected" | "payout_failed"; reason: string };
 
@@ -60,10 +61,10 @@ export function readOutcome(outcome: TxOutcome, contractId: string): IntentOutco
 
 /**
  * What an executed withdrawal to a NEAR account did (D64): it failed if any receipt failed. No
- * Setllend receipt is involved. After `execute_intents` itself, a failed `ft_transfer` is refunded
- * by `ft_resolve_withdraw`; a failed `native_withdraw` is not (near/intents `NativeWithdraw`).
+ * Setllend receipt is involved. A failed `ft_transfer` (a receipt on the token contract) is
+ * refunded by `ft_resolve_withdraw`; a failed `native_withdraw` is not (near/intents `NativeWithdraw`).
  */
-export function readWithdrawalOutcome(outcome: TxOutcome, kind: "ft_withdraw" | "native_withdraw"): IntentOutcome {
+export function readWithdrawalOutcome(outcome: TxOutcome, withdrawal: WithdrawIntent): IntentOutcome {
   const [first, ...rest] = outcome.receipts;
   if (!first) return { ok: false, events: [], error: { code: "rejected", reason: "The transaction produced no receipts" } };
   const firstFailure = failureOf(first);
@@ -71,8 +72,10 @@ export function readWithdrawalOutcome(outcome: TxOutcome, kind: "ft_withdraw" | 
   for (const receipt of rest) {
     const failure = failureOf(receipt);
     if (failure === null) continue;
-    const after = kind === "ft_withdraw" ? "the USDC was refunded to your Intents balance" : "the NEAR was not refunded";
-    return { ok: false, events: [], error: { code: "rejected", reason: `${failure}; ${after}` } };
+    let after = "";
+    if (withdrawal.intent === "native_withdraw") after = "; the NEAR was not refunded";
+    else if (receipt.executorId === withdrawal.token) after = "; the USDC was refunded to your Intents balance";
+    return { ok: false, events: [], error: { code: "rejected", reason: `${failure}${after}` } };
   }
   return { ok: true, events: [], error: null };
 }

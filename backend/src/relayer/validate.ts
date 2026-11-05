@@ -1,7 +1,7 @@
 // Steps 1 and 2 of SOT/backend.md#submitting-user-intents (D42, D57): the relayer pays gas, so it
 // relays only well-formed payloads made of Setllend intents with enough `min_gas`, or of one
-// withdrawal to the signer's NEAR account (D64), checked without any network call. The signed payload is relayed byte for byte; only its envelope is rebuilt from
-// the fields read here.
+// withdrawal to the signer's NEAR account (D64), checked without any network call. The signed
+// payload is relayed byte for byte; only its envelope is rebuilt from the fields read here.
 import { type AccountId, type TokenId, isAccountId, parseU128, parseU64 } from "../shared/encoding.ts";
 import {
   type IntentPayload,

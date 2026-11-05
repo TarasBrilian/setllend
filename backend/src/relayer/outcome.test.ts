@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TxOutcome } from "../chain/rpc.ts";
+import { ASSETS } from "../shared/assets.ts";
+import { withdrawIntent } from "../shared/intents.ts";
 import { CONTRACT, USDC, eventLine, outcomeReceipt } from "../testing.ts";
 import { failureOf, readOutcome, readWithdrawalOutcome, simulationReason } from "./outcome.ts";
 
@@ -58,33 +60,37 @@ describe("readOutcome", () => {
 
 describe("readWithdrawalOutcome (D64)", () => {
   const USDC_CONTRACT = USDC.slice("nep141:".length);
+  const usdcOut = withdrawIntent(USDC, 5_000_000n, "alice.near");
+  const nearOut = withdrawIntent(ASSETS.wnear, 10n ** 24n, "alice.near");
 
   it("succeeds when every receipt succeeded", () => {
-    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), outcomeReceipt("intents.near")), "ft_withdraw");
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), outcomeReceipt("intents.near")), usdcOut);
     expect(out).toEqual({ ok: true, events: [], error: null });
   });
 
   it("fails on a failed ft_transfer and says it was refunded", () => {
     const out = readWithdrawalOutcome(
-      tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT, [], { panic: "The account bob.near is not registered" }), outcomeReceipt("intents.near")),
-      "ft_withdraw",
+      tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT, [], { panic: "The account alice.near is not registered" }), outcomeReceipt("intents.near")),
+      usdcOut,
     );
     expect(out.ok).toBe(false);
-    expect(out.error).toEqual({ code: "rejected", reason: "The account bob.near is not registered; the USDC was refunded to your Intents balance" });
+    expect(out.error).toEqual({ code: "rejected", reason: "The account alice.near is not registered; the USDC was refunded to your Intents balance" });
+  });
+
+  it("claims no refund when another receipt of an ft_withdraw failed", () => {
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt(USDC_CONTRACT), outcomeReceipt("intents.near", [], { panic: "Exceeded the prepaid gas" })), usdcOut);
+    expect(out.error).toEqual({ code: "rejected", reason: "Exceeded the prepaid gas" });
   });
 
   it("fails on a failed native transfer and says it was not refunded", () => {
-    const out = readWithdrawalOutcome(
-      tx(outcomeReceipt("intents.near"), outcomeReceipt("wrap.near"), outcomeReceipt("intents.near", [], { panic: "near_withdraw failed" })),
-      "native_withdraw",
-    );
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near"), outcomeReceipt("wrap.near"), outcomeReceipt("intents.near", [], { panic: "near_withdraw failed" })), nearOut);
     expect(out.error?.reason).toBe("near_withdraw failed; the NEAR was not refunded");
   });
 
   it("fails without a refund note when execute_intents itself failed", () => {
-    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near", [], { panic: "insufficient balance or overflow" })), "native_withdraw");
+    const out = readWithdrawalOutcome(tx(outcomeReceipt("intents.near", [], { panic: "insufficient balance or overflow" })), nearOut);
     expect(out.error).toEqual({ code: "rejected", reason: "insufficient balance or overflow" });
-    expect(readWithdrawalOutcome(tx(), "ft_withdraw").ok).toBe(false);
+    expect(readWithdrawalOutcome(tx(), usdcOut).ok).toBe(false);
   });
 });
 

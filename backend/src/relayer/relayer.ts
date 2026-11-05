@@ -120,7 +120,7 @@ export class Relayer {
     const { actions, withdrawal } = checked;
     const args = { signed: [checked.signed] };
     const read = (outcome: TxOutcome): IntentOutcome =>
-      withdrawal ? readWithdrawalOutcome(outcome, withdrawal.intent) : readOutcome(outcome, contract.id);
+      withdrawal ? readWithdrawalOutcome(outcome, withdrawal) : readOutcome(outcome, contract.id);
 
     if (withdrawal) {
       let blocked: { code: "storage_missing" | "receiver_missing"; reason: string } | null;
