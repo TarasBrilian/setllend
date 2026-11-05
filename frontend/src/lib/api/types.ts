@@ -73,7 +73,9 @@ export type Trade = OrderFilled & { timestamp: U64 };
 export type LiveMessage =
   | ({ type: "book" } & Book)
   | ({ type: "trade" } & Trade)
-  | { type: "event" | "oneclick"; account: AccountId }
+  | { type: "event"; account: AccountId }
+  /** A 1Click quote's change: the whole row; the UI reads `id` and refetches what it shows. */
+  | { type: "oneclick"; account: AccountId; id: string; status: string }
   /** The outcome of an intent the relayer answered `pending`, in the shape of its HTTP answer. */
   | {
       type: "intent";

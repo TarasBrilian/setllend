@@ -33,6 +33,9 @@ const Context = createContext<AccountContext | null>(null);
 let selector: Promise<WalletSelector> | undefined;
 export async function getSelector(): Promise<WalletSelector> {
   selector ??= (async () => {
+    // MyNearWallet calls the global `Buffer`, which browsers don't have (D68).
+    const { Buffer } = await import("buffer");
+    (globalThis as { Buffer?: typeof Buffer }).Buffer ??= Buffer;
     const [{ setupWalletSelector }, { setupMeteorWallet }, { setupMyNearWallet }, { setupIntearWallet }] = await Promise.all([
       import("@near-wallet-selector/core"),
       import("@near-wallet-selector/meteor-wallet"),

@@ -13,8 +13,12 @@ import type { TokenId } from "@/shared/encoding";
 import { setllendAuthCall, setllendTransfer, setllendTransferMany } from "@/shared/intents";
 import type { NoteView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { type LiveSpec, ActionForm } from "./action-form";
-import { amountInput, DecimalInput, decimalString, Field, payInStep, Row, Segmented, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
+import { type LiveSpec, ActionForm, intentLive } from "./action-form";
+import { DepositPreview, useSlippage } from "./deposit-preview";
+import type { QuoteRequest } from "@/lib/oneclick";
+import type { Stage } from "@/lib/pipeline";
+import { type DepositParams, depositStage, intentStages, nearDepositStage } from "@/lib/stages";
+import { amountInput, CHAINS, DecimalInput, decimalString, Field, payInStep, Row, Segmented, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
 export type OrderMode = "Limit" | "Market";
@@ -147,38 +151,82 @@ export function OrderForm({
   const orderBps = mode === "Market" ? (market.limitBps ?? 0) : limitBps;
   const principalRaw = () => rawAmount(ASSETS.usdcNear, amount);
   const detail = `${principal.toLocaleString("en-US")} USDC ${mode === "Market" ? `up to ${formatRate(orderBps)}` : `at ${formatRate(orderBps)}`} APR`;
-  // A deposit from another chain comes with step 3 of D65, so only orders funded from the balance or the loan run live.
+
+  // New deposits (D67): only what the balance lacks, EXACT_OUTPUT, from the chosen chain or the token's own.
+  const slippage = useSlippage("USDC");
+  const lendShortfall = !isBorrow && !fromBalance ? shortfallOf(principalRaw(), usdcBalance) : 0n;
+  const lendQuote: QuoteRequest | null =
+    account !== undefined && lendShortfall > 0n && (chain === "Arbitrum" || chain === "Base") && addresses.addressOf(chain)
+      ? { account, direction: "deposit", asset: "USDC", chain: chain === "Arbitrum" ? "arbitrum" : "base", amount: lendShortfall.toString(), address: addresses.addressOf(chain), swap_type: "EXACT_OUTPUT", slippage_bps: slippage.bps }
+      : null;
+  const newLegs = isBorrow && source === "New deposit" ? legs.filter((l) => Number(l.amount) > 0) : [];
+  const buysNear = active?.kind === "evm" && newLegs.some((l) => l.token === ASSETS.wnear);
+  const nearSwapChain = chain === "Arbitrum" ? "arbitrum" : "base";
+  // Each collateral token the balance lacks: from its own chain through 1Click, or NEAR from the
+  // NEAR wallet (an EVM account buys NEAR with USDC instead).
+  type CollateralLeg = { key: string; near?: { token: TokenId; amount: bigint }; params?: DepositParams };
+  const collateralLegs = newLegs.flatMap((l, i): CollateralLeg[] => {
+    const missing = shortfallOf(rawAmount(l.token, l.amount), deposits[l.token]);
+    if (missing === 0n) return [];
+    const key = `deposit:${i}`;
+    if (l.token === ASSETS.wnear && active?.kind === "near") return [{ key, near: { token: ASSETS.wnear, amount: missing } }];
+    const home = TOKENS[l.token].chain;
+    const via = l.token === ASSETS.wnear ? (chain === "Arbitrum" ? "Arbitrum" : "Base") : home;
+    const params: DepositParams =
+      l.token === ASSETS.wnear
+        ? { asset: "USDC", to: "NEAR", chain: nearSwapChain, amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(via), arrives: ASSETS.wnear }
+        : { asset: TOKENS[l.token].symbol, chain: home === "Bitcoin" ? "bitcoin" : home === "Arbitrum" ? "arbitrum" : "base", amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(home), arrives: l.token };
+    return [{ key, params }];
+  });
+  const collateralDeposits: Stage[] = collateralLegs.map((leg) => (leg.near ? nearDepositStage(leg.key, leg.near.token, leg.near.amount) : depositStage(leg.key, leg.params!)));
+  // Previews at the route's default slippage (D67); none without a refund address yet.
+  const collateralQuotes = collateralLegs.flatMap((leg): { key: string; request: QuoteRequest; arrives: TokenId }[] =>
+    leg.params && account !== undefined && leg.params.address
+      ? [{ key: leg.key, arrives: leg.params.arrives, request: { account, direction: "deposit", asset: leg.params.asset, chain: leg.params.chain, amount: leg.params.amount.toString(), to: leg.params.to, address: leg.params.address, swap_type: "EXACT_OUTPUT" } }]
+      : [],
+  );
+  const withBtc = newLegs.some((l) => l.token === ASSETS.btc);
+
   let live: LiveSpec | undefined;
-  if (isBorrow && source !== "New deposit") {
+  if (isBorrow) {
     const msg = () => ({ maturity: book.maturity, max_rate_bps: orderBps, principal: principalRaw().toString(), expires_at: null });
     live = {
-      sign: signLabel,
-      done: borrowDone,
       summary: "Borrow order placed",
       detail,
-      build: () =>
-        source === "Existing loan"
-          ? [setllendAuthCall({ action: "borrow", data: msg() })]
-          : [
-              setllendTransferMany(
-                Object.fromEntries(legs.filter((l) => Number(l.amount) > 0).map((l) => [l.token, rawAmount(l.token, l.amount, deposits[l.token])])),
-                { action: "borrow", data: msg() },
-              ),
-            ],
-    };
-  } else if (fromBalance) {
-    live = {
-      sign: signLabel,
-      done: "Order placed in the book",
-      summary: "Lend order placed",
-      detail,
-      build: () => [
-        setllendTransfer(ASSETS.usdcNear, rawAmount(ASSETS.usdcNear, amount, usdcBalance), {
-          action: "lend",
-          data: { maturity: book.maturity, min_rate_bps: orderBps, expires_at: null },
+      stages: [
+        ...collateralDeposits,
+        ...intentStages({
+          sign: signLabel,
+          done: borrowDone,
+          build: () =>
+            source === "Existing loan"
+              ? [setllendAuthCall({ action: "borrow", data: msg() })]
+              : [
+                  setllendTransferMany(
+                    // After the deposits the balance holds every leg; "Deposited" takes at most what is there.
+                    Object.fromEntries(newLegsOrAll(legs).map((l) => [l.token, rawAmount(l.token, l.amount, source === "Deposited" ? deposits[l.token] : undefined)])),
+                    { action: "borrow", data: msg() },
+                  ),
+                ],
         }),
       ],
     };
+  } else {
+    const lend = () => [
+      setllendTransfer(ASSETS.usdcNear, rawAmount(ASSETS.usdcNear, amount, fromBalance ? usdcBalance : undefined), {
+        action: "lend" as const,
+        data: { maturity: book.maturity, min_rate_bps: orderBps, expires_at: null },
+      }),
+    ];
+    const deposit: Stage[] =
+      lendShortfall === 0n
+        ? []
+        : chain === "NEAR"
+          ? [nearDepositStage("deposit", ASSETS.usdcNear, lendShortfall)]
+          : [depositStage("deposit", { asset: "USDC", chain: chain === "Arbitrum" ? "arbitrum" : "base", amount: lendShortfall, swapType: "EXACT_OUTPUT", address: addresses.addressOf(chain), slippageBps: slippage.bps, arrives: ASSETS.usdcNear })];
+    live = fromBalance
+      ? intentLive({ sign: signLabel, done: "Order placed in the book", summary: "Lend order placed", detail, build: lend })
+      : { summary: "Lend order placed", detail, stages: [...deposit, ...intentStages({ sign: signLabel, done: "Order placed in the book", build: lend })] };
   }
 
   return (
@@ -244,6 +292,24 @@ export function OrderForm({
           <span className="text-muted">Pay USDC from</span>
           <Segmented options={chains} value={chain} onChange={setChain} />
         </div>
+      )}
+      {!isBorrow && lendShortfall > 0n && usdcBalance && BigInt(usdcBalance) > 0n && (
+        <p className="-mt-1.5 text-xs text-faint">Uses your {formatUsd(usdcToNumber(usdcBalance))} balance and deposits the rest.</p>
+      )}
+      {!isBorrow && <DepositPreview request={lendQuote} arrives={ASSETS.usdcNear} slippage={slippage} />}
+      {buysNear && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted">Buy NEAR with USDC on</span>
+          <Segmented options={CHAINS} value={chain === "Arbitrum" ? "Arbitrum" : "Base"} onChange={setChain} />
+        </div>
+      )}
+      {collateralQuotes.map((q) => (
+        <DepositPreview key={q.key} request={q.request} arrives={q.arrives} />
+      ))}
+      {withBtc && (
+        <p className="rounded-xl border border-line bg-background/40 px-3.5 py-2.5 text-xs text-muted">
+          A Bitcoin deposit takes about 15 minutes. Deposit BTC first from Portfolio, then borrow from Deposited, so this order doesn&apos;t wait on it.
+        </p>
       )}
 
       {addresses.fields}
@@ -394,7 +460,7 @@ export function SellNoteForm({
   const signPrefix = useSignPrefix();
   const steps = [...signPrefix, "Sign the sell order with your wallet", "Order placed in the book", "USDC from each fill goes to your Intents balance"];
   const orderBps = mode === "Market" ? (market.limitBps ?? 0) : rateBps;
-  const live: LiveSpec = {
+  const live: LiveSpec = intentLive({
     sign: "Sign the sell order with your wallet",
     done: "Order placed. USDC from each fill goes to your Intents balance",
     summary: "Sell order placed",
@@ -405,7 +471,7 @@ export function SellNoteForm({
         data: { maturity: book.maturity, value: rawAmount(ASSETS.usdcNear, amount, note?.free_value).toString(), max_rate_bps: orderBps, expires_at: null },
       }),
     ],
-  };
+  });
 
   return (
     <ActionForm steps={steps} live={live} error={error} label="Sell notes" onDone={onDone}>
@@ -492,4 +558,15 @@ function HealthBar({ health, liquidation }: { health: number; liquidation: { tok
       </ul>
     </div>
   );
+}
+
+/** What a balance lacks for `needed`, in raw units; 0 when it covers it. */
+function shortfallOf(needed: bigint, balance: string | undefined): bigint {
+  const missing = needed - BigInt(balance ?? "0");
+  return missing > 0n ? missing : 0n;
+}
+
+/** The legs a borrow sends: those with an amount. */
+function newLegsOrAll(legs: Leg[]): Leg[] {
+  return legs.filter((l) => Number(l.amount) > 0);
 }

@@ -11,13 +11,16 @@ import { type AccountView, type CollateralTokenInfo, getBook, type LoanView, typ
 import { health, legsOf, legsOfRaw, liquidationPriceOf, maxWithdrawOf } from "@/lib/collateral";
 import { formatMaturity, formatUsd, maturityToMs, usdcToNumber } from "@/lib/format";
 import { formatTokenAmount, rawAmount, TOKENS, tokenAmount, tokenLabel } from "@/lib/tokens";
-import { useApiMode } from "@/lib/api-mode";
+import type { QuoteRequest } from "@/lib/oneclick";
+import type { RelayBody } from "@/lib/intents-client";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import { setllendAuthCall, setllendTransfer } from "@/shared/intents";
 import type { Config, NoteView, OrderView } from "@/shared/views";
 import { useAccount } from "@/lib/account";
-import { type LiveSpec, ActionForm as Flow } from "../action-form";
+import { type LiveSpec, ActionForm as Flow, intentLive } from "../action-form";
+import { DepositPreview, useSlippage } from "../deposit-preview";
+import { exitStages, intentStages, nearDepositStage, depositStage, usdcDepositStages } from "@/lib/stages";
 import { CHAINS, type Chain, DecimalInput, decimalString, Field, payInStep, payOutStep, Row, Segmented, useAddresses, useChain, useChainOptions, useSignPrefix } from "../form-parts";
 import { Modal } from "../modal";
 import { SellNoteForm } from "../order-form";
@@ -99,8 +102,6 @@ export function ActionModal({ action, onClose, ...ctx }: Context & { action: Acc
   }
 }
 
-const useIsLive = () => useApiMode() === "live";
-
 function MaxSuffix({ unit, onMax }: { unit: string; onMax: () => void }) {
   return (
     <span className="flex items-center gap-2">
@@ -162,6 +163,10 @@ function RepayForm({ loan, account, tokens, prices, nowMs, onDone }: Context & {
   const [fundingChoice, setFunding] = useState<Funding | null>(null);
   const fromBalance = (fundingChoice ?? (balance >= value ? "Intents balance" : "New deposit")) === "Intents balance";
   const addresses = useAddresses(fromBalance ? [] : [chain]);
+  const slippage = useSlippage("USDC");
+  // Only what the balance lacks is deposited (D67).
+  const repayRaw = () => rawAmount(ASSETS.usdcNear, amount, loan.debt_face);
+  const shortfall = fromBalance ? 0n : nonNegative(repayRaw() - BigInt(balanceRaw ?? "0"));
   const after = Math.max(0, debt - value);
   const beforeMaturity = nowMs < maturityToMs(loan.maturity);
 
@@ -173,17 +178,12 @@ function RepayForm({ loan, account, tokens, prices, nowMs, onDone }: Context & {
 
   const sign = "Sign the repay transfer with your wallet";
   const done = "Debt reduced. Your collateral stays until you withdraw it";
-  const live: LiveSpec | undefined = fromBalance
-    ? {
-        sign,
-        done,
-        summary: "Loan repaid",
-        detail: `${formatUsd(value)} repaid, ${formatUsd(after)} left`,
-        build: () => [
-          setllendTransfer(ASSETS.usdcNear, rawAmount(ASSETS.usdcNear, amount, loan.debt_face), { action: "repay", data: { maturity: loan.maturity, borrower: null } }),
-        ],
-      }
-    : undefined;
+  const repay = () => [setllendTransfer(ASSETS.usdcNear, repayRaw(), { action: "repay" as const, data: { maturity: loan.maturity, borrower: null } })];
+  const live: LiveSpec = {
+    summary: "Loan repaid",
+    detail: `${formatUsd(value)} repaid, ${formatUsd(after)} left`,
+    stages: [...usdcDepositStages(chain, shortfall, addresses.addressOf(chain), slippage.bps), ...intentStages({ sign, done, build: repay })],
+  };
 
   return (
     <Flow
@@ -205,6 +205,7 @@ function RepayForm({ loan, account, tokens, prices, nowMs, onDone }: Context & {
       </div>
       {!fromBalance && <ChainRow label="Pay USDC from" value={chain} onChange={setChain} />}
       {addresses.fields}
+      <DepositPreview request={depositRequest(account.account, chain, shortfall, addresses.addressOf(chain), slippage.bps)} arrives={ASSETS.usdcNear} slippage={slippage} />
       <dl className="rounded-xl border border-line bg-background/50 px-3.5 py-0.5 text-sm">
         <Row label="Debt after" value={formatUsd(after)} />
         <Row label="Health factor after" value={formatHealth(health(after, legsOfRaw(loan.collateral, tokens, prices)))} />
@@ -253,13 +254,13 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config
 
   const sign = `Sign the add-collateral transfer of ${formatTokenAmount(token, value)}`;
   const done = `Collateral added to the ${loan ? formatMaturity(loan.maturity) : ""} loan`;
-  const live: LiveSpec | undefined = loan && {
+  const live: LiveSpec | undefined = loan && intentLive({
     sign,
     done,
     summary: "Collateral added",
     detail: `${formatTokenAmount(token, value)} to the ${formatMaturity(loan.maturity)} loan`,
     build: () => [setllendTransfer(token, rawAmount(token, amount, account.deposits[token]), { action: "add_collateral", data: { maturity: loan.maturity } })],
-  };
+  });
 
   return (
     <Flow
@@ -309,7 +310,7 @@ function AddCollateralForm({ loan: fixedLoan, token: fixedToken, account, config
   );
 }
 
-function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }: Context & { loan: LoanView; onDone: () => void }) {
+function WithdrawCollateralForm({ loan, account, config, tokens, prices, nowMs, onDone }: Context & { loan: LoanView; onDone: () => void }) {
   const held = Object.keys(loan.collateral);
   const [token, setToken] = useState<TokenId>(held[0]);
   const debt = usdcToNumber(loan.debt_face);
@@ -324,9 +325,7 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   const overdue = debt > 0 && nowMs >= maturityToMs(loan.maturity) + Number(BigInt(config.grace) / 1_000_000n);
   const chain = TOKENS[token].chain;
   const signPrefix = useSignPrefix();
-  // Live mode stops at the Intents balance until the exit legs of step 3 (D66).
-  const isLive = useIsLive();
-  const addresses = useAddresses(isLive ? [] : [chain]);
+  const addresses = useAddresses([chain]);
 
   let error: string | undefined;
   if (overdue) error = "Overdue: repay first";
@@ -335,17 +334,20 @@ function WithdrawCollateralForm({ loan, config, tokens, prices, nowMs, onDone }:
   else if (addresses.error) error = addresses.error;
 
   const symbol = TOKENS[token].symbol;
+  // Without debt the whole token can go, so Max takes its exact raw amount.
+  const raw = () => rawAmount(token, amount, debt > 0 ? undefined : loan.collateral[token]);
+  // Then straight on to its own chain (D67); NEAR stays in the Intents balance, as before.
+  const exit = chain === "NEAR" ? [] : exitStages({ token, chain, account: account.account, amount: raw, address: addresses.addressOf(chain) });
   const live: LiveSpec = {
-    sign: "Sign the withdrawal with your wallet",
-    done: `${symbol} reaches your Intents balance`,
-    summary: "Collateral withdrawn",
-    detail: `${formatTokenAmount(token, value)} is in your Intents balance`,
-    build: () => [
-      setllendAuthCall({
-        action: "withdraw_collateral",
-        // Without debt the whole token can go, so Max takes its exact raw amount.
-        data: { maturity: loan.maturity, collateral_token: token, amount: rawAmount(token, amount, debt > 0 ? undefined : loan.collateral[token]).toString() },
+    summary: chain === "NEAR" ? "Collateral withdrawn" : `${symbol} sent to ${chain}`,
+    detail: chain === "NEAR" ? `${formatTokenAmount(token, value)} is in your Intents balance` : `${formatTokenAmount(token, value)} withdrawn from the loan`,
+    stages: [
+      ...intentStages({
+        sign: "Sign the withdrawal with your wallet",
+        done: `${symbol} reaches your Intents balance`,
+        build: () => [setllendAuthCall({ action: "withdraw_collateral", data: { maturity: loan.maturity, collateral_token: token, amount: raw().toString() } })],
       }),
+      ...exit,
     ],
   };
 
@@ -399,21 +401,22 @@ function RedeemForm({ maturity, note, onDone }: { maturity: U64; note: NoteView;
   const free = usdcToNumber(note.free_value);
   const [chain, setChain] = useChain("Base");
   const signPrefix = useSignPrefix();
-  const isLive = useIsLive();
-  const addresses = useAddresses(isLive ? [] : [chain]);
+  const addresses = useAddresses([chain]);
+  const accountId = useAccount().active?.accountId ?? "";
   const locked = BigInt(note.locked_value) > 0n;
   const live: LiveSpec = {
-    sign: "Sign the redemption with your wallet",
-    done: "USDC reaches your Intents balance",
     summary: "Notes redeemed",
-    detail: `${formatUsd(free)} is in your Intents balance`,
-    // The pool pays up to what it holds (contract-interface.md): the event says how much.
-    outcome: (body) => {
-      const redeemed = body.events.find((e) => e.event === "redeemed");
-      return redeemed?.event === "redeemed" ? `${formatUsd(usdcToNumber(redeemed.data.value))} is in your Intents balance` : undefined;
+    detail: `${formatUsd(free)} sent to ${chain === "NEAR" ? "your NEAR account" : chain}`,
+    outcome: (vars) => {
+      const paid = redeemedOf(vars);
+      return paid === null ? undefined : `${formatUsd(usdcToNumber(paid.toString()))} sent to ${chain === "NEAR" ? "your NEAR account" : chain}`;
     },
-    // `value: null` redeems every free share (contract-interface.md).
-    build: () => [setllendAuthCall({ action: "redeem", data: { maturity, value: null } })],
+    stages: [
+      // `value: null` redeems every free share (contract-interface.md).
+      ...intentStages({ sign: "Sign the redemption with your wallet", done: "USDC reaches your Intents balance", build: () => [setllendAuthCall({ action: "redeem", data: { maturity, value: null } })] }),
+      // The pool pays up to what it holds: the exit takes what the `redeemed` event reports (D67).
+      ...exitStages({ token: ASSETS.usdcNear, chain, account: accountId, address: addresses.addressOf(chain), amount: (vars) => redeemedOf(vars) ?? 0n }),
+    ],
   };
   return (
     <Flow
@@ -427,7 +430,7 @@ function RedeemForm({ maturity, note, onDone }: { maturity: U64; note: NoteView;
         <Row label="You receive" value={formatUsd(free)} tone="accent" />
       </dl>
       {locked && <p className="text-xs text-faint">Notes listed for sale stay locked. Cancel the sell order to redeem them too.</p>}
-      {!isLive && <ChainRow label="Receive USDC on" value={chain} onChange={setChain} />}
+      <ChainRow label="Receive USDC on" value={chain} onChange={setChain} />
       {addresses.fields}
     </Flow>
   );
@@ -451,12 +454,12 @@ function CancelForm({ order, onDone }: { order: OrderView; onDone: () => void })
   return (
     <Flow
       steps={[...signPrefix, "Sign the cancel with your wallet", refund]}
-      live={{
+      live={intentLive({
         sign: "Sign the cancel with your wallet",
         done: refund,
         summary: "Order cancelled",
         build: () => [setllendAuthCall({ action: "cancel", data: { order_id: order.order_id } })],
-      }}
+      })}
       error={undefined}
       label="Cancel order"
       onDone={onDone}
@@ -477,9 +480,8 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   const [pickedChain, setChain] = useChain("Base");
   const chain: Chain = pickChain ? pickedChain : (meta.chain as Chain);
   const signPrefix = useSignPrefix();
-  // Live mode moves a free balance to the Intents balance only; exits come with step 3 (D66).
-  const isLive = useIsLive();
-  const addresses = useAddresses(isLive ? [] : [chain]);
+  const addresses = useAddresses([chain]);
+  const accountId = useAccount().active?.accountId ?? "";
   const n = Number(value) || 0;
 
   let error: string | undefined;
@@ -487,20 +489,26 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   else if (n > total) error = "More than your balance";
   else if (addresses.error) error = addresses.error;
 
-  const live: LiveSpec | undefined =
-    source === "free"
-      ? {
-          sign: "Sign the Setllend withdrawal with your wallet",
-          done: `${meta.symbol} reaches your Intents balance`,
-          summary: "Moved to your Intents balance",
-          detail: formatTokenAmount(token, n),
-          build: () => {
-            const raw = rawAmount(token, value, amount);
-            // `amount: null` takes the whole free balance (contract-interface.md).
-            return [setllendAuthCall({ action: "withdraw", data: { token_id: token, amount: raw === BigInt(amount) ? null : raw.toString() } })];
-          },
-        }
-      : undefined;
+  const raw = () => rawAmount(token, value, amount);
+  const live: LiveSpec = {
+    summary: `${meta.symbol} sent to ${chain === "NEAR" ? "your NEAR account" : chain}`,
+    detail: formatTokenAmount(token, n),
+    stages: [
+      // A free balance held by Setllend first comes back to the Intents balance (D67).
+      ...(source === "free"
+        ? intentStages({
+            sign: "Sign the Setllend withdrawal with your wallet",
+            done: `${meta.symbol} reaches your Intents balance`,
+            build: () => {
+              // `amount: null` takes the whole free balance (contract-interface.md).
+              const r = raw();
+              return [setllendAuthCall({ action: "withdraw", data: { token_id: token, amount: r === BigInt(amount) ? null : r.toString() } })];
+            },
+          })
+        : []),
+      ...exitStages({ token, chain, account: accountId, amount: raw, address: addresses.addressOf(chain) }),
+    ],
+  };
 
   const steps = [
     ...signPrefix,
@@ -514,11 +522,11 @@ function WithdrawForm({ token, amount, source, onDone }: { token: TokenId; amoun
   ];
 
   return (
-    <Flow steps={steps} live={live} error={error} label={isLive && source === "free" ? `Move ${meta.symbol} to your balance` : `Withdraw ${meta.symbol}`} onDone={onDone}>
+    <Flow steps={steps} live={live} error={error} label={`Withdraw ${meta.symbol}`} onDone={onDone}>
       <Field label="Amount" suffix={<MaxSuffix unit={meta.symbol} onMax={() => setValue(decimalString(total))} />} hint={`Balance: ${formatTokenAmount(token, total)}`}>
         <DecimalInput value={value} onChange={setValue} />
       </Field>
-      {isLive ? null : pickChain ? <ChainRow label="Send to" value={chain} onChange={setChain} /> : <p className="text-xs text-faint">Goes back to {chain}, the chain it came from.</p>}
+      {pickChain ? <ChainRow label="Send to" value={chain} onChange={setChain} /> : <p className="text-xs text-faint">Goes back to {chain}, the chain it came from.</p>}
       {addresses.fields}
     </Flow>
   );
@@ -554,6 +562,24 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
   const unit = isSwap ? payWith : asset;
   const receiver = active?.accountId ?? "your account";
   const addresses = useAddresses([from]);
+  const sent: DepositAsset = isSwap ? payWith : asset;
+  const slippage = useSlippage(sent, isSwap ? "NEAR" : undefined);
+  const sentToken = { USDC: ASSETS.usdcNear, ETH: ASSETS.ethArb, BTC: ASSETS.btc, NEAR: ASSETS.wnear }[sent];
+  // What arrives in the Intents balance: ETH stays the ETH of its chain (D61).
+  const arrives = isSwap ? ASSETS.wnear : asset === "ETH" ? (from === "Base" ? ASSETS.ethBase : ASSETS.ethArb) : sentToken;
+  const raw = () => rawAmount(sentToken, amount);
+  const oneclickChain = from === "Arbitrum" ? "arbitrum" : from === "Base" ? "base" : "bitcoin";
+  const request: QuoteRequest | null =
+    !active || fromNear || n <= 0 || !addresses.addressOf(from)
+      ? null
+      : { account: active.accountId, direction: "deposit", asset: sent, chain: oneclickChain, amount: raw().toString(), to: isSwap ? "NEAR" : undefined, address: addresses.addressOf(from), swap_type: "EXACT_INPUT", slippage_bps: slippage.bps };
+  const live: LiveSpec = {
+    summary: "Deposit arrived",
+    detail: `In your Intents balance${isSwap ? " as NEAR" : ""}, not as collateral until you add it`,
+    stages: fromNear
+      ? [nearDepositStage("deposit", sentToken, raw())]
+      : [depositStage("deposit", { asset: sent, chain: oneclickChain, to: isSwap ? "NEAR" : undefined, amount: raw(), swapType: "EXACT_INPUT", address: addresses.addressOf(from), slippageBps: slippage.bps, arrives })],
+  };
 
   let steps: string[];
   if (fromNear) {
@@ -576,7 +602,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
   else if (addresses.error) error = addresses.error;
 
   return (
-    <Flow steps={steps} live={undefined} error={error} label={isSwap ? "Buy NEAR" : `Deposit ${asset}`} onDone={onDone}>
+    <Flow steps={steps} live={live} error={error} label={isSwap ? "Buy NEAR" : `Deposit ${asset}`} onDone={onDone}>
       <ChainRow
         label="From"
         value={from}
@@ -635,6 +661,23 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
         <DecimalInput value={amount} onChange={setAmount} />
       </Field>
       {addresses.fields}
+      <DepositPreview request={request} arrives={arrives} slippage={slippage} />
     </Flow>
   );
+}
+
+const nonNegative = (n: bigint) => (n > 0n ? n : 0n);
+
+/** The dry quote a USDC deposit from Arbitrum or Base previews; null for none, or from NEAR. */
+function depositRequest(account: string, chain: Chain, amount: bigint, address: string | undefined, slippageBps: number): QuoteRequest | null {
+  // Without a refund address (a NEAR account hasn't entered one yet) 1Click would refuse it.
+  if (amount <= 0n || (chain !== "Arbitrum" && chain !== "Base") || !address) return null;
+  return { account, direction: "deposit", asset: "USDC", chain: chain === "Arbitrum" ? "arbitrum" : "base", amount: amount.toString(), address, swap_type: "EXACT_OUTPUT", slippage_bps: slippageBps };
+}
+
+/** What a redemption paid, from the `redeemed` event the relayer returned; null before it ran. */
+function redeemedOf(vars: Record<string, unknown>): bigint | null {
+  const body = vars.relay as RelayBody | undefined;
+  const event = body?.events.find((e) => e.event === "redeemed");
+  return event?.event === "redeemed" ? BigInt(event.data.value) : null;
 }

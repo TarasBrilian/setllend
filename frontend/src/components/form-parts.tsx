@@ -37,7 +37,8 @@ const ADDRESS_FORMAT: Partial<Record<Chain, RegExp>> = {
  * enters one for Arbitrum or Base, where it has none (D51). EVM accounts use their own there.
  */
 export function useAddresses(chains: Chain[]) {
-  const nearAccount = useAccount().active?.kind === "near";
+  const { active } = useAccount();
+  const nearAccount = active?.kind === "near";
   const [values, setValues] = useState<Partial<Record<Chain, string>>>({});
   const needed = [...new Set(chains)].filter((c) => c === "Bitcoin" || (nearAccount && (c === "Arbitrum" || c === "Base")));
   const missing = needed.find((c) => !ADDRESS_FORMAT[c]!.test((values[c] ?? "").trim()));
@@ -56,7 +57,10 @@ export function useAddresses(chains: Chain[]) {
       />
     </Field>
   ));
-  return { fields, error: missing ? `Enter your address on ${missing}` : undefined };
+  /** The address a 1Click leg on `chain` uses: what was entered, or an EVM account's own on Arbitrum and Base. */
+  const addressOf = (chain: Chain): string | undefined =>
+    values[chain]?.trim() || (active?.kind === "evm" && (chain === "Arbitrum" || chain === "Base") ? active.address : undefined);
+  return { fields, error: missing ? `Enter your address on ${missing}` : undefined, addressOf };
 }
 
 /** Paying into the Intents balance: one NEAR transaction from NEAR (D51), 1Click otherwise (Bitcoin too, D52). */

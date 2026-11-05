@@ -5,7 +5,7 @@
 import { signMessage } from "wagmi/actions";
 import { ACCOUNTS } from "@/shared/assets";
 import { type Intent, buildIntentPayload, buildNep413Payload, signedErc191, signedNep413 } from "@/shared/intents";
-import type { SignedErc191Payload, SignedNep413Payload } from "@/shared/intents";
+import type { Nep413Payload, SignedErc191Payload, SignedNep413Payload } from "@/shared/intents";
 import type { SetllendEvent } from "@/shared/events";
 import { type ActiveAccount, getSelector } from "./account";
 import { API_URL } from "./api/mode";
@@ -47,21 +47,27 @@ export async function signIntents(active: ActiveAccount, intents: Intent[]): Pro
   const salt = await currentSalt();
   if (active.kind === "evm") {
     const payload = buildIntentPayload({ signerId: active.accountId, intents, deadline, salt, verifyingContract: ACCOUNTS.intents });
-    let signature: `0x${string}`;
-    try {
-      signature = await signMessage(wagmiConfig, { account: active.address, message: payload });
-    } catch (error) {
-      throw new WalletError(walletMessage(error));
-    }
-    return { signed: signedErc191(payload, signature) };
-  }
-
-  const wallet = await (await getSelector()).wallet();
-  // MyNearWallet signs on its own site and comes back by redirect, which loses the form (D66).
-  if (wallet.id === "my-near-wallet" || !wallet.signMessage) {
-    throw new WalletError(`${wallet.metadata.name} can't sign intents here. Connect Meteor or Intear to place orders.`);
+    return { signed: signedErc191(payload, await signErc191(active.address, payload)) };
   }
   const payload = buildNep413Payload({ signerId: active.accountId, intents, deadline, salt, verifyingContract: ACCOUNTS.intents });
+  const { publicKey, signature } = await signNep413(active.accountId, payload);
+  return { signed: signedNep413(payload, publicKey, signature) };
+}
+
+/** `personal_sign` of `message` by the EVM wallet: a 1Click payload is signed the same way (D61). */
+export async function signErc191(address: `0x${string}`, message: string): Promise<`0x${string}`> {
+  try {
+    return await signMessage(wagmiConfig, { account: address, message });
+  } catch (error) {
+    throw new WalletError(walletMessage(error));
+  }
+}
+
+/** A NEP-413 signature by the NEAR wallet: the key and the 64 signature bytes. */
+export async function signNep413(accountId: string, payload: Nep413Payload): Promise<{ publicKey: string; signature: Uint8Array }> {
+  const wallet = await (await getSelector()).wallet();
+  // Meteor, Intear, and MyNearWallet all sign in a popup or extension (D68).
+  if (!wallet.signMessage) throw new WalletError(`${wallet.metadata.name} can't sign messages. Connect Meteor, Intear, or MyNearWallet.`);
   let signed;
   try {
     // The wallets take the 32 nonce bytes as a plain array-like; no Buffer needed in the browser.
@@ -70,8 +76,8 @@ export async function signIntents(active: ActiveAccount, intents: Intent[]): Pro
     throw new WalletError(walletMessage(error));
   }
   if (!signed) throw new WalletError("The wallet returned no signature");
-  if (signed.accountId !== active.accountId) throw new WalletError(`The wallet signed as ${signed.accountId}, not ${active.accountId}`);
-  return { signed: signedNep413(payload, signed.publicKey, fromBase64(signed.signature)) };
+  if (signed.accountId !== accountId) throw new WalletError(`The wallet signed as ${signed.accountId}, not ${accountId}`);
+  return { publicKey: signed.publicKey, signature: fromBase64(signed.signature) };
 }
 
 /**
