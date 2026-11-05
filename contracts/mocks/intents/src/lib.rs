@@ -63,12 +63,16 @@ impl MockIntents {
 
 #[near]
 impl MockIntents {
-    /// As on `intents.near`: exactly 1 yoctoNEAR, and the key belongs to the predecessor.
+    /// As on `intents.near`: exactly 1 yoctoNEAR, the key belongs to the predecessor, and a key
+    /// that is already registered panics. Unlike there, an implicit account's own key isn't implied.
     #[payable]
     pub fn add_public_key(&mut self, public_key: PublicKey) {
         assert_one_yocto();
-        self.public_keys
-            .insert((env::predecessor_account_id(), public_key));
+        require!(
+            self.public_keys
+                .insert((env::predecessor_account_id(), public_key)),
+            "public key already exists"
+        );
     }
 
     pub fn has_public_key(&self, account_id: AccountId, public_key: PublicKey) -> bool {

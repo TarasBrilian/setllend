@@ -9,7 +9,7 @@
 // Env: DEPLOY_ACCOUNT_ID (default setllend.near), DEPLOY_PRIVATE_KEY (full-access key, --send only),
 // NEAR_RPC_URL (default the free FastNear RPC), DEPLOY_WASM (default the reproducible build's
 // output, contracts/target/mainnet/setllend.wasm). `--dev-wasm` accepts a wasm that isn't a
-// reproducible build of a commit on origin/main: for a sandbox run only.
+// reproducible build of a commit on origin/main, and is refused on mainnet.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -23,6 +23,10 @@ const TGAS = 10n ** 12n;
 const YOCTO_PER_BYTE = 10n ** 19n;
 /** Above the code's storage: the initial state, the account itself, and gas. */
 const BALANCE_MARGIN = 3n * 10n ** 23n; // 0.3 NEAR
+/** What backend/scripts/backend-account.ts later sends out of this account. */
+const BACKEND_ACCOUNT_FUNDING = 10n ** 23n; // 0.1 NEAR
+/** Free NEAR the keeper alerts below (D38), so the contract can pay for the storage of its records. */
+const FREE_NEAR_FLOOR = 10n ** 24n; // 1 NEAR
 /** A maturity this close to now could pass before the transaction lands, so it is dropped (D69). */
 const MIN_AHEAD_MS = 60 * 60_000;
 
@@ -71,19 +75,26 @@ const wasm = readFileSync(wasmPath);
 const text = wasm.toString("latin1");
 const buildEnvironment = /"build_environment":"([^"]+)"/.exec(text)?.[1] ?? null;
 const snapshot = /"source_code_snapshot":"[^"]*\?rev=([0-9a-f]{40})"/.exec(text)?.[1] ?? null;
-const onMain = (rev: string) => {
+/** null when origin/main can't be fetched, so a missing network isn't reported as an unmerged commit. */
+const onMain = (rev: string): boolean | null => {
   try {
     execFileSync("git", ["fetch", "-q", "origin", "main"], { stdio: "ignore" });
+  } catch {
+    return null;
+  }
+  try {
     execFileSync("git", ["merge-base", "--is-ancestor", rev, "origin/main"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 };
+const merged = snapshot ? onMain(snapshot) : null;
 const provider = new JsonRpcProvider({ url: rpcUrl });
 const signer = send ? new KeyPairSigner(KeyPair.fromString((process.env.DEPLOY_PRIVATE_KEY || fail("DEPLOY_PRIVATE_KEY is not set")) as KeyPairString)) : undefined;
 const account = new Account(accountId, provider, signer);
 const state = await account.getState();
+const chainId = (await provider.viewNodeStatus()).chain_id;
 
 const now = Date.now();
 const maturities = MATURITIES.map((day) => ({ day, ms: Date.parse(`${day}T08:00:00Z`) }));
@@ -96,16 +107,18 @@ const calls: { method: string; args: object; gas: bigint }[] = [
   ...TOKENS.map((t) => ({ method: "add_collateral_token", args: t, gas: 10n * TGAS })),
 ];
 
-const needed = BigInt(wasm.length) * YOCTO_PER_BYTE + BALANCE_MARGIN;
+const storage = BigInt(wasm.length) * YOCTO_PER_BYTE + BALANCE_MARGIN;
+const needed = storage + BACKEND_ACCOUNT_FUNDING + FREE_NEAR_FLOOR;
 const near = (yocto: bigint) => `${(Number(yocto / 10n ** 18n) / 1e6).toFixed(4)} NEAR`;
 
-console.log(`Network RPC: ${rpcUrl}`);
+console.log(`Network RPC: ${rpcUrl} (${chainId})`);
 console.log(`Account:     ${accountId} (balance ${near(state.balance.total)}, code hash ${state.codeHash})`);
 console.log(`Wasm:        ${wasmPath}`);
 console.log(`             ${wasm.length} bytes, sha256 ${createHash("sha256").update(wasm).digest("hex")}`);
 console.log(`             build environment: ${buildEnvironment ?? "none (not a reproducible build)"}`);
-console.log(`             source commit: ${snapshot ?? "none"}${snapshot ? (onMain(snapshot) ? " (on origin/main)" : " (NOT on origin/main)") : ""}`);
-console.log(`Storage:     needs about ${near(needed)} (code, state, and a margin)`);
+const mergedNote = merged === null ? " (origin/main could not be fetched)" : merged ? " (on origin/main)" : " (NOT on origin/main)";
+console.log(`             source commit: ${snapshot ?? "none"}${snapshot ? mergedNote : ""}`);
+console.log(`Balance:     needs ${near(needed)}: ${near(storage)} for code, state, and gas, 0.1 NEAR for the backend account, 1 NEAR free (D38)`);
 console.log("\nOne transaction:");
 console.log(`  1. DeployContract (${wasm.length} bytes)`);
 calls.forEach((c, i) => console.log(`  ${i + 2}. ${c.method}(${JSON.stringify(c.args)}), ${c.gas / TGAS} Tgas`));
@@ -119,7 +132,9 @@ if (!send) {
   process.exit(0);
 }
 if (!devWasm && (!buildEnvironment || !snapshot)) fail("the wasm is not a reproducible build (NEP-330); build it with cargo near build reproducible-wasm.");
-if (!devWasm && !onMain(snapshot!)) fail(`the wasm was built from ${snapshot}, which is not on origin/main, so nobody could rebuild it from the public repo.`);
+if (devWasm && chainId === "mainnet") fail("--dev-wasm is for a sandbox run only.");
+if (!devWasm && merged === null) fail("origin/main could not be fetched to check the wasm's source commit.");
+if (!devWasm && !merged) fail(`the wasm was built from ${snapshot}, which is not on origin/main, so nobody could rebuild it from the public repo.`);
 
 const outcome = await account.signAndSendTransaction({
   receiverId: accountId,
