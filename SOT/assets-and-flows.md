@@ -67,6 +67,17 @@ Payout path as it ran:
 3. The user signs the payload string unchanged with `personal_sign`.
 4. `POST /v0/submit-intent` with `signedData: { standard: "erc191", payload, signature }`. `signature` is `secp256k1:` + base58 of the 65 bytes `r ‖ s ‖ v`, with `v` normalized from 27/28 to 0/1. No `public_key` field. Returns `intentHash`. Track with `GET /v0/status?depositAddress=…`, as with any swap.
 
+## Real-funds test through the production backend (2026-11-05) ✅
+
+The $1 test of D67 point 14: a USDC deposit from Base and its withdrawal back, through Setllend's own endpoints on Railway (`POST /api/oneclick/quote`, `deposit-tx`, `submit`, `GET /api/oneclick/:id`) from a throwaway local page and the user's EVM wallet, before the contract deploy.
+
+| Leg | In | Out | Fee | Time |
+|---|---|---|---|---|
+| Deposit: 1 USDC on Base → NEAR USDC in Intents (`EXACT_INPUT`) | 1.000000 USDC | 0.999798 USDC | 0.000202 (about 2 bps) | `SUCCESS` about 1 min after the Base transfer |
+| Withdrawal: NEAR USDC in Intents → Base USDC | 0.999798 USDC | 0.997196 USDC | 0.002602 (about 26 bps, mostly the withdraw fee) | `SUCCESS` within about 30 s of `submit` |
+
+Checked three ways: both rows `SUCCESS` in the backend, and the account's started-quote list shows exactly those two; `mt_balance_of` on `intents.near` went from 0 to 999798 and back to 0; on Base, the deposit transfer (1.0 USDC from the wallet to the deposit address) and the payout (0.997196 USDC to the wallet) both have status 1. The ERC-191 payload from `generate-intent` passed the backend's check and was signed unchanged with `personal_sign`; the backend normalized the wallet's `0x` signature on submit. A second deposit quote, made by a double click on the page, stayed `PENDING_DEPOSIT` and isn't in the account's list, as designed (D61); the backend polls it until an hour past its deadline. The 2026-11-03 payout of 1 USDC cost 0.0053 USDC; this one cost about half that.
+
 ## Exit and EXACT_OUTPUT quotes (2026-11-04) ✅
 
 Keyed quotes for D61, no funds moved. Exits are `depositType: INTENTS`, `EXACT_INPUT`, slippage 1%:
