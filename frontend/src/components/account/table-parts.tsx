@@ -2,7 +2,7 @@
 
 import type { HistoryEntry } from "@/lib/api";
 import { formatMaturity, formatRate, formatUsd, usdcToNumber } from "@/lib/format";
-import { formatTokenAmount, tokenAmount, tokenLabel } from "@/lib/tokens";
+import { TOKENS, formatTokenAmount, tokenAmount, tokenLabel } from "@/lib/tokens";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
 import type { OrderView } from "@/shared/views";
@@ -26,9 +26,21 @@ export function formatToken(token: TokenId, amount: U128): string {
 
 export function historyLabel(e: HistoryEntry): string {
   const kind = e.order_kind ? KIND_LABEL[e.order_kind].toLowerCase() : "";
+  // With a chain named after it, the symbol alone reads better ("Withdraw ETH to Arbitrum").
+  const token = e.token_id === ASSETS.usdcNear || e.chain ? TOKENS[e.token_id].symbol : tokenLabel(e.token_id);
   switch (e.kind) {
     case "deposit":
-      return `Deposit ${e.token_id === ASSETS.usdcNear ? "USDC" : tokenLabel(e.token_id)}`;
+      return `Deposit ${token}${e.chain ? ` from ${e.chain}` : ""}`;
+    case "withdrawal":
+      return `Withdraw ${token}${e.chain ? ` to ${e.chain}` : ""}`;
+    case "collateral_added":
+      return `Add ${token} collateral`;
+    case "collateral_withdrawn":
+      return `Withdraw ${token} collateral`;
+    case "withdrawn":
+      return `Move ${token} to your balance`;
+    case "payout_failed":
+      return `Payout of ${token} failed`;
     case "placed":
       return `Placed ${kind} order`;
     case "filled":
@@ -72,16 +84,19 @@ export function OrdersTable({
 export function HistoryTable({ entries, withMaturity, empty }: { entries: HistoryEntry[]; withMaturity: boolean; empty: string }) {
   return (
     <Table head={["Action", ...(withMaturity ? ["Maturity"] : []), "Amount", "Rate", "Time (UTC)", "Status"]} empty={empty} rows={entries.length}>
-      {entries.map((e, i) => (
-        <tr key={i}>
+      {entries.map((e) => (
+        <tr key={e.id}>
           <Cell strong>{historyLabel(e)}</Cell>
           {withMaturity && <Cell muted>{e.maturity === null ? "–" : formatMaturity(e.maturity)}</Cell>}
           <Cell>{formatToken(e.token_id, e.amount)}</Cell>
           <Cell>{e.rate_bps === null ? "–" : formatRate(e.rate_bps)}</Cell>
           <Cell muted>{formatTime(e.timestamp)}</Cell>
           <Cell>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-xs">
-              <span className={`size-1.5 rounded-full ${e.status === "success" ? "bg-emerald-400" : e.status === "pending" ? "bg-amber-300" : "bg-red-400"}`} />
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-xs"
+              title={e.status === "unknown" ? "The outcome isn't known. Check your Intents balance and your NEAR account." : undefined}
+            >
+              <span className={`size-1.5 rounded-full ${e.status === "success" ? "bg-emerald-400" : e.status === "pending" ? "bg-amber-300" : e.status === "unknown" ? "bg-faint" : "bg-red-400"}`} />
               {e.status[0].toUpperCase() + e.status.slice(1)}
             </span>
           </Cell>

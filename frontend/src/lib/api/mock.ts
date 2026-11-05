@@ -10,7 +10,9 @@ import type {
   Book,
   CollateralTokenInfo,
   BookLevel,
+  HistoryCursor,
   HistoryEntry,
+  HistoryPage,
   FillTotals,
   HistoryKind,
   LiveMessage,
@@ -107,7 +109,7 @@ export function getConfig(): Promise<Config> {
 
 export function getMaturities(): Promise<MaturityInfo[]> {
   const now = BigInt(Date.now()) * 1_000_000n;
-  return delay([DEMO_MATURITY, ...MATURITIES].map((maturity) => ({ maturity, open: BigInt(maturity) > now })));
+  return delay([DEMO_MATURITY, ...MATURITIES].map((maturity) => ({ ...statsOf(maturity), open: BigInt(maturity) > now })));
 }
 
 export function getBook(maturity: U64): Promise<Book> {
@@ -207,8 +209,10 @@ export function getAccountFills(account: AccountId): Promise<FillTotals[]> {
   ]);
 }
 
-export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
+/** The whole mock history fits one page. */
+export function getAccountHistory(account: AccountId, cursor: HistoryCursor | null = null): Promise<HistoryPage> {
   void account;
+  void cursor;
   const now = Date.now();
   const at = (hoursAgo: number): U64 => String(BigInt(now - hoursAgo * 3_600_000) * 1_000_000n);
   const entry = (
@@ -218,6 +222,8 @@ export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
     amount: U128,
     rest: Partial<HistoryEntry> = {},
   ): HistoryEntry => ({
+    id: `mock:${hoursAgo}:${kind}`,
+    seq: null,
     kind,
     order_kind: null,
     maturity,
@@ -226,9 +232,11 @@ export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
     rate_bps: null,
     timestamp: at(hoursAgo),
     status: "success",
+    chain: null,
+    tx_hash: null,
     ...rest,
   });
-  return delay([
+  const entries = [
     entry(2, "placed", MATURITIES[2], usdc(1_500), { order_kind: "lend", rate_bps: 840 }),
     entry(3, "deposit", null, usdc(1_500)),
     entry(8, "filled", MATURITIES[2], usdc(640), { order_kind: "borrow", rate_bps: 790 }),
@@ -246,15 +254,20 @@ export function getAccountHistory(account: AccountId): Promise<HistoryEntry[]> {
     entry(90, "filled", DEMO_MATURITY, usdc(297), { order_kind: "lend", rate_bps: 690 }),
     entry(91, "placed", DEMO_MATURITY, usdc(297), { order_kind: "lend", rate_bps: 690 }),
     entry(92, "deposit", null, usdc(300)),
-  ]);
+  ];
+  return delay({ entries, next: null, hold_before: null });
 }
 
 export function getMaturityStats(maturity: U64): Promise<MaturityStats> {
-  const seed = BOOK_SEED[maturity];
-  if (!seed) return Promise.reject(new Error(`Unknown maturity ${maturity}`));
-  const lendOrders = seed.bids.reduce((sum, [, size]) => sum + size, 0);
+  if (!BOOK_SEED[maturity]) return Promise.reject(new Error(`Unknown maturity ${maturity}`));
+  return delay(statsOf(maturity));
+}
+
+/** Made-up totals per maturity; the passed demo maturity has none. */
+function statsOf(maturity: U64): MaturityStats {
+  const lendOrders = (BOOK_SEED[maturity]?.bids ?? []).reduce((sum, [, size]) => sum + size, 0);
   const loans = { [MATURITIES[0]]: 312_400, [MATURITIES[1]]: 286_900, [MATURITIES[2]]: 241_040 }[maturity] ?? 0;
-  return delay({ maturity, total_supplied: usdc(loans + lendOrders), active_loans: usdc(loans) });
+  return { maturity, total_supplied: usdc(loans + lendOrders), active_loans: usdc(loans) };
 }
 
 const tradeCache = new Map<U64, Trade[]>();
@@ -308,21 +321,23 @@ function tradesOf(maturity: U64): Trade[] {
 // flashes can be seen (SOT/frontend.md#data). Each open maturity gets one random event every 0.5 to
 // 1.5 s: a fill at the best level that sometimes sweeps 2 levels, a new order, or a cancel, with
 // the spread kept at most MAX_SPREAD_BPS wide.
-// It runs only while someone subscribes, and pushes what `/ws` would push: the trades first, then the
-// full book.
+// It runs only while someone subscribes to a book or trades channel, and pushes what `/ws` would
+// push: the trades first, then the full book. The mock pushes nothing on `account:` channels.
 
 type Listener = { channels: Set<string>; onMessage: (message: LiveMessage) => void };
 const listeners = new Set<Listener>();
 const simTimers = new Map<U64, ReturnType<typeof setTimeout>>();
 
+const marketListener = (l: Listener) => [...l.channels].some((c) => c.startsWith("book:") || c.startsWith("trades:"));
+
 /** Mirrors WebSocket `/ws` (SOT/backend.md#websocket-ws) for `book:<maturity>` and `trades:<maturity>`. Returns the unsubscribe. */
 export function subscribe(channels: string[], onMessage: (message: LiveMessage) => void): () => void {
   const listener = { channels: new Set(channels), onMessage };
   listeners.add(listener);
-  if (simTimers.size === 0) MATURITIES.forEach(scheduleSim);
+  if (marketListener(listener) && simTimers.size === 0) MATURITIES.forEach(scheduleSim);
   return () => {
     listeners.delete(listener);
-    if (listeners.size === 0) {
+    if (![...listeners].some(marketListener)) {
       simTimers.forEach(clearTimeout);
       simTimers.clear();
     }

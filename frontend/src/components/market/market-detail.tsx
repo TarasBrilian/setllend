@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useAccount } from "@/lib/account";
 import { getAccount, getBook, getConfig, getMaturities, getMaturityStats, getPrices, getTrades } from "@/lib/api";
 import { daysUntil, formatMaturity, usdcToNumber, usdParts } from "@/lib/format";
-import { useLiveMarket } from "@/lib/use-live-market";
+import { useLiveAccount, useLiveMarket } from "@/lib/use-live-market";
 import { useNowMs } from "@/lib/use-now";
 import { ASSETS } from "@/shared/assets";
 import type { U64 } from "@/shared/encoding";
@@ -30,6 +30,7 @@ export function MarketDetail({ maturity }: { maturity: U64 }) {
   const stats = useQuery({ queryKey: ["maturity-stats", maturity], queryFn: () => getMaturityStats(maturity), enabled: known === true });
   const mine = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: account !== undefined });
   useLiveMarket(known ? [maturity] : []);
+  useLiveAccount(account);
 
   const [panel, setPanel] = useState<PanelState>({ tab: "Lend", nonce: 0 });
 

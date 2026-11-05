@@ -2,8 +2,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { getAccount, getAccountHistory, getCollateralTokens, type PricesView } from "@/lib/api";
+import { getAccount, getCollateralTokens, type PricesView } from "@/lib/api";
 import { formatUsd, maturityToMs, usdcToNumber } from "@/lib/format";
+import { useAccountHistory } from "@/lib/use-account-history";
 import type { U64 } from "@/shared/encoding";
 import type { Config } from "@/shared/views";
 import { type AccountAction, ActionModal } from "@/components/account/action-modal";
@@ -37,11 +38,7 @@ export function AccountTables({
   const [action, setAction] = useState<AccountAction | null>(null);
   const data = useQuery({ queryKey: ["account", account], queryFn: () => getAccount(account!), enabled: account !== undefined });
   const tokens = useQuery({ queryKey: ["collateral-tokens"], queryFn: getCollateralTokens });
-  const history = useQuery({
-    queryKey: ["history", account],
-    queryFn: () => getAccountHistory(account!),
-    enabled: account !== undefined && tab === "History",
-  });
+  const history = useAccountHistory(account, tab === "History");
   const matured = nowMs >= maturityToMs(maturity);
 
   let body: React.ReactNode;
@@ -104,10 +101,21 @@ export function AccountTables({
       </Table>
     );
   } else {
-    body = !history.data ? (
+    body = history.failed ? (
+      <Empty>
+        History could not be loaded. <Action onClick={history.retry}>Try again</Action>
+      </Empty>
+    ) : !history.entries ? (
       <Empty>Loading…</Empty>
     ) : (
-      <HistoryTable entries={history.data.filter((e) => e.maturity === maturity || e.maturity === null)} withMaturity={false} empty="No history yet." />
+      <>
+        <HistoryTable entries={history.entries.filter((e) => e.maturity === maturity || e.maturity === null)} withMaturity={false} empty="No history yet." />
+        {history.hasMore && (
+          <div className="mt-4 flex justify-center">
+            <Action onClick={history.loadMore}>{history.loadingMore ? "Loading…" : "Load more"}</Action>
+          </div>
+        )}
+      </>
     );
   }
 
