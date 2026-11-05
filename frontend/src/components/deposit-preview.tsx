@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { useApiMode } from "@/lib/api-mode";
 import { type DryQuote, type QuoteRequest, defaultSlippageBps, dryQuote } from "@/lib/oneclick";
-import { formatTokenAmount, tokenAmount } from "@/lib/tokens";
+import { TOKENS, formatTokenAmount, tokenAmount } from "@/lib/tokens";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId } from "@/shared/encoding";
 import { DecimalInput } from "./form-parts";
@@ -42,16 +42,17 @@ function useDryQuote(request: QuoteRequest | null) {
   return key && state?.key === key ? state : null;
 }
 
-/** "You send / Arrives / Fee / time" for a deposit, with slippage under Advanced. */
+/** "You send / Arrives / Fee / time" for a deposit; with `slippage`, the slippage under Advanced too. */
 export function DepositPreview({
   request,
   arrives,
   slippage,
 }: {
-  /** Null when nothing is to be deposited (the balance covers it, or no amount yet). */
+  /** Null when nothing is to be deposited (the balance covers it, no amount yet, or no refund address). */
   request: QuoteRequest | null;
   arrives: TokenId;
-  slippage: ReturnType<typeof useSlippage>;
+  /** Absent: the route's default slippage, not editable here. */
+  slippage?: ReturnType<typeof useSlippage>;
 }) {
   // Mock mode simulates everything, so it asks 1Click nothing (D65).
   const live = useApiMode() === "live";
@@ -60,7 +61,12 @@ export function DepositPreview({
   if (!request || !live) return null;
   const sent = TOKEN_OF[request.asset];
   const show = (token: TokenId, raw: string) => formatTokenAmount(token, tokenAmount(token, raw));
-  const sameAsset = TOKEN_OF[request.asset] === arrives || (request.asset === "USDC" && arrives === ASSETS.usdcNear);
+  const q = result?.quote;
+  // The fee only reads in one asset; for EXACT_OUTPUT the least to send leaves out the refunded slippage buffer.
+  const sameAsset = !request.to && TOKENS[arrives].symbol === request.asset;
+  const paid = q ? BigInt(request.swap_type === "EXACT_OUTPUT" && q.minAmountIn ? q.minAmountIn : q.amountIn) : 0n;
+  const fee = q && paid > BigInt(q.amountOut) ? paid - BigInt(q.amountOut) : 0n;
+  const time = q?.timeEstimate ? (q.timeEstimate < 90 ? `~${q.timeEstimate} s` : `~${Math.round(q.timeEstimate / 60)} min`) : null;
   return (
     <div className="rounded-xl border border-line bg-background/50 px-3.5 py-2.5 text-sm">
       {!result ? (
@@ -70,30 +76,37 @@ export function DepositPreview({
       ) : (
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
           <dt className="text-muted">You send</dt>
-          <dd className="text-right font-semibold text-white tabular-nums">{show(sent, result.quote!.amountIn)}</dd>
+          <dd className="text-right font-semibold text-white tabular-nums">{show(sent, q!.amountIn)}</dd>
           <dt className="text-muted">Arrives</dt>
-          <dd className="text-right tabular-nums">{show(arrives, result.quote!.amountOut)}</dd>
+          <dd className="text-right tabular-nums">{show(arrives, q!.amountOut)}</dd>
           {sameAsset && (
             <>
               <dt className="text-muted">1Click fee</dt>
-              <dd className="text-right tabular-nums text-faint">
-                {show(arrives, String(BigInt(result.quote!.amountIn) - BigInt(result.quote!.amountOut) > 0n ? BigInt(result.quote!.amountIn) - BigInt(result.quote!.amountOut) : 0n))}
-                {result.quote!.timeEstimate ? ` · ~${result.quote!.timeEstimate < 90 ? `${result.quote!.timeEstimate} s` : `${Math.round(result.quote!.timeEstimate / 60)} min`}` : ""}
-              </dd>
+              <dd className="text-right tabular-nums text-faint">{show(arrives, fee.toString())}</dd>
+            </>
+          )}
+          {time && (
+            <>
+              <dt className="text-muted">Time</dt>
+              <dd className="text-right tabular-nums text-faint">{time}</dd>
             </>
           )}
         </dl>
       )}
-      <button type="button" onClick={() => setAdvanced(!advanced)} className="mt-1.5 text-xs text-faint hover:text-muted">
-        Advanced {advanced ? "▾" : "▸"} (slippage {slippage.percent}%)
-      </button>
-      {advanced && (
-        <div className="mt-1.5 flex items-center justify-between gap-3 text-xs">
-          <span className="text-muted">Slippage tolerance</span>
-          <span className="flex w-24 items-center gap-1 rounded-lg border border-line px-2 py-1">
-            <DecimalInput value={slippage.percent} onChange={slippage.setPercent} className="w-full min-w-0 bg-transparent text-right text-sm outline-none" />%
-          </span>
-        </div>
+      {slippage && (
+        <>
+          <button type="button" onClick={() => setAdvanced(!advanced)} className="mt-1.5 text-xs text-faint hover:text-muted">
+            Advanced {advanced ? "▾" : "▸"} (slippage {slippage.percent}%)
+          </button>
+          {advanced && (
+            <div className="mt-1.5 flex items-center justify-between gap-3 text-xs">
+              <span className="text-muted">Slippage tolerance</span>
+              <span className="flex w-24 items-center gap-1 rounded-lg border border-line px-2 py-1">
+                <DecimalInput value={slippage.percent} onChange={slippage.setPercent} className="w-full min-w-0 bg-transparent text-right text-sm outline-none" />%
+              </span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

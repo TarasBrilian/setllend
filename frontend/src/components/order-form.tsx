@@ -17,7 +17,7 @@ import { type LiveSpec, ActionForm, intentLive } from "./action-form";
 import { DepositPreview, useSlippage } from "./deposit-preview";
 import type { QuoteRequest } from "@/lib/oneclick";
 import type { Stage } from "@/lib/pipeline";
-import { depositStage, intentStages, nearDepositStage } from "@/lib/stages";
+import { type DepositParams, depositStage, intentStages, nearDepositStage } from "@/lib/stages";
 import { amountInput, CHAINS, DecimalInput, decimalString, Field, payInStep, Row, Segmented, useAddresses, useChain, useChainOptions, useSignPrefix } from "./form-parts";
 import { TokenIcon } from "./token-icon";
 
@@ -156,25 +156,35 @@ export function OrderForm({
   const slippage = useSlippage("USDC");
   const lendShortfall = !isBorrow && !fromBalance ? shortfallOf(principalRaw(), usdcBalance) : 0n;
   const lendQuote: QuoteRequest | null =
-    account !== undefined && lendShortfall > 0n && (chain === "Arbitrum" || chain === "Base")
+    account !== undefined && lendShortfall > 0n && (chain === "Arbitrum" || chain === "Base") && addresses.addressOf(chain)
       ? { account, direction: "deposit", asset: "USDC", chain: chain === "Arbitrum" ? "arbitrum" : "base", amount: lendShortfall.toString(), address: addresses.addressOf(chain), swap_type: "EXACT_OUTPUT", slippage_bps: slippage.bps }
       : null;
   const newLegs = isBorrow && source === "New deposit" ? legs.filter((l) => Number(l.amount) > 0) : [];
   const buysNear = active?.kind === "evm" && newLegs.some((l) => l.token === ASSETS.wnear);
   const nearSwapChain = chain === "Arbitrum" ? "arbitrum" : "base";
-  const collateralDeposits: Stage[] = newLegs.flatMap((l, i) => {
+  // Each collateral token the balance lacks: from its own chain through 1Click, or NEAR from the
+  // NEAR wallet (an EVM account buys NEAR with USDC instead).
+  type CollateralLeg = { key: string; near?: { token: TokenId; amount: bigint }; params?: DepositParams };
+  const collateralLegs = newLegs.flatMap((l, i): CollateralLeg[] => {
     const missing = shortfallOf(rawAmount(l.token, l.amount), deposits[l.token]);
     if (missing === 0n) return [];
     const key = `deposit:${i}`;
+    if (l.token === ASSETS.wnear && active?.kind === "near") return [{ key, near: { token: ASSETS.wnear, amount: missing } }];
     const home = TOKENS[l.token].chain;
-    if (l.token === ASSETS.wnear) {
-      return active?.kind === "near"
-        ? [nearDepositStage(key, ASSETS.wnear, missing)]
-        : [depositStage(key, { asset: "USDC", to: "NEAR", chain: nearSwapChain, amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(chain), arrives: ASSETS.wnear })];
-    }
-    const from = home === "Bitcoin" ? "bitcoin" : home === "Arbitrum" ? "arbitrum" : "base";
-    return [depositStage(key, { asset: TOKENS[l.token].symbol, chain: from, amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(home), arrives: l.token })];
+    const via = l.token === ASSETS.wnear ? (chain === "Arbitrum" ? "Arbitrum" : "Base") : home;
+    const params: DepositParams =
+      l.token === ASSETS.wnear
+        ? { asset: "USDC", to: "NEAR", chain: nearSwapChain, amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(via), arrives: ASSETS.wnear }
+        : { asset: TOKENS[l.token].symbol, chain: home === "Bitcoin" ? "bitcoin" : home === "Arbitrum" ? "arbitrum" : "base", amount: missing, swapType: "EXACT_OUTPUT", address: addresses.addressOf(home), arrives: l.token };
+    return [{ key, params }];
   });
+  const collateralDeposits: Stage[] = collateralLegs.map((leg) => (leg.near ? nearDepositStage(leg.key, leg.near.token, leg.near.amount) : depositStage(leg.key, leg.params!)));
+  // Previews at the route's default slippage (D67); none without a refund address yet.
+  const collateralQuotes = collateralLegs.flatMap((leg): { key: string; request: QuoteRequest; arrives: TokenId }[] =>
+    leg.params && account !== undefined && leg.params.address
+      ? [{ key: leg.key, arrives: leg.params.arrives, request: { account, direction: "deposit", asset: leg.params.asset, chain: leg.params.chain, amount: leg.params.amount.toString(), to: leg.params.to, address: leg.params.address, swap_type: "EXACT_OUTPUT" } }]
+      : [],
+  );
   const withBtc = newLegs.some((l) => l.token === ASSETS.btc);
 
   let live: LiveSpec | undefined;
@@ -293,6 +303,9 @@ export function OrderForm({
           <Segmented options={CHAINS} value={chain === "Arbitrum" ? "Arbitrum" : "Base"} onChange={setChain} />
         </div>
       )}
+      {collateralQuotes.map((q) => (
+        <DepositPreview key={q.key} request={q.request} arrives={q.arrives} />
+      ))}
       {withBtc && (
         <p className="rounded-xl border border-line bg-background/40 px-3.5 py-2.5 text-xs text-muted">
           A Bitcoin deposit takes about 15 minutes. Deposit BTC first from Portfolio, then borrow from Deposited, so this order doesn&apos;t wait on it.

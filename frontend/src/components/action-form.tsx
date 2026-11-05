@@ -118,10 +118,12 @@ function LiveProgress({ spec, state, onClose, onRetry }: { spec: LiveSpec; state
                     ? "animate-pulse border-accent text-accent"
                     : s.status === "failed"
                       ? "border-red-400 text-red-400"
-                      : "border-line text-faint"
+                      : s.status === "unknown"
+                        ? "border-line text-muted"
+                        : "border-line text-faint"
               }`}
             >
-              {s.status === "done" ? "✓" : s.status === "failed" ? "✗" : i + 1}
+              {s.status === "done" ? "✓" : s.status === "failed" ? "✗" : s.status === "unknown" ? "?" : i + 1}
             </span>
             <span className={s.status === "todo" ? "text-faint" : ""}>{s.label}</span>
           </li>

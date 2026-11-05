@@ -53,8 +53,18 @@ export type OneClickRow = {
   } | null;
 };
 
-/** What a dry quote previews (1Click's own quote fields, base units). */
-export type DryQuote = { amountIn: U128; amountOut: U128; minAmountOut: U128; timeEstimate: number | null };
+/** What a dry quote previews (1Click's own quote fields, base units). `minAmountIn` is an EXACT_OUTPUT quote's least, without the slippage buffer. */
+export type DryQuote = { amountIn: U128; minAmountIn: U128 | null; amountOut: U128; minAmountOut: U128; timeEstimate: number | null };
+
+/** A 1Click endpoint answered with an error; `status` 0 means no answer at all (a network failure). */
+export class OneClickError extends Error {
+  override name = "OneClickError";
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 /** The default slippage per route (D61): 100 bps for swaps with NEAR, 50 otherwise. */
 export const defaultSlippageBps = (asset: OneClickAsset, to?: OneClickAsset) => (asset === "NEAR" || to === "NEAR" ? 100 : 50);
@@ -62,9 +72,15 @@ export const defaultSlippageBps = (asset: OneClickAsset, to?: OneClickAsset) => 
 export const FINAL_STATUSES: SwapStatus[] = ["SUCCESS", "REFUNDED", "FAILED"];
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: "no-store", ...init, headers: { "content-type": "application/json", ...init?.headers } });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { cache: "no-store", ...init, headers: { "content-type": "application/json", ...init?.headers } });
+  } catch (error) {
+    if (init?.signal?.aborted) throw error;
+    throw new OneClickError(0, `The backend could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
-  if (!res.ok) throw new Error(typeof body?.error === "string" ? body.error : `1Click request failed (HTTP ${res.status})`);
+  if (!res.ok) throw new OneClickError(res.status, typeof body?.error === "string" ? body.error : `1Click request failed (HTTP ${res.status})`);
   return body as T;
 }
 
@@ -73,11 +89,10 @@ export function quote(req: QuoteRequest): Promise<OneClickRow> {
 }
 
 export async function dryQuote(req: QuoteRequest, signal?: AbortSignal): Promise<DryQuote> {
-  const { quote: q } = await call<{ quote: { amount_in: string; amount_out: string; min_amount_out: string; time_estimate: number | null } }>(
-    "/api/oneclick/quote",
-    { method: "POST", body: JSON.stringify({ ...req, dry: true }), signal },
-  );
-  return { amountIn: q.amount_in, amountOut: q.amount_out, minAmountOut: q.min_amount_out, timeEstimate: q.time_estimate };
+  const { quote: q } = await call<{
+    quote: { amount_in: string; min_amount_in: string | null; amount_out: string; min_amount_out: string; time_estimate: number | null };
+  }>("/api/oneclick/quote", { method: "POST", body: JSON.stringify({ ...req, dry: true }), signal });
+  return { amountIn: q.amount_in, minAmountIn: q.min_amount_in, amountOut: q.amount_out, minAmountOut: q.min_amount_out, timeEstimate: q.time_estimate };
 }
 
 export function row(id: string): Promise<OneClickRow> {

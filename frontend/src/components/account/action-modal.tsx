@@ -570,7 +570,7 @@ function DepositForm({ prices, onDone }: { prices: PricesView | undefined; onDon
   const raw = () => rawAmount(sentToken, amount);
   const oneclickChain = from === "Arbitrum" ? "arbitrum" : from === "Base" ? "base" : "bitcoin";
   const request: QuoteRequest | null =
-    !active || fromNear || n <= 0 || (from === "Bitcoin" && !addresses.addressOf("Bitcoin"))
+    !active || fromNear || n <= 0 || !addresses.addressOf(from)
       ? null
       : { account: active.accountId, direction: "deposit", asset: sent, chain: oneclickChain, amount: raw().toString(), to: isSwap ? "NEAR" : undefined, address: addresses.addressOf(from), swap_type: "EXACT_INPUT", slippage_bps: slippage.bps };
   const live: LiveSpec = {
@@ -670,7 +670,8 @@ const nonNegative = (n: bigint) => (n > 0n ? n : 0n);
 
 /** The dry quote a USDC deposit from Arbitrum or Base previews; null for none, or from NEAR. */
 function depositRequest(account: string, chain: Chain, amount: bigint, address: string | undefined, slippageBps: number): QuoteRequest | null {
-  if (amount <= 0n || (chain !== "Arbitrum" && chain !== "Base")) return null;
+  // Without a refund address (a NEAR account hasn't entered one yet) 1Click would refuse it.
+  if (amount <= 0n || (chain !== "Arbitrum" && chain !== "Base") || !address) return null;
   return { account, direction: "deposit", asset: "USDC", chain: chain === "Arbitrum" ? "arbitrum" : "base", amount: amount.toString(), address, swap_type: "EXACT_OUTPUT", slippage_bps: slippageBps };
 }
 

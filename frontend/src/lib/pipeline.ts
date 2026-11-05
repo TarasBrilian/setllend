@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { type ActiveAccount, useAccount } from "./account";
 
-export type StageStatus = "todo" | "active" | "done" | "failed" | "skipped";
+export type StageStatus = "todo" | "active" | "done" | "failed" | "skipped" | "unknown";
 
 /** Something a stage shows below the steps while it waits, e.g. a Bitcoin deposit address. */
 export type StagePanel = { kind: "deposit"; address: string; amount: string; symbol: string; chain: string; qr: boolean; note: string };
@@ -107,6 +107,7 @@ export function usePipeline() {
         if (!alive()) return;
         refetchAccount(active.accountId);
         if (error instanceof Unknown) {
+          setStatus(i, "unknown");
           patch((s) => ({ ...s, panel: null, outcome: { kind: "unknown", reason: error.message } }));
           return;
         }
