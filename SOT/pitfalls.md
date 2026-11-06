@@ -23,6 +23,7 @@
 
 ## Off-chain
 
+- **NEAR Wallet Selector wants the NEP-413 nonce as a `Buffer`.** `signMessage` in `@near-wallet-selector/core` 10.1.4 throws "Invalid nonce. It must be a Buffer with a length of 32 bytes." unless `Buffer.isBuffer(nonce)`, before the wallet sees the request; a plain `Uint8Array` fails. Found in smoke test step 2 on 2026-11-06 (the simulation never signs with a NEAR wallet). Pass `Buffer.from(bytes)` from the `buffer` package: its `isBuffer` checks `_isBuffer` on the prototype, so both that package and Next.js's bundled copy accept it.
 - **Event sources have rate limits that change.** Free FastNear neardata allowed 180 requests per minute in its README but answered 30 blocks per minute on 2026-11-04, too few to follow mainnet, so the backend reads events from the FastNear explorer instead (D55). Its limit is undocumented (about 30 requests per minute passed); the follower stays at 25 and backs off on a 429. If `/health` shows a growing lag, check the explorer's limit first. The books stay correct either way, since they are read from views.
 - **The free RPC allows about 100 requests per minute per IP** (`free.rpc.fastnear.com`, measured 2026-11-04, [backend.md](backend.md#chain-access-d40-d55)). The backend's steady load sits near it, and requests sent while limited keep it limited. Watch `/health` on Railway and switch `NEAR_RPC_URL` to a keyed endpoint if 429s show up.
 - **Versioned nonce**, salt fetched from `current_salt`. Salt can rotate.

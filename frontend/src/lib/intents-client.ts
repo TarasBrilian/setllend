@@ -70,8 +70,10 @@ export async function signNep413(accountId: string, payload: Nep413Payload): Pro
   if (!wallet.signMessage) throw new WalletError(`${wallet.metadata.name} can't sign messages. Connect Meteor, Intear, or MyNearWallet.`);
   let signed;
   try {
-    // The wallets take the 32 nonce bytes as a plain array-like; no Buffer needed in the browser.
-    signed = await wallet.signMessage({ message: payload.message, recipient: payload.recipient, nonce: fromBase64(payload.nonce) as unknown as Buffer });
+    // NEAR Wallet Selector refuses a nonce that isn't a 32-byte `Buffer` (`Buffer.isBuffer`), before
+    // the wallet sees it, so a plain Uint8Array fails every NEP-413 signature (2026-11-06).
+    const { Buffer } = await import("buffer");
+    signed = await wallet.signMessage({ message: payload.message, recipient: payload.recipient, nonce: Buffer.from(fromBase64(payload.nonce)) });
   } catch (error) {
     throw new WalletError(walletMessage(error));
   }
