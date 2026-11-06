@@ -2,19 +2,47 @@
 
 **Fixed-rate lending and borrowing across Base and Arbitrum, settled on NEAR Intents.**
 
-Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or any other), without being locked until maturity: lenders hold a note they can sell any time on an on-chain-escrowed order book, and borrowers can repay early by buying it back.
+Borrow and lend at a fixed rate with an EVM wallet (MetaMask, Rabby, or any other) or a NEAR wallet, without being locked until maturity: lenders hold a note they can sell any time on an on-chain-escrowed order book, and borrowers can repay early by buying it back.
 
-> 🚧 Work in progress for the NEAR Hackathon (`defi` track). Sections marked *TODO* are filled in as features ship.
+> Built for the NEAR Hackathon (`defi` track). Live on NEAR mainnet since 2026-11-06.
 
 ## Try it
 
-*TODO: live demo URL and deployed contract account.*
+| | |
+|---|---|
+| App | https://www.setllend.xyz |
+| Contract | [`setllend.near`](https://nearblocks.io/address/setllend.near) on NEAR mainnet, deployed 2026-11-06 ([transaction](https://nearblocks.io/txns/DgAcsj1cjT2TnrNNt4e2hAtHauBpdaN6CYovTKpfLkPn)) |
+| Source of the deployed code | Commit [`49fcc47`](https://github.com/TarasBrilian/setllend/tree/49fcc47e0167b7a7b4958078a3fedb07354bbd90), a reproducible build ([NEP-330](https://github.com/near/NEPs/blob/master/neps/nep-0330.md)): the contract's `contract_source_metadata` view names the commit and the Docker image, so anyone can rebuild it and compare the code hash |
+| Backend API | https://setllend-production.up.railway.app/health |
+
+Markets: lend and borrow USDC at a fixed APR until a maturity (the open ones are listed on the Market page), against ETH (from Arbitrum or Base) and NEAR as collateral, at 70% max LTV, 80% liquidation threshold, and a 5% liquidation bonus.
 
 ### Do X, see Y
 
-*TODO: step-by-step instructions a judge can follow, including a dry-run mode that needs no funds.*
+**Without funds, on a simulated chain.** The whole backend (follower, books, matcher, relayer, keeper, market-maker agent, API, WebSocket) runs on a simulated NEAR chain with a port of the contract, a faucet, and a market-maker agent quoting both sides.
 
-1. *TODO*
+1. Start the simulated backend: `cd backend && npm install && npm run sim` (it serves http://localhost:8787).
+2. Start the frontend against it: `cd frontend && npm install && NEXT_PUBLIC_API_URL=http://localhost:8787 npm run dev`, then open http://localhost:3000 and connect an **EVM wallet**. It only signs messages, so nothing is sent on any chain.
+3. Fund your account (your `0x` address in lowercase):
+   ```bash
+   curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d '{"account":"0xyouraddress","token":"USDC","amount":"1000000000"}'   # 1,000 USDC
+   curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d '{"account":"0xyouraddress","token":"ETH","amount":"1000000000000000000"}'   # 1 ETH
+   ```
+4. **Borrow:** in a market, borrow USDC against your ETH. See it fill against the agent's quote at the agent's rate, then see the loan, its debt, and its health factor in Portfolio.
+5. **Lend:** lend USDC in a market. See it fill against the agent's ask and your notes appear in Portfolio; cancel what is left of an order and see the USDC come back.
+6. **Repay and redeem:** repay the loan from Portfolio, then move the clock past every maturity (`curl -X POST localhost:8787/sim/time -H 'content-type: application/json' -d '{"advance_ms":2592000000}'`, 30 days) and redeem your notes.
+
+Don't use Deposit or a NEAR wallet with the simulation: deposits and a NEAR account's key registration are real mainnet transactions.
+
+**On mainnet, with small real funds.** This is the path our smoke test ran on 2026-11-06 with a NEAR wallet (Meteor) and two accounts, a lender and a borrower, every step checked on chain, in the API, and on the WebSocket ([SOT/smoke-test.md](SOT/smoke-test.md)). The market-maker agent doesn't run on mainnet yet, so to see a fill, lend from one account and borrow from another.
+
+1. **Lender:** log in with the NEAR wallet, then Portfolio → Deposit → Arbitrum → USDC. Enter the amount and your Arbitrum address for refunds; the modal shows a deposit address and the exact amount to send from any Arbitrum wallet. See the deposit reach `SUCCESS` and the USDC appear in your balance.
+2. **Lender:** lend that USDC in a market at a minimum APR. The first signed action registers your key on NEAR Intents (one NEAR transaction). See your bid in the order book.
+3. **Borrower:** log in with another NEAR account. Deposit → From NEAR (NEAR is wrapped and deposited in one transaction), and Deposit → Arbitrum → ETH like step 1.
+4. **Borrower:** borrow USDC in the same market at a maximum APR at or above the lender's, with ETH and NEAR as collateral. See the order fill at the lender's rate within seconds, the loan with its health factor, and the USDC in your balance.
+5. **Lender:** cancel what is left of the bid; **borrower:** repay part of the loan from the balance. See the book empty and the debt drop.
+
+Keep about 0.15 NEAR in a NEAR account beyond what it deposits: NEAR checks that a transaction's whole prepaid gas is on hand before it runs, then refunds what wasn't used. An EVM wallet uses the same screens and sends its deposits itself; that path ran on the simulated chain, and its 1Click deposit and withdrawal with $1 of real funds, but not yet a full run on mainnet.
 
 ## Why
 
@@ -43,10 +71,10 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
                      └──────────────────────┘
 ```
 
-1. Users deposit ETH (collateral) or USDC (to lend) from Base or Arbitrum into their NEAR Intents balance via 1Click.
+1. Users deposit ETH (collateral) or USDC (to lend) from Base or Arbitrum into their NEAR Intents balance via 1Click, or NEAR and USDC from a NEAR wallet.
 2. Placing an order is a signed NEAR Intents `transfer` with an order `msg`. Funds and order land in the Setllend contract atomically, and invalid orders are refunded.
 3. An off-chain matcher pairs crossing orders and calls `match_orders`. The contract checks rates and collateral against the oracle before recording the loan.
-4. Borrowed USDC is paid out to the borrower's chain via 1Click. Users never need a NEAR wallet or gas.
+4. Borrowed USDC lands in the borrower's Intents balance. From Portfolio it goes out to Arbitrum or Base via 1Click, or to the user's NEAR account, with one signature. An EVM user never needs a NEAR wallet or gas.
 
 ### NEAR Intents usage
 
@@ -56,6 +84,7 @@ Borrow and lend at a fixed rate with just your EVM wallet (MetaMask, Rabby, or a
 | `auth_call` | Cancel, sell notes, withdraw, redeem |
 | Contract balance on the `intents.near` ledger | Order escrow and payouts |
 | 1Click | Cross-chain deposits and payouts (Base, Arbitrum) |
+| `ft_withdraw`, `native_withdraw` | Exits to the user's own NEAR account |
 
 ## Trust model
 
@@ -93,8 +122,9 @@ cp .env.example .env              # fill in values as needed, all are optional f
 # Contract: unit tests, then sandbox tests (deploy, and order, multi-token loan, liquidation, and bad-debt flows through mock intents.near and oracle contracts)
 (cd contracts && cargo test)
 
-# Backend: API on http://localhost:8080. Until setllend.near is deployed, GET /health returns
-# {"ok":true,"contract":"not_deployed",...} and the data endpoints answer 503
+# Backend: API on http://localhost:8080, reading the deployed setllend.near on mainnet (read-only
+# without the backend's keys); GET /health shows "contract":"ready" once it has loaded the books.
+# Or `npm run sim` for the simulated chain on http://localhost:8787 (see "Do X, see Y")
 (cd backend && npm install && npm run dev)
 
 # Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet. It reads the backend at
