@@ -14,27 +14,30 @@ Borrow and lend at a fixed rate with an EVM wallet (MetaMask, Rabby, or any othe
 | Contract | [`setllend.near`](https://nearblocks.io/address/setllend.near) on NEAR mainnet, deployed 2026-11-06 ([transaction](https://nearblocks.io/txns/DgAcsj1cjT2TnrNNt4e2hAtHauBpdaN6CYovTKpfLkPn)) |
 | Source of the deployed code | Commit [`49fcc47`](https://github.com/TarasBrilian/setllend/tree/49fcc47e0167b7a7b4958078a3fedb07354bbd90), a reproducible build ([NEP-330](https://github.com/near/NEPs/blob/master/neps/nep-0330.md)): the contract's `contract_source_metadata` view names the commit and the Docker image, so anyone can rebuild it and compare the code hash |
 | Backend API | https://setllend-production.up.railway.app/health |
+| Docs | https://docs.setllend.xyz: concepts, user guides, the contract and API reference, and how to verify the deployed code |
 
 Markets: lend and borrow USDC at a fixed APR until a maturity (the open ones are listed on the Market page), against ETH (from Arbitrum or Base) and NEAR as collateral, at 70% max LTV, 80% liquidation threshold, and a 5% liquidation bonus.
 
 ### Do X, see Y
 
-**Without funds, on a simulated chain.** The whole backend (follower, books, matcher, relayer, keeper, market-maker agent, API, WebSocket) runs on a simulated NEAR chain with a port of the contract, a faucet, and a market-maker agent quoting both sides.
+**Without funds, on a simulated chain.** The whole backend (follower, books, matcher, relayer, keeper, API, WebSocket) runs on a simulated NEAR chain with a port of the contract and a faucet. You play both sides with two accounts in one EVM wallet: a lender and a borrower.
 
-1. Start the simulated backend: `cd backend && npm install && npm run sim` (it serves http://localhost:8787).
+1. Start the simulated backend with an empty order book: `cd backend && npm install && npm run sim -- --no-mm` (it serves http://localhost:8787).
 2. Start the frontend against it: `cd frontend && npm install && NEXT_PUBLIC_API_URL=http://localhost:8787 npm run dev`, then open http://localhost:3000 and connect an **EVM wallet**. It only signs messages, so nothing is sent on any chain.
-3. Fund your account (your `0x` address in lowercase):
+3. Fund both accounts (each `0x` address in lowercase; the account menu's **Copy address** gives that form):
    ```bash
-   curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d '{"account":"0xyouraddress","token":"USDC","amount":"1000000000"}'   # 1,000 USDC
-   curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d '{"account":"0xyouraddress","token":"ETH","amount":"1000000000000000000"}'   # 1 ETH
+   for ACCOUNT in 0xlenderaddress 0xborroweraddress; do
+     curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d "{\"account\":\"$ACCOUNT\",\"token\":\"USDC\",\"amount\":\"1000000000\"}"            # 1,000 USDC
+     curl -X POST localhost:8787/sim/faucet -H 'content-type: application/json' -d "{\"account\":\"$ACCOUNT\",\"token\":\"ETH\",\"amount\":\"1000000000000000000\"}"     # 1 ETH
+   done
    ```
-4. **Borrow:** in a market, borrow USDC against your ETH. See it fill against the agent's quote at the agent's rate, then see the loan, its debt, and its health factor in Portfolio.
-5. **Lend:** lend USDC in a market. See it fill against the agent's ask and your notes appear in Portfolio; cancel what is left of an order and see the USDC come back.
-6. **Repay and redeem:** repay the loan from Portfolio, then move the clock past every maturity (`curl -X POST localhost:8787/sim/time -H 'content-type: application/json' -d '{"advance_ms":2592000000}'`, 30 days) and redeem your notes.
+4. **Lend** (first account): in the maturity about 30 days out, lend 1,000 USDC at a minimum APR of 5%, paid from the Intents balance. See the bid in the order book and under Portfolio → Open Orders.
+5. **Borrow** (second account): in the same maturity, borrow 500 USDC at a maximum APR of 6% against Deposited ETH. See it fill at 5%, the lender's rate, within seconds, then the loan, its debt (about 502.05 USDC), and its health factor in Portfolio, and the lender's notes in theirs.
+6. **Repay and redeem:** repay the loan from Portfolio, then move the clock past every maturity (`curl -X POST localhost:8787/sim/time -H 'content-type: application/json' -d '{"advance_ms":2592000000}'`, 30 days), redeem the lender's notes, cancel what is left of the bid, and withdraw the borrower's ETH.
 
 Don't use Deposit or a NEAR wallet with the simulation: deposits and a NEAR account's key registration are real mainnet transactions.
 
-**On mainnet, with small real funds.** This is the path our smoke test ran on 2026-11-06 with a NEAR wallet (Meteor) and two accounts, a lender and a borrower, every step checked on chain, in the API, and on the WebSocket ([SOT/smoke-test.md](SOT/smoke-test.md)). The market-maker agent doesn't run on mainnet yet, so to see a fill, lend from one account and borrow from another.
+**On mainnet, with small real funds.** This is the path our smoke test ran on 2026-11-06 with a NEAR wallet (Meteor) and two accounts, a lender and a borrower, every step checked on chain, in the API, and on the WebSocket ([SOT/smoke-test.md](SOT/smoke-test.md)). To see a fill, lend from one account and borrow from another.
 
 1. **Lender:** log in with the NEAR wallet, then Portfolio → Deposit → Arbitrum → USDC. Enter the amount and your Arbitrum address for refunds; the modal shows a deposit address and the exact amount to send from any Arbitrum wallet. See the deposit reach `SUCCESS` and the USDC appear in your balance.
 2. **Lender:** lend that USDC in a market at a minimum APR. The first signed action registers your key on NEAR Intents (one NEAR transaction). See your bid in the order book.
@@ -67,7 +70,7 @@ Keep about 0.15 NEAR in a NEAR account beyond what it deposits: NEAR checks that
  └──────────────────────────────▲──────────────────────────────────────────────┘
                                 │ match_orders (permissionless)
                      ┌──────────┴───────────┐
-                     │ Off-chain matcher    │ ← market-maker agent
+                     │ Off-chain matcher    │
                      └──────────────────────┘
 ```
 
@@ -108,7 +111,7 @@ Keep about 0.15 NEAR in a NEAR account beyond what it deposits: NEAR checks that
 | Folder | Contents |
 |---|---|
 | `contracts/` | Rust smart contract, mocks, sandbox tests |
-| `backend/` | Matcher, relayer, keeper, market-maker agent, 1Click wrapper (TypeScript) |
+| `backend/` | Event follower, matcher, relayer, keeper, 1Click wrapper, REST + WebSocket API (TypeScript) |
 | `frontend/` | Next.js app with EVM or NEAR wallet login |
 | `SOT/` | Design specification and decision log |
 
@@ -132,6 +135,21 @@ cp .env.example .env              # fill in values as needed, all are optional f
 # demo data, marked "Demo data", until that backend reports the contract as ready
 (cd frontend && npm install && npm run dev)
 ```
+
+## Built with
+
+| Part | Libraries and tools |
+|---|---|
+| Contract | [`near-sdk`](https://github.com/near/near-sdk-rs) 5.30.1, [`uint`](https://crates.io/crates/uint) 0.10 (512-bit value math), [`cargo-near`](https://github.com/near/cargo-near) 0.22 with the reproducible-build image `sourcescan/cargo-near:0.22.0-rust-1.99.1`; tests with [`near-workspaces`](https://github.com/near/near-workspaces-rs) 0.24 |
+| Backend | Node 24, [Hono](https://hono.dev) with `@hono/node-server`, `ws`, `better-sqlite3`, [`near-api-js`](https://github.com/near/near-api-js) 7.4; tests with `vitest`, `@noble/curves`, `@noble/hashes` |
+| Frontend | [Next.js](https://nextjs.org) 16, React 19, [`wagmi`](https://wagmi.sh) and [`viem`](https://viem.sh), TanStack Query, [NEAR Wallet Selector](https://github.com/near/wallet-selector) (Meteor, MyNearWallet, Intear), [`lightweight-charts`](https://github.com/tradingview/lightweight-charts) by TradingView, Tailwind CSS, `qrcode`, `buffer` |
+| Services | [NEAR Intents](https://docs.near-intents.org) (`intents.near`), the [1Click API](https://docs.near-intents.org/near-intents/integration/distribution-channels/1click-api) with a partner key, Rhea's `aggregate-oracle.near` price oracle, the FastNear explorer API for contract events, NEAR RPC, Vercel (app and docs), Railway (backend) |
+
+## How this was built
+
+- Every line of code in this repository was written during the hackathon: the first commit is from 2026-11-02, and no code from before the hackathon is included. No templates were used beyond each tool's standard project layout.
+- Most of the code, tests, and documentation were written with an AI coding agent ([Claude Code](https://claude.com/claude-code)), directed and reviewed by the team. The design and every decision behind it are recorded in [`SOT/`](SOT/).
+- The documentation site's source is in [TarasBrilian/setllend-docs](https://github.com/TarasBrilian/setllend-docs).
 
 ## License
 
