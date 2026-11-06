@@ -40,6 +40,14 @@ function Links({ pathname }: { pathname: string | null }) {
           </Link>
         );
       })}
+      <a
+        href="https://docs.setllend.xyz"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="rounded-xl border border-transparent px-5 py-2 text-sm font-medium text-faint transition-colors hover:text-muted"
+      >
+        Docs
+      </a>
     </nav>
   );
 }
