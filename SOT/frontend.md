@@ -27,7 +27,7 @@ A logo animation over the Market page, about 4.8 s, that ends as the header logo
 
 ### Header (every page)
 
-- Logo on the left. Navigation in the middle: **Market** (`/`) and **Portfolio** (`/portfolio`).
+- Logo on the left. Navigation in the middle: **Market** (`/`), **Portfolio** (`/portfolio`), and **Docs**, an external link to https://docs.setllend.xyz that opens in a new tab and is never marked active.
 - No Deposit button in the header: deposits start from Portfolio's My Assets, and order forms can also deposit inline through 1Click.
 - **Connect** on the right opens one menu with two parts (D51): EVM wallets found through EIP-6963 (D14), and NEAR wallets through NEAR Wallet Selector (Meteor, MyNearWallet, Intear). Once connected it shows the account and its network: the short address and the chain (Base or Arbitrum) for EVM, the account ID for NEAR. Its menu: copy the account, switch chain (EVM), switch between a connected EVM and NEAR account, disconnect. The last account connected is the active one.
 
