@@ -17,7 +17,7 @@ A person does every action by hand in the Setllend UI with a NEAR wallet. A scri
 | Who | Holds before phase 1 | Used for |
 |---|---|---|
 | Lender | 0.05 NEAR in the account; 1.6 USDC sent from Arbitrum | Gas for `add_public_key`, USDC storage for the exit (0.00125 NEAR); a `lend` of 1.5 USDC |
-| Borrower | 0.35 NEAR in the account; 0.0005 ETH sent from Arbitrum | 0.3 NEAR as collateral, `wrap.near` and USDC storage (0.00125 NEAR each), gas for `add_public_key` and the NEAR deposit; the rest of the collateral |
+| Borrower | 0.6 NEAR in the account (0.35 was planned and fell short, see below); 0.0005 ETH sent from Arbitrum | 0.3 NEAR as collateral, `wrap.near` and USDC storage (0.00125 NEAR each), gas for `add_public_key` and the NEAR deposit; the rest of the collateral |
 | Keeper (`backend.setllend.near`) | 1.5 USDC on `intents.near` | The overdue liquidation in phase 2 |
 
 - The `borrow` is 1 USDC against 0.0005 ETH + 0.3 NEAR, about $2.42 at the oracle's prices on 2026-11-05 (ETH $2,415.65, NEAR $4.03), so its LTV is about 41%. A price fall of about half within a day would be needed before the loan is liquidatable for health, and the liquidation this test wants is the overdue one.
@@ -40,6 +40,11 @@ Before it starts, the contract is deployed, `backend.setllend.near` exists with 
 | 6 | Borrower | Repay 0.5 USDC from the Intents balance | `repaid` for 500000; the loan's debt face fell by 500000 on chain and in the API; the borrower's Intents USDC fell by 0.5 USDC; the maturity's pool (`get_pool`) holds 500000 more |
 
 After step 6 the script prints a summary, and the agent can be turned on.
+
+**Phase 1 passed ✅ 2026-11-06**, a day early, right after the deploy: 70 checks, no `FAIL` or `SKIP`. The fill (tx `5aeinyBAChvGkr4u8rgTHrA35cJNvij5Q23Z3sixffCb`) came 9 blocks after the `borrow`, at 500 bps, face 1000279 (debt 1000280), health factor 1.768; after the repay the debt left is 500280. What the run found:
+- Every NEAR-wallet signature failed in the UI with "Invalid nonce. It must be a Buffer with a length of 32 bytes." until the frontend passed the nonce as a `Buffer` (commit `023c9f8`, [pitfalls.md](pitfalls.md#off-chain)). After it, Meteor's NEP-413 signatures passed `intents.near` for both accounts (open question #9 for Meteor).
+- The borrower's NEAR deposit was refused with `NotEnoughBalance` at 0.4 NEAR: the transaction cost 0.4237 NEAR up front (0.3012 attached, 120 Tgas of gas at the protocol's minimum gas price of 0.001 NEAR per Tgas, and about 2.6 Tgas to send), though the gas burnt is priced 10 times lower and the rest comes back ([pitfalls.md](pitfalls.md#off-chain)). The borrower was topped up to 0.6 NEAR. For the same reason `backend.setllend.near` was topped up from 0.5 to 1.5 NEAR before step 4, so the relayer and the matcher can each have a 300 Tgas transaction in flight.
+- The matcher's and relayer's transactions went through dRPC (`NEAR_RPC_URL`) without an error.
 
 ## Phase 2: 2026-11-08, after maturity and grace
 

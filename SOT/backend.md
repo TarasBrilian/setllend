@@ -267,7 +267,7 @@ Each scan also reads the contract's `view_account`: free NEAR = `amount − stor
 ## Account and keys (D43)
 
 - **`backend.setllend.near`**, a subaccount created by `setllend.near`, so explorers show the link to the contract. It holds no key of `setllend.near`. It pays gas, and its `intents.near` balance holds the keeper's USDC and the seized collateral.
-- **Funding:** create it with a small initial balance (the new account's balance comes out of `setllend.near`, whose NEAR pays the contract's storage), then top it up to about 0.5 NEAR from the user's wallet. Create it while `setllend.near` still has its full-access key.
+- **Funding:** create it with a small initial balance (the new account's balance comes out of `setllend.near`, whose NEAR pays the contract's storage), then top it up from the user's wallet. Each transaction in flight needs its prepaid gas available at 0.001 NEAR per Tgas (0.3 NEAR for 300 Tgas), though about 0.0012 NEAR is burnt, so the account holds about 1.5 NEAR: the relayer, the matcher, and the keeper can each have one in flight (topped up from 0.5 NEAR on 2026-11-06, [pitfalls.md](pitfalls.md#off-chain)). Create it while `setllend.near` still has its full-access key.
 - **Three keys:**
 
   | Env variable | Kind | Allows | Used by |
