@@ -20,18 +20,26 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Book, Trade } from "@/lib/api";
 import { formatCompact, usdcToNumber } from "@/lib/format";
+import { oldestFirst } from "@/lib/trades";
 import { Tabs } from "./tabs";
 
 // Charts draw on canvas, so they take colors as values, matching the tokens in globals.css.
 const COLORS = { text: "#a29a93", line: "#2c2622", accent: "#f97316", borrow: "#34d399" };
 const RANGES = { "1D": 1, "7D": 7, All: Infinity } as const;
 type Range = keyof typeof RANGES;
-/** The smallest rate range on the Rate History axis, in percentage points. */
+/** The smallest rate range on the Rate History and Avg Rate axes, in percentage points. */
 const MIN_RATE_SPAN = 0.5;
-/** Rate History period per range, in seconds. */
+/** Avg Rate period per range, in seconds. */
 const BUCKET_S: Record<number, number> = { [RANGES["1D"]]: 15 * 60, [RANGES["7D"]]: 3_600, [RANGES.All]: 3 * 3_600 };
+/** How often Rate History's flat end moves to now, in ms. */
+const CLOCK_MS = 30_000;
+const TABS = ["Rate History", "Depth", "Avg Rate"] as const;
+type Tab = (typeof TABS)[number];
 
-// Shared by both charts. The TradingView attribution logo stays on (SOT/pitfalls.md#off-chain).
+/** A point of a rate chart; `usdc` is the USDC filled at it, absent on Rate History's flat ends. */
+type RatePoint = { time: UTCTimestamp; value: number; usdc?: number };
+
+// Shared by all three charts. The TradingView attribution logo stays on (SOT/pitfalls.md#off-chain).
 const BASE_OPTIONS = {
   autoSize: true,
   layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: COLORS.text, fontFamily: "inherit", attributionLogo: true },
@@ -47,26 +55,59 @@ const BASE_OPTIONS = {
 } satisfies DeepPartial<TimeChartOptions>;
 
 export function ChartPanel({ book, trades, nowMs }: { book: Book; trades: Trade[]; nowMs: number }) {
-  const [tab, setTab] = useState<"Rate History" | "Depth">("Rate History");
+  const [tab, setTab] = useState<Tab>("Rate History");
   const [range, setRange] = useState<Range>("7D");
 
   return (
     <section className="flex h-full flex-col rounded-3xl border border-line bg-surface p-5">
       <div className="flex items-center justify-between gap-4">
-        <Tabs options={["Rate History", "Depth"] as const} value={tab} onChange={setTab} />
-        {tab === "Rate History" && <Tabs options={Object.keys(RANGES) as Range[]} value={range} onChange={setRange} size="sm" />}
+        <Tabs options={TABS} value={tab} onChange={setTab} />
+        {tab !== "Depth" && <Tabs options={Object.keys(RANGES) as Range[]} value={range} onChange={setRange} size="sm" />}
       </div>
       <div className="relative mt-4 min-h-0 flex-1">
-        {tab === "Rate History" ? <RateHistory trades={trades} days={RANGES[range]} nowMs={nowMs} /> : <Depth book={book} />}
+        {tab === "Rate History" && <RateHistory trades={trades} days={RANGES[range]} nowMs={nowMs} />}
+        {tab === "Depth" && <Depth book={book} />}
+        {tab === "Avg Rate" && <AvgRate trades={trades} days={RANGES[range]} nowMs={nowMs} />}
       </div>
     </section>
   );
 }
 
+/**
+ * Every fill's rate, like an exchange's last-price chart: a stepped line that holds each rate until the next fill
+ * and runs on flat to now, so its latest value is the Order Book's last rate.
+ */
 function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; nowMs: number }) {
-  const container = useRef<HTMLDivElement>(null);
-  const [tip, setTip] = useState<{ x: number; y: number; time: number; rate: number } | null>(null);
+  const [clockS, setClockS] = useState(() => Math.floor(nowMs / 1000));
+  useEffect(() => {
+    const id = setInterval(() => setClockS(Math.floor(Date.now() / 1000)), CLOCK_MS);
+    return () => clearInterval(id);
+  }, []);
 
+  const points = useMemo(() => {
+    const from = Math.floor(nowMs / 1000) - days * 86_400;
+    const bySecond = new Map<number, { rate: number; usdc: number }>();
+    let before: number | undefined; // the rate of the last fill before the range
+    for (const t of oldestFirst(trades)) {
+      const time = Number(BigInt(t.timestamp) / 1_000_000_000n);
+      if (time < from) {
+        before = t.rate_bps;
+        continue;
+      }
+      // Same second, one point: the last fill's rate and the second's USDC.
+      bySecond.set(time, { rate: t.rate_bps, usdc: (bySecond.get(time)?.usdc ?? 0) + usdcToNumber(t.principal) });
+    }
+    const points: RatePoint[] = [...bySecond].map(([time, p]) => ({ time: time as UTCTimestamp, value: p.rate / 100, usdc: p.usdc }));
+    if (before !== undefined && points[0]?.time !== from) points.unshift({ time: from as UTCTimestamp, value: before / 100 });
+    const last = points.at(-1);
+    if (last && clockS > last.time) points.push({ time: clockS as UTCTimestamp, value: last.value });
+    return points;
+  }, [trades, days, nowMs, clockS]);
+
+  return <RateChart points={points} days={days} stepped />;
+}
+
+function AvgRate({ trades, days, nowMs }: { trades: Trade[]; days: number; nowMs: number }) {
   // One point per period, oldest first: the principal-weighted average rate of its fills. Fills on both sides of
   // the spread land close together in time, so single fills would zigzag by the spread's width.
   const points = useMemo(() => {
@@ -86,6 +127,18 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
       .map(([time, b]) => ({ time: time as UTCTimestamp, value: b.weighted / b.usdc / 100 }))
       .sort((a, b) => a.time - b.time);
   }, [trades, days, nowMs]);
+
+  return <RateChart points={points} days={days} />;
+}
+
+/**
+ * A rate line over time with a hover tooltip. `stepped` holds each value until the next point and marks the
+ * last value with a dashed line across the chart.
+ */
+function RateChart({ points, days, stepped = false }: { points: RatePoint[]; days: number; stepped?: boolean }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ x: number; y: number; time: number; rate: number; usdc?: number } | null>(null);
+  const usdcAt = useRef(new Map<number, number>()); // for the tooltip, by point time
   const series = useRef<{ chart: IChartApi; area: ISeriesApi<"Area"> } | null>(null);
 
   // The chart is built once per range; new fills only replace its data, so a hover survives them.
@@ -97,9 +150,13 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
     const area = chart.addSeries(AreaSeries, {
       lineColor: COLORS.accent,
       lineWidth: 2,
+      lineType: stepped ? LineType.WithSteps : LineType.Simple,
       topColor: "rgba(249, 115, 22, 0.35)",
       bottomColor: "rgba(249, 115, 22, 0)",
-      priceLineVisible: false,
+      priceLineVisible: stepped,
+      priceLineColor: COLORS.accent,
+      priceLineStyle: LineStyle.Dashed,
+      priceLineWidth: 1,
       priceFormat: { type: "custom", formatter: (v: number) => `${v.toFixed(2)}%`, minMove: 0.01 },
       // At least MIN_RATE_SPAN of rate on the axis, so a few bps of movement don't fill the chart.
       autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
@@ -118,15 +175,17 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
     series.current = { chart, area };
     chart.subscribeCrosshairMove((param) => {
       const data = param.seriesData.get(area) as LineData<UTCTimestamp> | undefined;
-      setTip(param.point && param.time !== undefined && data ? { x: param.point.x, y: param.point.y, time: param.time as number, rate: data.value } : null);
+      const time = param.time as number;
+      setTip(param.point && param.time !== undefined && data ? { x: param.point.x, y: param.point.y, time, rate: data.value, usdc: usdcAt.current.get(time) } : null);
     });
     return () => {
       series.current = null;
       chart.remove();
     };
-  }, [days]);
+  }, [days, stepped]);
 
   useEffect(() => {
+    usdcAt.current = new Map(points.flatMap((p) => (p.usdc === undefined ? [] : [[p.time as number, p.usdc]])));
     series.current?.area.setData(points);
     series.current?.chart.timeScale().fitContent();
   }, [points, days]);
@@ -144,6 +203,7 @@ function RateHistory({ trades, days, nowMs }: { trades: Trade[]; days: number; n
             {new Date(tip.time * 1000).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC
           </p>
           <p className="text-xl font-semibold tabular-nums">{tip.rate.toFixed(2)}%</p>
+          {tip.usdc !== undefined && <p className="text-xs text-muted tabular-nums">{tip.usdc.toLocaleString("en-US", { maximumFractionDigits: 6 })} USDC filled</p>}
         </div>
       )}
     </>

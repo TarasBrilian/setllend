@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Book, Trade } from "@/lib/api";
 import { formatRate, usdcToNumber } from "@/lib/format";
 import type { OrderSide } from "@/lib/orders";
+import { lastRate } from "@/lib/trades";
 import { Tabs } from "./tabs";
 import { type BookRow, type BookSide, type FlashKind, tradeKey, useBookFlashes } from "./use-book-flashes";
 
@@ -35,7 +36,7 @@ const ROW_PX = 24;
 
 function OrderBook({ book, trades, onPick }: { book: Book; trades: Trade[]; onPick: (side: OrderSide, rateBps: number) => void }) {
   const { offers, requests, midFlash, onFlashEnd } = useBookFlashes(book, trades);
-  // Both sides get the same half, so the mid row stays in the middle; levels farthest from the spread
+  // Both sides get the same half, so the middle row stays in the middle; levels farthest from the spread
   // that don't fit are hidden.
   const [half, fits] = useRowsThatFit(ROW_PX);
   const shownOffers = offers.slice(0, fits);
@@ -43,6 +44,7 @@ function OrderBook({ book, trades, onPick }: { book: Book; trades: Trade[]; onPi
   const largest = Math.max(1, ...[...shownOffers, ...shownRequests].map((row) => usdcToNumber(row.level.size)));
   const bestOffer = book.bids[0]?.rate_bps;
   const bestRequest = book.asks[0]?.rate_bps;
+  const last = lastRate(trades);
 
   return (
     <div className="mt-4 flex min-h-0 flex-1 flex-col text-sm">
@@ -76,11 +78,14 @@ function OrderBook({ book, trades, onPick }: { book: Book; trades: Trade[]; onPi
 
       <div className="relative my-2 flex items-center justify-between overflow-hidden rounded-lg bg-surface-raised px-2 py-2">
         {midFlash !== undefined && <span key={midFlash} className="absolute inset-0 animate-book-flash bg-white/12" />}
-        <span className="relative font-semibold tabular-nums">
-          {bestOffer !== undefined && bestRequest !== undefined ? `Mid ${formatRate((bestOffer + bestRequest) / 2)}` : "Mid –"}
+        {/* The last fill's rate, as on Rate History; the arrow is white, since a higher rate is good news only for lenders. */}
+        <span className="relative flex items-center gap-1.5 text-base font-semibold tabular-nums" title="Last fill rate">
+          {last ? formatRate(last.rateBps) : "–"}
+          {last?.move && <span className="text-xs">{last.move === "up" ? "▲" : "▼"}</span>}
         </span>
-        <span className="relative text-xs text-muted">
-          Spread {bestOffer !== undefined && bestRequest !== undefined ? `${bestOffer - bestRequest} bps` : "–"}
+        <span className="relative text-xs text-muted tabular-nums">
+          Mid {bestOffer !== undefined && bestRequest !== undefined ? formatRate((bestOffer + bestRequest) / 2) : "–"} · Spread{" "}
+          {bestOffer !== undefined && bestRequest !== undefined ? `${bestOffer - bestRequest} bps` : "–"}
         </span>
       </div>
 

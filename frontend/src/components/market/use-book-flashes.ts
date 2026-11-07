@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Book, BookLevel, Trade } from "@/lib/api";
+import { lastRate } from "@/lib/trades";
 
 // Flashes of the Order Book (SOT/frontend.md#market-detail-marketmaturity), worked out from pushed data only, so
 // they behave the same on mock data and on `/ws`: a new trade flashes its maker's level as a fill; a book that
@@ -24,6 +25,7 @@ type State = {
   ghosts: Record<string, { side: BookSide; level: BookLevel }>;
   /** Levels flashed as fills since the book last changed: their shrinking is not a cancel. */
   filled: Set<string>;
+  /** What the middle row shows (last rate, mid, spread); it flashes when this changes. */
   mid: string;
   midFlash?: number;
   nextId: number;
@@ -34,14 +36,15 @@ const levelsOf = (book: Book, side: BookSide) => (side === "offer" ? book.bids :
 const keyOf = (side: BookSide, rateBps: number) => `${side}:${rateBps}`;
 export const tradeKey = (trade: Trade) => `${trade.bid}-${trade.ask}`;
 
-function midOf(book: Book): string {
+function midOf(book: Book, trades: Trade[]): string {
   const offer = book.bids[0]?.rate_bps;
   const request = book.asks[0]?.rate_bps;
-  return offer === undefined || request === undefined ? "" : `${offer + request}:${offer - request}`;
+  const quotes = offer === undefined || request === undefined ? "" : `${offer + request}:${offer - request}`;
+  return `${lastRate(trades)?.rateBps ?? ""}|${quotes}`;
 }
 
 function initial(book: Book, trades: Trade[]): State {
-  return { book, previous: book, trades, flashes: {}, ghosts: {}, filled: new Set(), mid: midOf(book), nextId: 1 };
+  return { book, previous: book, trades, flashes: {}, ghosts: {}, filled: new Set(), mid: midOf(book, trades), nextId: 1 };
 }
 
 /** The maker's level of a fill: the side holding the trade's order at the trade's rate (D17), in any of the books. */
@@ -80,7 +83,7 @@ function advance(s: State, book: Book, trades: Trade[]): State {
 
   let previous = s.previous;
   let midFlash = s.midFlash;
-  const mid = midOf(book);
+  const mid = midOf(book, trades);
   if (book !== s.book) {
     for (const side of SIDES) {
       const before = new Map(levelsOf(s.book, side).map((l) => [l.rate_bps, l]));
@@ -101,8 +104,8 @@ function advance(s: State, book: Book, trades: Trade[]): State {
     }
     previous = s.book;
     filled = new Set();
-    if (mid !== s.mid) midFlash = nextId++;
   }
+  if (mid !== s.mid) midFlash = nextId++;
 
   return { book, previous, trades, flashes, ghosts, filled, mid, midFlash, nextId };
 }
