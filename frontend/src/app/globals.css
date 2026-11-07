@@ -48,7 +48,7 @@ body {
  *   3.04 s  the pills fly on curves to the header logo, shrinking to its size, the bottom one
  *           0.09 s later (animated by the <head> script in intro-splash.tsx); the backdrop
  *           fades while they fly
- *   4.18 s  the header mark takes over with a small bounce, its word slides out, then the badge
+ *   4.18 s  the header mark takes over with a small bounce, its word slides out, then the Demo/Live toggle
  */
 .intro {
   --mark: 128px;

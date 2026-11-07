@@ -15,6 +15,7 @@ Borrow and lend at a fixed rate with an EVM wallet (MetaMask, Rabby, or any othe
 | Source of the deployed code | Commit [`49fcc47`](https://github.com/TarasBrilian/setllend/tree/49fcc47e0167b7a7b4958078a3fedb07354bbd90), a reproducible build ([NEP-330](https://github.com/near/NEPs/blob/master/neps/nep-0330.md)): the contract's `contract_source_metadata` view names the commit and the Docker image, so anyone can rebuild it and compare the code hash |
 | Backend API | https://setllend-production.up.railway.app/health |
 | Docs | https://docs.setllend.xyz: concepts, user guides, the contract and API reference, and how to verify the deployed code |
+| Demo market | https://www.setllend.xyz/?mode=demo: the **Demo / Live** toggle next to the logo switches to a busy sample market with a demo account, no wallet needed; actions there are simulated ("Demo: nothing is signed or sent") |
 
 Markets: lend and borrow USDC at a fixed APR until a maturity (the open ones are listed on the Market page), against ETH (from Arbitrum or Base) and NEAR as collateral, at 70% max LTV, 80% liquidation threshold, and a 5% liquidation bonus.
 
@@ -131,8 +132,8 @@ cp .env.example .env              # fill in values as needed, all are optional f
 (cd backend && npm install && npm run dev)
 
 # Frontend: http://localhost:3000, connect any injected EVM wallet or a NEAR wallet. It reads the backend at
-# NEXT_PUBLIC_API_URL (empty = the deployed one; http://localhost:8080 for the backend above) and shows
-# demo data, marked "Demo data", until that backend reports the contract as ready
+# NEXT_PUBLIC_API_URL (empty = the deployed one; http://localhost:8080 for the backend above). The Demo / Live
+# toggle next to the logo picks sample data or that backend; Live shows Demo until the backend reports the contract as ready
 (cd frontend && npm install && npm run dev)
 ```
 

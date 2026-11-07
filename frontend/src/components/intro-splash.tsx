@@ -14,7 +14,7 @@ function runIntro(replay: boolean) {
   const FLY_DURATION = 1050;
   const STAGGER = 90;
   const STEPS = 48;
-  const FALLBACK_END = 8000; // ends the intro even if the header badge never animates
+  const FALLBACK_END = 8000; // ends the intro even if the header's Demo/Live toggle never animates
 
   // Each pill flies on a cubic Bézier from its center to the matching header pill, shrinking to
   // the header size: the top pill rises and lands from above, the bottom one dips and lands from

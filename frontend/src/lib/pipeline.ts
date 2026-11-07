@@ -69,7 +69,8 @@ export function usePipeline() {
   };
 
   const execute = async (from: number) => {
-    if (!active) return;
+    // The Demo account never signs (D74): a retry after switching to Demo does nothing.
+    if (!active || (active.kind === "evm" && active.demo)) return;
     const id = ++runId.current;
     const alive = () => mounted.current && runId.current === id;
     const patch = (fn: (s: PipelineState) => PipelineState) => alive() && setState((s) => (s ? fn(s) : s));

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useConnect, useConnection, useConnectors, useDisconnect, useSwitchChain } from "wagmi";
 import { useAccount } from "@/lib/account";
+import { useApiMode } from "@/lib/api-mode";
 import { shortAddress } from "@/lib/format";
 
 const menuItem = "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-raised disabled:opacity-50";
@@ -12,6 +13,7 @@ const shortNear = (accountId: string) => (accountId.length > 22 ? `${accountId.s
 
 /** Connect an EVM wallet (D14) or a NEAR wallet (D51); the menu shows both (SOT/frontend.md#header-every-page). */
 export function ConnectButton() {
+  const demo = useApiMode() === "mock";
   const { active, evm, near, select, disconnectNear } = useAccount();
   const { chain } = useConnection();
   const disconnect = useDisconnect();
@@ -28,6 +30,19 @@ export function ConnectButton() {
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
+
+  // Demo mode needs no wallet: the mock account is active (D74).
+  if (demo) {
+    return (
+      <span
+        className="flex items-center gap-2 rounded-xl border border-line bg-surface px-4 py-2 text-sm font-medium"
+        title="Demo data: nothing is signed or sent. Switch to Live to connect a wallet."
+      >
+        <span className="size-2 rounded-full bg-accent-soft" />
+        Demo account
+      </span>
+    );
+  }
 
   return (
     <div ref={ref} className="relative">

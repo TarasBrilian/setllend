@@ -2,7 +2,7 @@
 
 import { formatUnits } from "viem";
 import type { ActiveAccount } from "@/lib/account";
-import type { AccountView, CollateralTokenInfo, PricesView } from "@/lib/api";
+import { type AccountView, type CollateralTokenInfo, DEMO_WALLET, type PricesView } from "@/lib/api";
 import { formatUsd } from "@/lib/format";
 import { formatTokenAmount, TOKENS, tokenAmount } from "@/lib/tokens";
 import { useNearBalances } from "@/lib/use-near-balances";
@@ -39,8 +39,11 @@ export function Assets({
   prices: PricesView | undefined;
   onAction: (action: AccountAction) => void;
 }) {
-  // Wallet balances of the active account: Base and Arbitrum for EVM, the NEAR account for NEAR (D51).
-  const wallet = useWalletBalances(active.kind === "evm" ? active.address : undefined);
+  // Wallet balances of the active account: Base and Arbitrum for EVM, the NEAR account for NEAR (D51);
+  // the Demo account's come from the mocks (D74).
+  const demo = active.kind === "evm" && active.demo === true;
+  const chainBalances = useWalletBalances(active.kind === "evm" && !demo ? active.address : undefined);
+  const wallet = demo ? DEMO_WALLET : chainBalances;
   const nearWallet = useNearBalances(active.kind === "near" ? active.accountId : undefined);
   const units = (raw: bigint | undefined, decimals: number) => (raw === undefined ? undefined : Number(formatUnits(raw, decimals)));
   const isCollateral = (token: TokenId) => tokens?.some((t) => t.token_id === token && !t.frozen) ?? false;
@@ -85,7 +88,7 @@ export function Assets({
         <div>
           <h2 className="text-lg font-semibold">My Assets</h2>
           <p className="text-xs text-faint">
-            Wallet balances are read live from {active.kind === "near" ? "your NEAR account" : "Base and Arbitrum"}
+            {demo ? "Demo wallet balances" : `Wallet balances are read live from ${active.kind === "near" ? "your NEAR account" : "Base and Arbitrum"}`}
             {(active.kind === "near" ? nearWallet.error : wallet.error) ? "; some could not be read right now" : ""}. Deposits are not collateral until you add them to a loan.
           </p>
         </div>

@@ -1,6 +1,7 @@
-// Data access for every component (SOT/frontend.md#data, D65): the backend API once its contract is
-// `ready`, the mocks until then. Every call waits for the first `/health` answer, so nothing is read
-// from the wrong source first; the mode provider clears the cache when the mode changes.
+// Data access for every component (SOT/frontend.md#data, D65, D74): the mocks in Demo; in Live, the
+// backend API once its contract is `ready`, the mocks until then. Every call waits for the first mode
+// (at once in Demo, after the first `/health` answer in Live), so nothing is read from the wrong source
+// first; the mode provider clears the cache when the mode changes.
 
 import * as http from "./http";
 import * as mock from "./mock";
@@ -31,5 +32,6 @@ export const getTrades = call("getTrades");
 /** Live pushes from the source of the current mode; subscribers re-subscribe when the mode changes. */
 export const subscribe: Api["subscribe"] = (channels, onMessage) => source().subscribe(channels, onMessage);
 
+export { DEMO_WALLET } from "./demo-wallet";
 export { API_URL, type ApiMode } from "./mode";
 export type * from "./types";

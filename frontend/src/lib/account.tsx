@@ -1,17 +1,22 @@
 "use client";
 
 // The active Setllend account (D51): an EVM wallet through wagmi (D14) or a NEAR account through
-// NEAR Wallet Selector. They are separate Intents accounts; the last one connected is active.
+// NEAR Wallet Selector. They are separate Intents accounts; the last one connected is active. While the
+// mocks are served, the mock "Demo account" is active instead, with no wallet (D74).
 
 import type { BrowserWallet, InjectedWallet, ModuleState, WalletSelector, WalletSelectorState } from "@near-wallet-selector/core";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useConnection } from "wagmi";
+import { useApiMode } from "./api-mode";
 import { useHydrated } from "./use-now";
 
 export type AccountKind = "evm" | "near";
 export type ActiveAccount =
-  | { kind: "evm"; accountId: string; address: `0x${string}` }
+  | { kind: "evm"; accountId: string; address: `0x${string}`; demo?: true }
   | { kind: "near"; accountId: string };
+
+/** The mock account of Demo mode (D74). EVM-shaped so every form works; nothing is ever signed with it. */
+export const DEMO_ACCOUNT: ActiveAccount = { kind: "evm", accountId: "demo", address: "0x00000000000000000000000000000000000000de", demo: true };
 
 type AccountContext = {
   active: ActiveAccount | undefined;
@@ -60,6 +65,7 @@ function loadPreferred(): AccountKind {
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const hydrated = useHydrated();
+  const demo = useApiMode() === "mock";
   const { address, status } = useConnection();
   const [nearState, setNearState] = useState<WalletSelectorState | null>(null);
   const [preferred, setPreferredState] = useState<AccountKind>(() => (typeof window === "undefined" ? "evm" : loadPreferred()));
@@ -89,11 +95,13 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
   // Wallet state restored from storage is known before hydration; render the server's view first.
   const evm = hydrated && status === "connected" ? address : undefined;
   const near = hydrated ? nearState?.accounts.find((a) => a.active)?.accountId : undefined;
-  const pending = !hydrated || status === "connecting" || status === "reconnecting" || nearState === null;
+  const pending = !demo && (!hydrated || status === "connecting" || status === "reconnecting" || nearState === null);
 
-  // The kind chosen last is active while connected; a disconnect falls back to the other.
+  // The kind chosen last is active while connected; a disconnect falls back to the other. Wallets stay
+  // connected in Demo, for when the user switches back to Live.
   let active: ActiveAccount | undefined;
-  if (near && (preferred === "near" || !evm)) active = { kind: "near", accountId: near };
+  if (demo) active = DEMO_ACCOUNT;
+  else if (near && (preferred === "near" || !evm)) active = { kind: "near", accountId: near };
   else if (evm) active = { kind: "evm", accountId: evm.toLowerCase(), address: evm };
 
   const connectNear = useCallback(async (walletId: string, { activate = true } = {}) => {
