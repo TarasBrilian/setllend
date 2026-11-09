@@ -1,7 +1,7 @@
 // Table building blocks and labels shared by the market detail tables and the Portfolio page.
 
 import type { HistoryEntry } from "@/lib/api";
-import { formatMaturity, formatRate, formatUsd, usdcToNumber } from "@/lib/format";
+import { formatMaturity, formatRate, formatUsd, formatUsdDust, usdcToNumber } from "@/lib/format";
 import { TOKENS, formatTokenAmount, tokenAmount, tokenLabel } from "@/lib/tokens";
 import { ASSETS } from "@/shared/assets";
 import type { TokenId, U128, U64 } from "@/shared/encoding";
@@ -70,7 +70,7 @@ export function OrdersTable({
           <Cell strong>{KIND_LABEL[o.kind]}</Cell>
           {withMaturity && <Cell>{formatMaturity(o.maturity)}</Cell>}
           <Cell>{formatRate(o.rate_bps)}</Cell>
-          <Cell>{formatUsd(usdcToNumber(o.remaining_value ?? o.remaining))}</Cell>
+          <Cell>{formatUsdDust(usdcToNumber(o.remaining_value ?? o.remaining))}</Cell>
           <Cell muted>{formatTime(o.created_at)}</Cell>
           <Cell right>
             <Action onClick={() => onCancel(o)}>Cancel</Action>

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Book, Trade } from "@/lib/api";
-import { formatRate, usdcToNumber } from "@/lib/format";
+import { formatRate, formatUsdcSize, usdcExact, usdcToNumber } from "@/lib/format";
 import type { OrderSide } from "@/lib/orders";
 import { lastRate } from "@/lib/trades";
 import { Tabs } from "./tabs";
@@ -150,7 +150,7 @@ function Level({
       onClick={onClick}
       disabled={ghost}
       style={{ height: ROW_PX }}
-      title={ghost ? undefined : `${takeAs} at ${formatRate(level.rate_bps)}`}
+      title={ghost ? undefined : `${takeAs} at ${formatRate(level.rate_bps)} · ${usdcExact(level.size)} USDC`}
       className={`relative flex shrink-0 items-center justify-between overflow-hidden rounded-md px-2 tabular-nums enabled:hover:bg-surface-raised ${
         best ? (tone === "offer" ? "bg-accent/10" : "bg-emerald-400/10") : ""
       } ${ghost ? "opacity-60" : ""}`}
@@ -167,7 +167,7 @@ function Level({
         />
       )}
       <span className={`relative font-medium ${tone === "offer" ? "text-accent-soft" : "text-emerald-300"}`}>{formatRate(level.rate_bps)}</span>
-      <span className="relative">{size.toLocaleString("en-US")}</span>
+      <span className="relative">{formatUsdcSize(level.size)}</span>
     </button>
   );
 }
@@ -201,7 +201,7 @@ function RecentTrades({ trades }: { trades: Trade[] }) {
               {trade.ask_kind === "sell_note" && <span className="ml-1.5 text-xs text-faint">note</span>}
             </span>
             <span className="relative text-right font-medium">{formatRate(trade.rate_bps)}</span>
-            <span className="relative w-20 text-right">{Math.round(usdcToNumber(trade.principal)).toLocaleString("en-US")}</span>
+            <span className="relative w-20 text-right" title={`${usdcExact(trade.principal)} USDC`}>{formatUsdcSize(trade.principal)}</span>
           </div>
         ))}
         {trades.length === 0 && <Empty>No fills yet</Empty>}
