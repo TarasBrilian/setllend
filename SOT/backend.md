@@ -390,7 +390,7 @@ All amounts stay decimal strings, as on chain.
 
 ### WebSocket `/ws`
 
-A `GET /ws` without `Upgrade: websocket` (a browser tab, `curl`) answers 426 with `Upgrade: websocket` and `{"error": "/ws is a WebSocket endpoint: connect with a WebSocket client (wss://). See https://docs.setllend.xyz/developers/websocket-api"}` (D75). `createApp` adds this route, and an upgrade request falls through it to the server's `upgradeWebSocket` (`index.ts`, `sim/http.ts`).
+A `GET /ws` without `Upgrade: websocket` (a browser tab, `curl`) answers 426 with `Upgrade: websocket` and `{"error": "/ws is a WebSocket endpoint: connect with a WebSocket client (wss://). See https://docs.setllend.xyz/developers/websocket-api"}` (D75). `createApp` adds this route, and an upgrade request falls through it to the server's `upgradeWebSocket` (`index.ts`, `sim/http.ts`). Railway's edge drops `Upgrade` from the answer as a hop-by-hop header (checked 2026-11-13 over HTTP/1.1 and HTTP/2), so clients of the hosted API see only the 426 and the body; the public docs don't promise the header.
 
 The client sends `{"subscribe": ["book:<maturity>", "trades:<maturity>", "account:<account_id>"]}`. The server pushes:
 
