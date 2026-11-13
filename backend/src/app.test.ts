@@ -297,6 +297,16 @@ describe("API", () => {
     await wrong("/api/oneclick/0xabc/submit", "GET", "POST");
     // `/api/oneclick/:id` is GET, so a POST to an ID names GET.
     await wrong("/api/oneclick/0xabc", "POST", "GET");
+    // GET on the quote path is refused, so it isn't offered as allowed either.
+    await wrong("/api/oneclick/quote", "PUT", "POST");
+    await wrong("/ws", "POST", "GET");
+
+    const ws = await app.request("/ws");
+    expect(ws.headers.get("upgrade")).toBe("websocket");
+    expect(await json(ws)).toEqual({
+      status: 426,
+      body: { error: "/ws is a WebSocket endpoint: connect with a WebSocket client (wss://). See https://docs.setllend.xyz/developers/websocket-api" },
+    });
 
     expect(await json(await app.request("/"))).toEqual({
       status: 200,
