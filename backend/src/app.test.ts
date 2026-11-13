@@ -274,6 +274,45 @@ describe("API", () => {
     expect(preflight.headers.get("access-control-allow-headers")?.toLowerCase()).toMatch(/content-type/);
   });
 
+  it("answers JSON for an unknown path, 405 with Allow for a wrong method, and an index at / (D75)", async () => {
+    const { app } = await ready();
+    const docs = "See https://docs.setllend.xyz/developers/rest-api";
+    for (const path of ["/api/markets", "/api/book", "/api/maturities/", "/nope/deeper"]) {
+      const res = await app.request(path, { headers: { origin: "https://app.example" } });
+      expect(res.headers.get("content-type")).toMatch(/application\/json/);
+      expect(res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(await json(res)).toEqual({ status: 404, body: { error: `Unknown endpoint: GET ${path}. ${docs}` } });
+    }
+    expect((await json(await app.request("/api/markets", { method: "POST" }))).body).toEqual({ error: `Unknown endpoint: POST /api/markets. ${docs}` });
+
+    const wrong = async (path: string, method: string, allow: string) => {
+      const res = await app.request(path, { method });
+      expect(res.headers.get("allow")).toBe(allow);
+      expect(await json(res)).toEqual({ status: 405, body: { error: `Use ${allow.replace(", ", " or ")} for ${path}` } });
+    };
+    await wrong("/api/oneclick/quote", "GET", "POST");
+    await wrong("/api/intents", "GET", "POST");
+    await wrong("/api/intents/salt", "POST", "GET");
+    await wrong(`/api/book/${M}`, "POST", "GET");
+    await wrong("/api/oneclick/0xabc/submit", "GET", "POST");
+    // `/api/oneclick/:id` is GET, so a POST to an ID names GET.
+    await wrong("/api/oneclick/0xabc", "POST", "GET");
+
+    expect(await json(await app.request("/"))).toEqual({
+      status: 200,
+      body: { name: "Setllend API", docs: "https://docs.setllend.xyz/developers/rest-api", health: "/health" },
+    });
+  });
+
+  it("covers routes added after createApp, as /ws and /sim/* are (D75)", async () => {
+    const { app } = await ready();
+    app.post("/later", (c) => c.json({}));
+    app.get("/later", (c) => c.json({}));
+    const res = await app.request("/later", { method: "DELETE" });
+    expect(res.headers.get("allow")).toBe("GET, POST");
+    expect(await json(res)).toEqual({ status: 405, body: { error: "Use GET or POST for /later" } });
+  });
+
   it("serves the intents salt", async () => {
     const { app } = await ready();
     expect((await json(await app.request("/api/intents/salt"))).body).toEqual({ salt: "0a1b2c3d" });
