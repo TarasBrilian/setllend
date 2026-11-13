@@ -362,6 +362,7 @@ Variables are set in the service, never in the repo. Until the deploy only `DATA
 
 | Method | Path | Returns |
 |---|---|---|
+| GET | `/` | `{name, docs, health}`: the API's name, the public REST docs URL, and the `/health` path (D75) |
 | GET | `/health` | `ok`, `contract` (`checking`, `not_deployed`, `loading`, or `ready`: until `ready` the endpoints that read the contract answer 503, `POST /api/intents` answers `not_ready`, and the salt, the 1Click endpoints, and the withdrawal list (D64) work already), the height the books were read at, the follower's cursor, final height, lag, catching-up flag, and stop error; `relayer: {intents, matcher}`, whether each key is set (without one, that half runs read-only); `matcher: {in_flight, last_batch, fill_limit, paused}`, the hash of a batch in flight, the last finished batch (`tx_hash`, fills, skips, the height its books were reloaded at, error), the fill limit now, and whether a failed 1-fill batch paused matching; `keeper: {signing, in_flight, capital, last_scan, last_liquidation, storage}` (D59): whether it can send, the hash of the liquidation in flight, its USDC on `intents.near`, the last scan (`height`, `loans`, `eligible` (a count), `unpriced` (loans with debt that aren't overdue and whose health can't be computed now), `top` (the first 10 eligible loans in order, each with its `reason` (`overdue` or `unhealthy`), `health`, planned `repay`, and `skip`), and an `error` if reading the loans failed), the last liquidation (`tx_hash`, `borrower`, `maturity`, `ok`, `repaid`, `error`), and the contract's free NEAR with its `alert` flag; `mm` as in [Market-maker agent](#health); `oneclick: {enabled, open}`: whether `ONE_CLICK_JWT` is set, and how many quotes are still polled |
 | GET | `/api/config` | Contract `Config` (cached) |
 | GET | `/api/stats` | Protocol totals: `total_supplied` (note value outstanding plus open `lend` orders) and `active_loans` (total debt face). Computed when books and loans are reloaded, not per request (D49) |
@@ -384,6 +385,8 @@ Variables are set in the service, never in the repo. Until the deploy only `DATA
 All amounts stay decimal strings, as on chain.
 
 **CORS (D65):** every response allows any origin (`Access-Control-Allow-Origin: *`) and the methods and headers the UI sends (`GET`, `POST`, `Content-Type`), with no credentials. Preflight `OPTIONS` requests answer 204. The API has no cookies or logins, so an origin check would protect nothing.
+
+**Unknown paths and methods (D75):** every answer is JSON. A path no route has answers 404 `{"error": "Unknown endpoint: GET /api/markets. See https://docs.setllend.xyz/developers/rest-api"}`. A path a route has, asked with another method, answers 405 with `Allow` (the route's methods, comma-separated) and `{"error": "Use POST for /api/oneclick/quote"}` (`Use GET or POST for …` when there are several). Both look the path up in the app's routes at request time, so `/ws` and the simulation's `/sim/*`, added after `createApp`, are covered. `GET /api/oneclick/quote` has a route of its own that answers this 405, since `/api/oneclick/:id` would otherwise read `quote` as an ID. Paths are strict: a trailing slash is another path.
 
 ### WebSocket `/ws`
 
