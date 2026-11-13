@@ -18,6 +18,11 @@ export const API = { defaultLimit: 100, maxLimit: 1_000, saltCacheMs: 60_000 };
 
 const MATURITY = /^(0|[1-9][0-9]*)$/;
 
+/** Named in the index and in every unknown-endpoint answer (D75). */
+export const REST_DOCS = "https://docs.setllend.xyz/developers/rest-api";
+/** Named in the answer to a plain GET of `/ws` (D75). */
+export const WS_DOCS = "https://docs.setllend.xyz/developers/websocket-api";
+
 class HttpError extends Error {
   readonly status: 400 | 404 | 429 | 503;
   constructor(status: 400 | 404 | 429 | 503, message: string) {
@@ -35,6 +40,15 @@ function ipOf(c: Context): string {
     // No Node socket (tests): the header alone decides.
   }
   return clientIp(c.req.header("x-forwarded-for"), socket);
+}
+
+/** A route path (`/api/book/:maturity`) as a pattern for a request path. */
+function routePattern(path: string): RegExp {
+  const source = path
+    .split("/")
+    .map((segment) => (segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    .join("/");
+  return new RegExp(`^${source}$`);
 }
 
 function limitOf(value: string | undefined): number {
@@ -79,6 +93,46 @@ export function createApp(service: Service) {
     console.error(error);
     return c.json({ error: "Upstream error" }, 502);
   });
+
+  // Unknown paths and wrong methods (D75). The routes are read at request time, so `/ws` and the
+  // simulation's `/sim/*`, added after this function returns, are covered too.
+  const patterns = new Map<string, RegExp>();
+  /**
+   * The methods other than the request's that `path` answers. Per method only the first matching
+   * route counts, as in Hono's own dispatch, and a `refuse` route means that method isn't allowed.
+   */
+  const allowedOn = (c: Context) => {
+    const seen = new Set<string>();
+    const methods: string[] = [];
+    for (const route of app.routes) {
+      if (route.method === "ALL" || seen.has(route.method)) continue; // ALL: middleware such as CORS
+      let pattern = patterns.get(route.path);
+      if (!pattern) patterns.set(route.path, (pattern = routePattern(route.path)));
+      if (!pattern.test(c.req.path)) continue;
+      seen.add(route.method);
+      if (route.handler !== refuse && route.method !== c.req.method) methods.push(route.method);
+    }
+    return methods.sort();
+  };
+  const refuse = (c: Context) => {
+    const methods = allowedOn(c);
+    c.header("Allow", methods.join(", "));
+    return c.json({ error: `Use ${methods.join(" or ")} for ${c.req.path}` }, 405);
+  };
+  app.notFound((c) => {
+    if (allowedOn(c).length > 0) return refuse(c);
+    return c.json({ error: `Unknown endpoint: ${c.req.method} ${c.req.path}. See ${REST_DOCS}` }, 404);
+  });
+
+  // The server adds the WebSocket upgrade on `/ws` after this (index.ts, sim/http.ts); a request
+  // without the upgrade header would fall through it to "Unknown endpoint".
+  app.get("/ws", (c, next) => {
+    if (c.req.header("upgrade")?.toLowerCase() === "websocket") return next();
+    c.header("Upgrade", "websocket");
+    return c.json({ error: `/ws is a WebSocket endpoint: connect with a WebSocket client (wss://). See ${WS_DOCS}` }, 426);
+  });
+
+  app.get("/", (c) => c.json({ name: "Setllend API", docs: REST_DOCS, health: "/health" }));
 
   app.get("/health", (c) => c.json(service.health()));
 
@@ -164,6 +218,9 @@ export function createApp(service: Service) {
     oneclickGuard(c);
     return c.json(await oneclick.depositTx(c.req.param("id"), await bodyOf(c)));
   });
+
+  // Before `/api/oneclick/:id`, which would read `quote` as a quote ID (D75).
+  app.get("/api/oneclick/quote", refuse);
 
   app.get("/api/oneclick/:id", (c) => c.json(oneclick.row(c.req.param("id"))));
 
